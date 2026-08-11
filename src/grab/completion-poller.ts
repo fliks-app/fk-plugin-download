@@ -349,7 +349,14 @@ export class DownloadCompletionPoller {
     log.info(`Import[${history.sourceTitle}]: completed successfully (${result.imported.length} file(s))`);
 
     await this.deps.host.call('events.publish', [
-      { type: 'acquisition.imported', mediaId: history.mediaId, seasonNumber: result.seasonNumber, episodeNumber: result.episodeNumber },
+      {
+        type: 'acquisition.imported',
+        mediaId: history.mediaId,
+        seasonNumber: result.seasonNumber,
+        episodeNumber: result.episodeNumber,
+        quality: history.quality,
+        sourceTitle: history.sourceTitle,
+      },
     ]);
   }
 
@@ -498,7 +505,9 @@ export class DownloadCompletionPoller {
 
   private async publishFailed(history: DownloadHistoryRow, reason: string): Promise<void> {
     if (history.mediaId == null) return; // AcquisitionEvent.acquisition.failed requires a mediaId
-    await this.deps.host.call('events.publish', [{ type: 'acquisition.failed', mediaId: history.mediaId, reason }]);
+    await this.deps.host.call('events.publish', [
+      { type: 'acquisition.failed', mediaId: history.mediaId, title: history.sourceTitle, reason },
+    ]);
   }
 
   /**

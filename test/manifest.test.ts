@@ -156,6 +156,38 @@ function collectI18nKeyRefs(node: unknown, out: string[] = []): string[] {
   return out;
 }
 
+test('ui.contributions: settings.page paths sit under the admin settings shell, nav.* paths never do', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'plugin.json'), 'utf8')) as {
+    ui: { contributions: { id: string; slot: string; action: { kind: string; path?: string } }[] };
+  };
+  const ADMIN_SETTINGS_PREFIX = '/admin/settings/';
+  let settingsPagesChecked = 0;
+  let navChecked = 0;
+
+  for (const c of manifest.ui.contributions) {
+    if (c.action.kind !== 'route') continue;
+    const path = c.action.path!;
+    if (c.slot === 'settings.page') {
+      settingsPagesChecked++;
+      assert.ok(
+        path.startsWith(ADMIN_SETTINGS_PREFIX),
+        `"${c.id}" is a settings.page contribution but its path "${path}" doesn't sit under ` +
+          `${ADMIN_SETTINGS_PREFIX} — it would render in the main frame, wrong sidebar`,
+      );
+    } else if (c.slot.startsWith('nav.')) {
+      navChecked++;
+      assert.ok(
+        !path.startsWith(ADMIN_SETTINGS_PREFIX),
+        `"${c.id}" is a nav.* (main-navigation) contribution but its path "${path}" sits under ` +
+          `${ADMIN_SETTINGS_PREFIX} — it belongs in the top-level frame, not the settings shell`,
+      );
+    }
+  }
+
+  assert.equal(settingsPagesChecked, 3, 'general, indexers, download-clients');
+  assert.equal(navChecked, 1, 'the queue nav item');
+});
+
 test('every labelKey/hint/*Key referenced anywhere in ui.contributions and ui.configPages has an i18n.en entry', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'plugin.json'), 'utf8')) as {
     ui: { contributions: unknown[]; configPages: unknown[] };

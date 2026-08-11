@@ -1,6 +1,6 @@
 /**
  * Restated from `backend/src/common/plugin-contract/host-methods.ts` (types
- * only, no runtime code) — the 17 methods this plugin calls on core, grouped
+ * only, no runtime code) — the 15 methods this plugin calls on core, grouped
  * A-E as the plan groups them. A `process` plugin ships with no access to
  * `backend/src` at runtime, so this is a hand-kept mirror, not an import.
  *
@@ -72,8 +72,6 @@ export type AcquisitionEvent =
       mediaId: number;
       seasonNumber?: number;
       episodeNumber?: number;
-      sourceTitle: string;
-      quality: string;
     }
   | {
       type: 'acquisition.progress';
@@ -81,11 +79,26 @@ export type AcquisitionEvent =
       ref: string;
       progress: number;
       etaSeconds: number | null;
-      state: string;
+      state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
     }
-  | { type: 'acquisition.imported'; mediaId: number; seasonNumber?: number; episodeNumber?: number }
-  | { type: 'acquisition.failed'; mediaId: number; reason: string }
-  | { type: 'acquisition.queue.changed' };
+  | {
+      type: 'acquisition.imported';
+      mediaId: number;
+      seasonNumber?: number;
+      episodeNumber?: number;
+      /** Not derivable from `mediaId` — the download attempt's own facts. */
+      quality: string;
+      sourceTitle: string;
+    }
+  | {
+      type: 'acquisition.failed';
+      mediaId: number;
+      /** The caller's release title, never re-derived from the media's own title. */
+      title: string;
+      reason: string;
+    }
+  | { type: 'acquisition.queue.changed' }
+  | { type: 'acquisition.stalled.removed'; mediaId: number | null; title: string };
 
 /**
  * The full core-side surface, keyed by dotted method name. `HostClient.call`

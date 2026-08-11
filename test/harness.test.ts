@@ -102,10 +102,16 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<number | n
   });
 }
 
+/** Set once the real `public.media` row for the "resolvable" queue test exists — read by
+ *  `cannedHostReply`'s `media.resolve` case, which otherwise has nothing to resolve. */
+let resolvableMediaId: number | undefined;
+
 /** Canned replies for the one host method the five jobs actually reach on an empty DB
  *  (`CleanStalled`'s `config.get` — every other job returns before calling out, since
- *  no indexer/client rows exist) plus the handful the http drive's grab/legacy paths hit. */
-function cannedHostReply(method: string): unknown {
+ *  no indexer/client rows exist) plus the handful the http drive's grab/legacy paths hit.
+ *  `media.resolve` mirrors core's own behaviour: only ids it actually knows come back —
+ *  everything else (including any id before `resolvableMediaId` is set) resolves to nothing. */
+function cannedHostReply(method: string, payload: unknown): unknown {
   switch (method) {
     case 'config.get':
       return {};
@@ -117,6 +123,14 @@ function cannedHostReply(method: string): unknown {
       return [];
     case 'releases.score':
       return [];
+    case 'media.resolve': {
+      const { mediaIds = [] } = payload as { mediaIds?: number[] };
+      const out: Record<string, { title: string; kind: string; libraryId: number }> = {};
+      if (resolvableMediaId != null && mediaIds.includes(resolvableMediaId)) {
+        out[`media:${resolvableMediaId}`] = { title: 'Harness Media', kind: 'movie', libraryId: 1 };
+      }
+      return out;
+    }
     default:
       return null;
   }
@@ -164,7 +178,7 @@ before(async () => {
       for (const line of reader.push(chunk)) {
         const frame = parseFrame(line);
         if (!isReq(frame)) continue;
-        socket.write(encodeFrame({ i: (frame as Req).i, r: cannedHostReply((frame as Req).m) }));
+        socket.write(encodeFrame({ i: (frame as Req).i, r: cannedHostReply((frame as Req).m, (frame as Req).p) }));
       }
     });
   });
@@ -215,6 +229,7 @@ after(async () => {
   pluginServer?.close();
   fs.rmSync(runtimeDir, { recursive: true, force: true });
   if (admin) {
+    if (resolvableMediaId != null) await admin.query(`DELETE FROM public."media" WHERE id = $1`, [resolvableMediaId]);
     await admin.query(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
     await admin.end();
   }
@@ -315,13 +330,20 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
     [unreachableClientId],
   );
 
+  interface QueueRowLike {
+    id: number;
+    title: string;
+    quality: string;
+    state: string;
+    progress: number | null;
+    clientReachable: boolean;
+    mediaId: number | null;
+    mediaType: string | null;
+  }
+
   const queueWithUnreachableClient = await channel.call<{
     status: number;
-    body: {
-      data: { id: number; title: string; quality: string; state: string; progress: number | null; clientReachable: boolean }[];
-      total: number;
-      clientsUnreachable: boolean;
-    };
+    body: { data: QueueRowLike[]; total: number; clientsUnreachable: boolean };
   }>('http', { method: 'GET', path: '/queue', query: {}, body: null, principal: { kind: 'system' } });
   assert.equal(queueWithUnreachableClient.status, 200);
   assert.equal(queueWithUnreachableClient.body.total, 1, 'the in-flight row still shows — never dropped to an empty page');
@@ -331,6 +353,40 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
   assert.equal(queueRow!.state, 'queued');
   assert.equal(queueRow!.progress, null);
   assert.equal(queueRow!.clientReachable, false);
+  assert.equal(queueRow!.mediaId, null, 'no media was ever linked to this grab — both fields stay null, never guessed');
+  assert.equal(queueRow!.mediaType, null, 'no button renders client-side without both mediaId and mediaType');
+
+  // A second in-flight row, this one linked to a real core media id via `download_history`'s
+  // own FK into `public.media` — proves the queue resolves mediaId/mediaType for a real row,
+  // bounded to this page, over the real socket, not just carries the id through unresolved.
+  const { rows: mediaRows } = await admin!.query<{ id: number }>(
+    `INSERT INTO public."media" ("title", "type") VALUES ('Harness Media', 'movie') RETURNING "id"`,
+  );
+  resolvableMediaId = mediaRows[0]!.id;
+  await admin!.query(
+    `INSERT INTO "${SCHEMA}"."download_history"
+       ("sourceTitle", "quality", "torrentHash", "status", "downloadClientId", "mediaId")
+     VALUES ('Harness Media Grab', '1080p', 'feedface', 'grabbed', $1, $2)`,
+    [unreachableClientId, resolvableMediaId],
+  );
+
+  const queueWithMedia = await channel.call<{ status: number; body: { data: QueueRowLike[]; total: number } }>('http', {
+    method: 'GET',
+    path: '/queue',
+    query: {},
+    body: null,
+    principal: { kind: 'system' },
+  });
+  assert.equal(queueWithMedia.status, 200);
+  assert.equal(queueWithMedia.body.total, 2, 'both in-flight rows show');
+  const resolvedRow = queueWithMedia.body.data.find((r) => r.title === 'Harness Media Grab');
+  const unresolvedRow = queueWithMedia.body.data.find((r) => r.title === 'Harness In-Flight Grab');
+  assert.ok(resolvedRow, 'the media-linked row must still be present');
+  assert.ok(unresolvedRow, 'the media-less row must still be present alongside it');
+  assert.equal(resolvedRow!.mediaId, resolvableMediaId, 'carries the real core media id straight off the row');
+  assert.equal(resolvedRow!.mediaType, 'movie', 'resolved via media.resolve, over the real socket, keyed "media:<id>"');
+  assert.equal(unresolvedRow!.mediaId, null, 'still no media linked — unaffected by the other row resolving');
+  assert.equal(unresolvedRow!.mediaType, null, 'still no button for this row');
 
   // The composition root's real proof: all five manifest job names dispatch into a real
   // handler over the real socket, against the real (empty) fliks-migtest schema.

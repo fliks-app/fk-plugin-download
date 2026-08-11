@@ -1,4 +1,6 @@
 import type { Principal } from '../principal';
+import type { MediaKind } from '../host-methods';
+import type { HostCaller } from '../grab/types';
 import { GrabError, type ManualGrabInput } from '../grab/release-pipeline';
 import { torrentProgressState } from '../grab/progress-state';
 import {
@@ -60,6 +62,7 @@ export interface RouteDeps {
    *  them before a driver call ever happens. */
   downloadClientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
   downloadClientDrivers: Readonly<Record<string, DownloadClientDriver>>;
+  host: HostCaller;
 }
 
 export interface ResolvedRoute {
@@ -336,6 +339,10 @@ export interface QueueItemDto {
   /** False when this row's own client could not be queried — `progress`/`bytesPerSecond`
    *  are then unknown, not zero. */
   clientReachable: boolean;
+  /** Both null when the row's media can't be resolved — never guessed, since `table.open-media`
+   *  renders no button without both. */
+  mediaId: number | null;
+  mediaType: MediaKind | null;
 }
 
 const QUEUE_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing'];
@@ -372,7 +379,7 @@ async function indexClientTorrents(
 /** `importing` is definitive regardless of the client (the download itself is already
  *  done); `grabbed` without a live torrent match means "unknown", never a guessed state. */
 function toQueueItem(row: DownloadHistoryRow, byClientId: Map<number, ClientTorrentIndex>): QueueItemDto {
-  const base = { id: row.id, title: row.sourceTitle, quality: row.quality };
+  const base = { id: row.id, title: row.sourceTitle, quality: row.quality, mediaId: row.mediaId, mediaType: null as MediaKind | null };
   if (row.status === 'importing') {
     return { ...base, state: 'importing', progress: 1, bytesPerSecond: null, clientReachable: true };
   }
@@ -390,6 +397,21 @@ function toQueueItem(row: DownloadHistoryRow, byClientId: Map<number, ClientTorr
   return { ...base, state: 'queued', progress: null, bytesPerSecond: null, clientReachable: index?.ok ?? false };
 }
 
+/** `media.resolve` throws above 100 ids — bounding to the ids already on the rendered
+ *  page (never the full, unpaged history) is what keeps a large queue from tripping that.
+ *  A row whose media doesn't come back (or never had one) keeps `mediaType: null`, never
+ *  a guessed kind. */
+async function attachMediaTypes(deps: RouteDeps, pageItems: QueueItemDto[]): Promise<QueueItemDto[]> {
+  const mediaIds = [...new Set(pageItems.map((item) => item.mediaId).filter((id): id is number => id != null))];
+  if (!mediaIds.length) return pageItems;
+  const resolved = await deps.host.call('media.resolve', { mediaIds });
+  return pageItems.map((item) => {
+    if (item.mediaId == null) return item;
+    const hit = resolved[`media:${item.mediaId}`];
+    return hit ? { ...item, mediaType: hit.kind } : item;
+  });
+}
+
 /** Sourced from `download_history` (always available) and enriched from the live
  *  clients when they answer — never sourced from the clients alone, or a client outage
  *  would render as an empty queue instead of an unreachable one. */
@@ -404,9 +426,11 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
 
   const items = rows.map((row) => toQueueItem(row, byClientId)).sort((a, b) => b.id - a.id);
   const start = (page - 1) * pageSize;
+  // Slice to the page first — attachMediaTypes's host call must only ever see this page's ids.
+  const data = await attachMediaTypes(deps, items.slice(start, start + pageSize));
 
   return jsonResponse(200, {
-    data: items.slice(start, start + pageSize),
+    data,
     total: items.length,
     page,
     pageSize,
@@ -530,9 +554,9 @@ function wrap(handler: RouteHandler): RouteHandler {
 }
 
 /**
- * Every route this plugin actually backs with a handler. `GET /delay-profiles` is
- * declared in the manifest (`ROUTES`) but has no backing model in this plugin —
- * deliberately absent here, so it 404s like any unknown path.
+ * Every route this plugin actually backs with a handler. `GET /delay-profiles` is not
+ * declared in the manifest at all — `delay-profiles` stays core's table, no page here
+ * needs it — so it 404s like any other unrecognised path.
  *
  * `/indexers/cooldowns`, `/indexers/implementations`, `/download-clients/implementations`
  * and `/blocklist/all` are declared ahead of their `:id` siblings: `createRouteTable`

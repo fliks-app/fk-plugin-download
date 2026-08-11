@@ -121,6 +121,7 @@ export function createAppGraph(repositories: Repositories, host: HostCaller): Ap
       downloadHistory: repositories.downloadHistory,
       downloadClientsRepo: repositories.downloadClients,
       downloadClientDrivers: DOWNLOAD_CLIENT_DRIVERS,
+      host,
     }),
   };
 }

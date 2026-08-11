@@ -78,8 +78,6 @@ export async function grabAndRecord(deps: GrabExecutorDeps, args: GrabArgs): Pro
       mediaId: args.mediaId,
       seasonNumber: args.seasonNumber,
       episodeNumber: args.episodeNumber,
-      sourceTitle: args.sourceTitle,
-      quality: args.quality,
     },
   ]);
 

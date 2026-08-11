@@ -87,6 +87,7 @@ function fakeDeps(over: Partial<RouteDeps> = {}): RouteDeps {
     downloadHistory: { findByStatuses: async () => [] },
     downloadClientsRepo: { listEnabled: async () => [] },
     downloadClientDrivers: {},
+    host: { call: async () => ({}) },
     ...over,
   } as unknown as RouteDeps;
 }
@@ -361,7 +362,17 @@ describe('route table — GET /queue', () => {
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
     const body = res.body as { data: QueueItemDto[] };
     assert.deepEqual(body.data, [
-      { id: 9, title: 'A Title', quality: '1080p', state: 'importing', progress: 1, bytesPerSecond: null, clientReachable: true },
+      {
+        id: 9,
+        title: 'A Title',
+        quality: '1080p',
+        state: 'importing',
+        progress: 1,
+        bytesPerSecond: null,
+        clientReachable: true,
+        mediaId: null,
+        mediaType: null,
+      },
     ]);
   });
 
@@ -407,7 +418,17 @@ describe('route table — GET /queue', () => {
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
     const body = res.body as { data: QueueItemDto[]; clientsUnreachable: boolean };
     assert.deepEqual(body.data, [
-      { id: 3, title: 'A Title', quality: '1080p', state: 'stalled', progress: 0.5, bytesPerSecond: 12345, clientReachable: true },
+      {
+        id: 3,
+        title: 'A Title',
+        quality: '1080p',
+        state: 'stalled',
+        progress: 0.5,
+        bytesPerSecond: 12345,
+        clientReachable: true,
+        mediaId: null,
+        mediaType: null,
+      },
     ]);
     assert.equal(body.clientsUnreachable, false);
   });
@@ -443,6 +464,8 @@ describe('route table — GET /queue', () => {
       progress: null,
       bytesPerSecond: null,
       clientReachable: false,
+      mediaId: null,
+      mediaType: null,
     });
   });
 
@@ -457,6 +480,71 @@ describe('route table — GET /queue', () => {
     assert.equal(body.page, 2);
     assert.equal(body.pageSize, 2);
     assert.deepEqual(body.data.map((i) => i.id), [1], 'newest (id 3, 2) on page 1; id 1 is the lone item on page 2');
+  });
+
+  test('a row with a resolvable media gets both fields; one whose media is missing gets neither', async () => {
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 1, mediaId: 42 }), historyRow({ id: 2, mediaId: null })],
+      },
+      host: {
+        call: async (_method: string, payload: unknown) => {
+          const { mediaIds } = payload as { mediaIds: number[] };
+          const out: Record<string, { title: string; kind: string; libraryId: number }> = {};
+          if (mediaIds.includes(42)) out['media:42'] = { title: 'X', kind: 'series', libraryId: 1 };
+          return out;
+        },
+      } as unknown as RouteDeps['host'],
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[] };
+    const withMedia = body.data.find((i) => i.id === 1);
+    const withoutMedia = body.data.find((i) => i.id === 2);
+    assert.deepEqual({ mediaId: withMedia!.mediaId, mediaType: withMedia!.mediaType }, { mediaId: 42, mediaType: 'series' });
+    assert.deepEqual({ mediaId: withoutMedia!.mediaId, mediaType: withoutMedia!.mediaType }, { mediaId: null, mediaType: null });
+  });
+
+  test('a mediaId present but absent from the resolve reply (deleted/unknown media) still gets no button', async () => {
+    const deps = fakeDeps({
+      downloadHistory: { findByStatuses: async () => [historyRow({ id: 1, mediaId: 99 })] },
+      host: { call: async () => ({}) } as unknown as RouteDeps['host'], // core found nothing for id 99
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[] };
+    assert.deepEqual({ mediaId: body.data[0]!.mediaId, mediaType: body.data[0]!.mediaType }, { mediaId: 99, mediaType: null });
+  });
+
+  test('media.resolve is called once, bounded to the current page\'s mediaIds — never the full history', async () => {
+    const rows = Array.from({ length: 130 }, (_, i) => historyRow({ id: i + 1, mediaId: i + 1 }));
+    const calls: { method: string; payload: unknown }[] = [];
+    const deps = fakeDeps({
+      downloadHistory: { findByStatuses: async () => rows },
+      host: {
+        call: async (method: string, payload: unknown) => {
+          calls.push({ method, payload });
+          return {};
+        },
+      } as unknown as RouteDeps['host'],
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue', query: { page: '1', pageSize: '25' } }), resolved.params);
+    const body = res.body as { total: number };
+    assert.equal(body.total, 130, 'the full (unpaged) count is still reported');
+
+    const resolveCalls = calls.filter((c) => c.method === 'media.resolve');
+    assert.equal(resolveCalls.length, 1, 'media.resolve must be called exactly once per queue page, not once per row');
+    const { mediaIds } = resolveCalls[0]!.payload as { mediaIds: number[] };
+    assert.ok(mediaIds.length <= 25, `must never exceed the page size (got ${mediaIds.length}, would throw above 100)`);
+    assert.deepEqual(
+      [...mediaIds].sort((a, b) => a - b),
+      Array.from({ length: 25 }, (_, i) => 106 + i),
+      'only the ids of the rendered page (rows sorted newest-first, page 1 of 130) — never the other 105',
+    );
   });
 });
 

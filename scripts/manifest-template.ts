@@ -55,7 +55,8 @@ export const POLICY = {
  * `:id`/`:seasonId`/`:episodeId` match that controller's own param names —
  * plus the indexers/download-clients/blocklist admin CRUD this plugin backs
  * directly, the queue and each provider's `implementations` route. `GET
- * /delay-profiles` stays declared with no handler: no page here needs it yet.
+ * /delay-profiles` is not declared at all — `delay-profiles` stays core's
+ * table, and no page here needs it yet.
  *
  * `/indexers/cooldowns`, `/indexers/implementations`,
  * `/download-clients/implementations` and `/blocklist/all` are declared
@@ -183,6 +184,12 @@ export const INGEST_ROOTS = ['/downloads'];
 /** The settings-page links core puts in this plugin's own admin section — the
  *  section only renders when a plugin contributes at least one page.
  *  `:view` resolves against a `ui.configPages[]` id. */
+/** `settings.page` renders inside the admin settings shell — its path must sit under
+ *  that shell's own route, or the page opens in the main frame with the wrong sidebar. */
+function settingsPagePath(view: string): string {
+  return `/admin/settings/plugins/${PLUGIN_ID}/${view}`;
+}
+
 export const UI_CONTRIBUTIONS = [
   {
     id: 'fliks-download.settings.general',
@@ -190,7 +197,7 @@ export const UI_CONTRIBUTIONS = [
     weight: 100,
     labelKey: 'download.config.general.title',
     icon: 'download',
-    action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/general` },
+    action: { kind: 'route' as const, path: settingsPagePath('general') },
   },
   {
     id: 'fliks-download.settings.indexers',
@@ -198,7 +205,7 @@ export const UI_CONTRIBUTIONS = [
     weight: 110,
     labelKey: 'download.config.indexers.title',
     icon: 'search',
-    action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/indexers` },
+    action: { kind: 'route' as const, path: settingsPagePath('indexers') },
   },
   {
     id: 'fliks-download.settings.download-clients',
@@ -206,9 +213,10 @@ export const UI_CONTRIBUTIONS = [
     weight: 120,
     labelKey: 'download.config.download_clients.title',
     icon: 'server',
-    action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/download-clients` },
+    action: { kind: 'route' as const, path: settingsPagePath('download-clients') },
   },
   {
+    // Main-navigation page, not a settings one — stays top-level, outside the admin shell.
     id: 'fliks-download.nav.queue',
     slot: 'nav.acquisition',
     weight: 100,
@@ -339,6 +347,11 @@ export const CONFIG_PAGES = [
       { key: 'progress', labelKey: 'download.config.queue.columns.progress', format: 'percent' as const },
       { key: 'bytesPerSecond', labelKey: 'download.config.queue.columns.speed', format: 'bytes' as const },
     ],
+    // Reads mediaId/mediaType straight off each row — core's own resolver renders no
+    // button when either is null, so an unresolved row is simply inert, not broken.
+    rowActions: [
+      { kind: 'action' as const, labelKey: 'download.config.queue.actions.open_media', actionId: 'table.open-media' },
+    ],
   },
 ];
 
@@ -445,6 +458,7 @@ export const I18N = {
     'download.config.queue.columns.state': 'State',
     'download.config.queue.columns.progress': 'Progress',
     'download.config.queue.columns.speed': 'Speed',
+    'download.config.queue.actions.open_media': 'Open',
   },
 };
 
