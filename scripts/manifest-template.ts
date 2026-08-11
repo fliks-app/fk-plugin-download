@@ -132,12 +132,11 @@ export const JOBS: { name: string; cron: string; triggerable: boolean; labelKey:
 export const CORE_REFS = ['episodes', 'media', 'seasons', 'users'] as const;
 
 /** One scope per `PluginHostApi` method group (`src/host-methods.ts`) — this plugin is the
- *  only consumer of every group, so it requests all eight. */
+ *  only consumer of every group, so it requests all seven. */
 export const SCOPES = [
   'media:read',
   'acquisition:candidates',
   'releases:score',
-  'blocklist:write',
   'requests:progress',
   'ingest:write',
   'events:emit',
@@ -215,6 +214,17 @@ export const I18N = {
     'download.indexers.test.network_error': 'Could not reach the indexer',
     'download.indexers.test.unknown_implementation':
       'This indexer type is not supported',
+    'download.download_clients.test.ok': 'Connected successfully',
+    'download.download_clients.test.host_missing': 'Host is required',
+    'download.download_clients.test.auth_failed':
+      'Authentication failed — check the credentials',
+    'download.download_clients.test.network_error':
+      'Could not reach the download client',
+    'download.download_clients.test.unsupported_implementation':
+      'This download client type is not supported',
+    // Persisted as the value of `blocklist.note` and `statusMessage`, so a row
+    // written today still renders in whatever language the reader picked.
+    'download.download_clients.block.reason': 'Blocked from the activity queue',
   },
 };
 

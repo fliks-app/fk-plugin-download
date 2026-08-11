@@ -51,11 +51,13 @@ export interface AcquisitionTarget {
 export interface ScoredRelease {
   id: string;
   qualityId: number;
+  qualityName: string;
   rank: number;
   allowed: boolean;
   customFormatScore: number;
   blocklisted: boolean;
   languageId: number | null;
+  languageName: string | null;
   languageAllowed: boolean;
   isFullSeason: boolean;
   sizeDeviation: number;
@@ -140,6 +142,8 @@ export interface PluginHostApi {
       sourceRef: string;
       minSeeders?: number;
       unknownLanguageIsoCode?: string;
+      /** This plugin owns the blocklist table, so core cannot know — it asks. */
+      blocked: boolean;
     }[];
   }) => Promise<ScoredRelease[]>;
 
@@ -158,26 +162,13 @@ export interface PluginHostApi {
         seasonNumber?: number;
         episodeNumber?: number;
         episodeTitle?: string;
-        stalledCleanupProfile: { key: string; samples: number; intervalMinutes: number; autoRestart: boolean } | null;
       }
     >
   >;
 
   'media.exists': (p: { mediaIds: number[] }) => Promise<number[]>;
 
-  // Group B — write acquisition state (3)
-
-  'blocklist.add': (p: {
-    idempotencyKey: string;
-    sourceTitle: string;
-    quality?: string;
-    mediaId?: number;
-    indexerName?: string;
-    downloadUrl?: string;
-    note: string;
-  }) => Promise<{ id: number }>;
-
-  'blocklist.check': (p: { titles: string[] }) => Promise<{ blocked: string[] }>;
+  // Group B — write acquisition state (1)
 
   'requests.markInProgress': (p: {
     idempotencyKey: string;
