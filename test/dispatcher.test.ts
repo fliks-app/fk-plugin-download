@@ -82,6 +82,27 @@ test('destroys the socket on a malformed line', async () => {
   assert.equal(socket.destroyed, true);
 });
 
+test('a slow handler does not block a faster one queued behind it on the same socket', async () => {
+  const socket = new FakeSocket();
+  let resolveSlow!: (v?: unknown) => void;
+  attachDispatcher(
+    socket as unknown as Socket,
+    {
+      slow: () => new Promise((r) => (resolveSlow = r)).then(() => ({ done: 'slow' })),
+      fast: async () => ({ done: 'fast' }),
+    },
+    {},
+  );
+  socket.feed('{"i":1,"m":"slow"}\n{"i":2,"m":"fast"}\n');
+  await new Promise((r) => setImmediate(r));
+
+  assert.deepEqual(socket.repliesAsJson(), [{ i: 2, r: { done: 'fast' } }], 'the fast reply lands while the slow one is still pending');
+
+  resolveSlow();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(socket.repliesAsJson(), [{ i: 2, r: { done: 'fast' } }, { i: 1, r: { done: 'slow' } }]);
+});
+
 test('destroys the socket on an oversize frame', async () => {
   const socket = new FakeSocket();
   attachDispatcher(socket as unknown as Socket, {}, {});

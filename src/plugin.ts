@@ -3,12 +3,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { attachDispatcher } from './dispatcher';
 import { HostClient } from './host-client';
-import { ROUTE_HANDLERS, type PluginHttpRequest } from './seams/http-routes';
-import { JOB_HANDLERS } from './seams/jobs';
+import { type PluginHttpRequest } from './seams/http-routes';
 import { log } from './log';
 import { createPluginPool } from './db/pool';
 import { migrateUp } from './db/migrate';
 import { createRepositories, type Repositories } from './db/repositories';
+import { createAppGraph, type AppGraph } from './composition-root';
 
 const token = process.env.FLIKS_PLUGIN_TOKEN ?? '';
 const pluginSockPath = process.env.FLIKS_PLUGIN_SOCK;
@@ -22,6 +22,10 @@ const host = coreSockPath ? new HostClient(coreSockPath) : null;
  *  Seam handlers that touch the database must check for null before using it. */
 export let repositories: Repositories | null = null;
 
+/** The composition root's output — built once, right after `repositories`, from the same
+ *  guard. `job`/`http` handlers below must check for null exactly like `repositories`. */
+export let appGraph: AppGraph | null = null;
+
 type DbInit = { ok: true } | { ok: false; reason: string };
 
 /** Runs once per spawn, before `hello` ever replies. Never throws: rejecting here would
@@ -31,15 +35,22 @@ async function initDb(): Promise<DbInit> {
   if (!dbUrl || !pluginId) {
     return { ok: false, reason: 'FLIKS_DB_URL or FLIKS_PLUGIN_ID is not set' };
   }
+  if (!host) {
+    return { ok: false, reason: 'FLIKS_CORE_SOCK is not set' };
+  }
   try {
     const pool = createPluginPool({ dsn: dbUrl, pluginId });
     pool.on('error', (err) => log.error(`pool error: ${err.message}`));
     await migrateUp(pool);
     repositories = createRepositories(pool);
+    appGraph = createAppGraph(repositories, host);
+    // Re-arms rows a previous run left `importing` — nothing is actually in flight
+    // right after a fresh process start.
+    await appGraph.completionPoller.init();
     return { ok: true };
   } catch (err) {
-    log.error(`migration failed: ${(err as Error).message}`);
-    return { ok: false, reason: 'migrations did not complete — see plugin logs' };
+    log.error(`startup failed: ${(err as Error).message}`);
+    return { ok: false, reason: 'startup did not complete — see plugin logs' };
   }
 }
 
@@ -66,7 +77,8 @@ const requestHandlers: Record<string, (payload: unknown) => Promise<unknown>> = 
 
   job: async (payload: unknown) => {
     const p = payload as { name: string; jobId: string; args?: unknown };
-    const handler = JOB_HANDLERS[p.name];
+    if (!appGraph) throw new Error('plugin not ready — database not initialised, see plugin logs');
+    const handler = appGraph.jobHandlers[p.name];
     if (!handler) throw new Error(`no handler registered for job "${p.name}"`);
     await handler(p.jobId, p.args);
     return { ok: true };
@@ -74,9 +86,14 @@ const requestHandlers: Record<string, (payload: unknown) => Promise<unknown>> = 
 
   http: async (payload: unknown) => {
     const p = payload as PluginHttpRequest;
-    const handler = ROUTE_HANDLERS[`${p.method} ${p.path}`];
-    if (!handler) return { status: 404, headers: { 'content-type': 'application/json' }, body: { error: 'not found' } };
-    return handler(p);
+    if (!appGraph) {
+      return { status: 503, headers: { 'content-type': 'application/json' }, body: { error: { key: 'download.http.errors.not_ready' } } };
+    }
+    const resolved = appGraph.routeTable.resolve(p.method, p.path);
+    if (!resolved) {
+      return { status: 404, headers: { 'content-type': 'application/json' }, body: { error: { key: 'download.http.errors.not_found' } } };
+    }
+    return resolved.handler(p, resolved.params);
   },
 
   shutdown: async () => {

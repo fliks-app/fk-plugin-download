@@ -83,8 +83,6 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
   },
   { method: 'GET', path: '/indexers', policy: POLICY.indexersRead },
   { method: 'GET', path: '/download-clients', policy: POLICY.downloadClientsRead },
-  { method: 'GET', path: '/delay-profiles', policy: POLICY.delayProfilesRead },
-  { method: 'GET', path: '/queue', policy: POLICY.queueRead },
 ];
 
 /** `POST /api/media/:id/grab` (and the 7 siblings) forwarded to the paths above, one major version. */
@@ -156,16 +154,16 @@ export const INGEST_ROOTS = ['/downloads'];
  * has no renderer either (`plugin-view.ts` resolves every view kind to
  * "unavailable" until a later PR) — see the README for what that leaves unshippable.
  */
-export const UI_CONTRIBUTIONS = [
-  {
-    id: 'fliks-download.nav.queue',
-    slot: 'nav.acquisition' as const,
-    weight: 100,
-    labelKey: 'download.nav.queue',
-    icon: 'download',
-    action: { kind: 'route' as const, path: '/plugins/fliks.download/queue' },
-  },
-];
+/** Empty until the queue view has both a response shape and a renderer: a nav entry
+ *  whose destination 404s is worse than no nav entry at all. */
+export const UI_CONTRIBUTIONS: {
+  id: string;
+  slot: string;
+  weight: number;
+  labelKey: string;
+  icon?: string;
+  action: { kind: string; path?: string };
+}[] = [];
 
 /**
  * One real, plugin-owned setting (`requests_auto_grab_on_approval`, per the
@@ -186,13 +184,54 @@ export const CONFIG_PAGES = [
         hint: 'download.config.general.auto_grab_on_approval_hint',
         default: true,
       },
+      // No default: an unset sample count means no cleanup, and this path deletes
+      // torrents along with their files.
+      {
+        key: 'stall_samples',
+        type: 'number' as const,
+        labelKey: 'download.config.stall.samples',
+        hint: 'download.config.stall.samples_hint',
+      },
+      {
+        key: 'stall_interval_minutes',
+        type: 'number' as const,
+        labelKey: 'download.config.stall.interval_minutes',
+        hint: 'download.config.stall.interval_minutes_hint',
+        default: 60,
+      },
+      {
+        key: 'stall_auto_restart',
+        type: 'toggle' as const,
+        labelKey: 'download.config.stall.auto_restart',
+        hint: 'download.config.stall.auto_restart_hint',
+        default: true,
+      },
+      {
+        key: 'stall_include_manual_grabs',
+        type: 'toggle' as const,
+        labelKey: 'download.config.stall.include_manual_grabs',
+        hint: 'download.config.stall.include_manual_grabs_hint',
+        default: false,
+      },
     ],
   },
 ];
 
 export const I18N = {
   en: {
-    'download.nav.queue': 'Queue',
+    'download.config.stall.samples': 'Stalled-download checks before cleanup',
+    'download.config.stall.samples_hint':
+      'Leave empty to never clean up stalled downloads. Removing one deletes the torrent and its files.',
+    'download.config.stall.interval_minutes': 'Minutes between checks',
+    'download.config.stall.interval_minutes_hint':
+      'How long to wait before sampling a download\u2019s progress again.',
+    'download.config.stall.auto_restart': 'Search again after cleanup',
+    'download.config.stall.auto_restart_hint':
+      'Look for another release once a stalled download has been removed.',
+    'download.config.stall.include_manual_grabs':
+      'Include downloads you started yourself',
+    'download.config.stall.include_manual_grabs_hint':
+      'By default only downloads the scheduler grabbed are cleaned up.',
     'download.config.general.title': 'General',
     'download.config.general.auto_grab_on_approval': 'Auto-grab on request approval',
     'download.config.general.auto_grab_on_approval_hint':
@@ -225,6 +264,19 @@ export const I18N = {
     // Persisted as the value of `blocklist.note` and `statusMessage`, so a row
     // written today still renders in whatever language the reader picked.
     'download.download_clients.block.reason': 'Blocked from the activity queue',
+    // Thrown by the grab pipeline (`GrabError.messageKey`), surfaced verbatim as the
+    // `error.key` of an HTTP route's error response — see `src/seams/http-routes.ts`.
+    'download.grab.errors.media_not_found': 'No media found for this request',
+    'download.grab.errors.no_download_client': 'No enabled download client is configured',
+    'download.grab.errors.unprofiled': 'This title has no quality profile — nothing to grab',
+    'download.grab.errors.blocklisted': 'This release is blocklisted',
+    'download.grab.errors.quality_not_allowed': "This release's quality is not allowed by the profile",
+    'download.grab.errors.no_eligible_release': 'No eligible release was found',
+    // The HTTP route table's own errors — unmatched path, a malformed param, not-yet-ready, unexpected failure.
+    'download.http.errors.not_found': 'Not found',
+    'download.http.errors.not_ready': 'The plugin is still starting up',
+    'download.http.errors.bad_param': 'Invalid or missing path parameter',
+    'download.http.errors.internal': 'Something went wrong handling this request',
   },
 };
 

@@ -102,6 +102,26 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<number | n
   });
 }
 
+/** Canned replies for the one host method the five jobs actually reach on an empty DB
+ *  (`CleanStalled`'s `config.get` — every other job returns before calling out, since
+ *  no indexer/client rows exist) plus the handful the http drive's grab/legacy paths hit. */
+function cannedHostReply(method: string): unknown {
+  switch (method) {
+    case 'config.get':
+      return {};
+    case 'media.acquisitionContext':
+      return null;
+    case 'acquisition.candidates':
+      return { items: [], cursor: null };
+    case 'releases.match':
+      return [];
+    case 'releases.score':
+      return [];
+    default:
+      return null;
+  }
+}
+
 const PLUGIN_ID = 'fliks.download';
 const SCHEMA = pluginSchemaName(PLUGIN_ID);
 const SIX_TABLES = ['indexers', 'download_clients', 'indexer_stats', 'download_history', 'blocklist', 'stalled_checks'];
@@ -139,7 +159,14 @@ before(async () => {
 
   coreServer = net.createServer((socket) => {
     coreDialedIn = true;
-    socket.on('data', () => {}); // no host-method call is made this phase — nothing to answer
+    const reader = new FrameReader();
+    socket.on('data', (chunk: Buffer) => {
+      for (const line of reader.push(chunk)) {
+        const frame = parseFrame(line);
+        if (!isReq(frame)) continue;
+        socket.write(encodeFrame({ i: (frame as Req).i, r: cannedHostReply((frame as Req).m) }));
+      }
+    });
   });
   pluginServer = net.createServer();
   await Promise.all([
@@ -239,13 +266,50 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
     body: null,
     principal: { kind: 'system' },
   });
-  assert.equal(notFound.status, 404, 'a declared route with no registered handler yet must 404, not fake a response');
+  assert.equal(notFound.status, 404, 'a declared route with no backing model still 404s, not a fake response');
 
-  await assert.rejects(
-    channel.call('job', { name: 'SearchMissing', jobId: '1' }),
-    /no handler registered for job "SearchMissing"/,
-    'a declared job with no registered handler yet must fail the call, not claim it ran',
+  // The composition root's real proof: all five manifest job names dispatch into a real
+  // handler over the real socket, against the real (empty) fliks-migtest schema.
+  const jobNames = ['SearchMissing', 'RssSync', 'ImportCompleted', 'CleanStalled', 'CleanSeeded'];
+  const jobResults = await Promise.all(
+    jobNames.map((name) => channel.call<{ ok: boolean }>('job', { name, jobId: `job-${name}` }, 15_000)),
   );
+  jobResults.forEach((r, i) => assert.equal(r.ok, true, `job "${jobNames[i]}" must run through its wired handler and ack`));
+
+  // A representative wired route: real matching, real service, real (empty) DB read.
+  const indexersResp = await channel.call<{ status: number; body: { indexers: unknown[] } }>('http', {
+    method: 'GET',
+    path: '/indexers',
+    query: {},
+    body: null,
+    principal: { kind: 'system' },
+  });
+  assert.equal(indexersResp.status, 200);
+  assert.deepEqual(indexersResp.body, { indexers: [] });
+
+  // A legacy alias resolves to the same handler as its target and reaches the real grab
+  // pipeline, which round-trips `media.acquisitionContext` over the mocked core socket.
+  const legacyResp = await channel.call<{ status: number; body: { error: { key: string; detail?: string } } }>('http', {
+    method: 'GET',
+    path: '/api/media/1/releases',
+    query: {},
+    body: null,
+    principal: { kind: 'delegated', userId: 7 },
+  });
+  assert.equal(legacyResp.status, 404);
+  assert.equal(legacyResp.body.error.key, 'download.grab.errors.media_not_found');
+  assert.equal(legacyResp.body.error.detail, '1');
+
+  // A ".." path segment where a numeric id is expected: the shape still matches (one
+  // segment, whatever its content) but the handler's own param validation rejects it.
+  const traversalResp = await channel.call<{ status: number }>('http', {
+    method: 'GET',
+    path: '/../releases',
+    query: {},
+    body: null,
+    principal: { kind: 'system' },
+  });
+  assert.equal(traversalResp.status, 400, '".." is not a valid id — rejected by validation, not treated as a path');
 
   const shutdown = await channel.call<{ ok: boolean }>('shutdown', {});
   assert.equal(shutdown.ok, true);
