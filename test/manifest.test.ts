@@ -188,20 +188,40 @@ test('ui.contributions: settings.page paths sit under the admin settings shell, 
   assert.equal(navChecked, 1, 'the queue nav item');
 });
 
-test('every labelKey/hint/*Key referenced anywhere in ui.contributions and ui.configPages has an i18n.en entry', () => {
+test('every labelKey/hint/*Key referenced anywhere in ui.contributions and ui.configPages resolves in every declared locale', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'plugin.json'), 'utf8')) as {
     ui: { contributions: unknown[]; configPages: unknown[] };
-    i18n: { en: Record<string, string> };
+    i18n: Record<string, Record<string, string>>;
   };
   const referenced = new Set([
     ...collectI18nKeyRefs(manifest.ui.contributions),
     ...collectI18nKeyRefs(manifest.ui.configPages),
   ]);
   assert.ok(referenced.size > 10, 'sanity: the walk must actually find keys');
-  for (const key of referenced) {
-    assert.ok(
-      Object.prototype.hasOwnProperty.call(manifest.i18n.en, key),
-      `"${key}" is referenced by ui.* but missing from i18n.en — it would render as a raw key, or a literal if never keyed at all`,
-    );
+  const locales = Object.keys(manifest.i18n);
+  assert.ok(locales.length > 1, 'sanity: more than one locale must be declared');
+  for (const locale of locales) {
+    for (const key of referenced) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(manifest.i18n[locale], key),
+        `"${key}" is referenced by ui.* but missing from i18n.${locale} — it would render as a raw key, or a literal if never keyed at all`,
+      );
+    }
+  }
+});
+
+test('every locale carries exactly the same key set as i18n.en — a locale silently missing a key would ship English', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'plugin.json'), 'utf8')) as {
+    i18n: { en: Record<string, string> } & Record<string, Record<string, string>>;
+  };
+  const enKeys = new Set(Object.keys(manifest.i18n.en));
+  assert.ok(enKeys.size > 10, 'sanity: i18n.en must actually carry keys');
+  for (const [locale, dict] of Object.entries(manifest.i18n)) {
+    if (locale === 'en') continue;
+    const keys = new Set(Object.keys(dict));
+    const missing = [...enKeys].filter((k) => !keys.has(k));
+    const extra = [...keys].filter((k) => !enKeys.has(k));
+    assert.deepEqual(missing, [], `i18n.${locale} is missing keys present in i18n.en: ${missing.join(', ')}`);
+    assert.deepEqual(extra, [], `i18n.${locale} has keys absent from i18n.en: ${extra.join(', ')}`);
   }
 });

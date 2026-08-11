@@ -292,25 +292,26 @@ export const CONFIG_PAGES = [
       testKey: 'download.config.indexers.labels.test',
       deleteConfirmKey: 'download.config.indexers.labels.delete_confirm',
     },
-    // "METHOD path" mirrors this same file's `LEGACY_PATHS` convention — `route` carries
-    // no separate method field of its own.
     actions: [
       {
         id: 'stats',
         labelKey: 'download.config.indexers.actions.stats',
-        route: 'GET /indexers/:id/stats',
+        method: 'GET' as const,
+        route: '/indexers/:id/stats',
         scope: 'row' as const,
       },
       {
         id: 'clear-cooldown',
         labelKey: 'download.config.indexers.actions.clear_cooldown',
-        route: 'DELETE /indexers/:id/cooldown',
+        method: 'DELETE' as const,
+        route: '/indexers/:id/cooldown',
         scope: 'row' as const,
       },
       {
         id: 'clear-all-cooldowns',
         labelKey: 'download.config.indexers.actions.clear_all_cooldowns',
-        route: 'DELETE /indexers/cooldowns',
+        method: 'DELETE' as const,
+        route: '/indexers/cooldowns',
         scope: 'list' as const,
       },
     ],
@@ -459,6 +460,104 @@ export const I18N = {
     'download.config.queue.columns.progress': 'Progress',
     'download.config.queue.columns.speed': 'Speed',
     'download.config.queue.actions.open_media': 'Open',
+  },
+  // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
+  // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
+  fr: {
+    'download.config.stall.samples': 'Vérifications avant nettoyage d’un téléchargement bloqué',
+    'download.config.stall.samples_hint':
+      'Laissez vide pour ne jamais nettoyer les téléchargements bloqués. Supprimer un torrent efface aussi ses fichiers.',
+    'download.config.stall.interval_minutes': 'Minutes entre deux vérifications',
+    'download.config.stall.interval_minutes_hint':
+      'Délai d’attente avant de vérifier à nouveau la progression d’un téléchargement.',
+    'download.config.stall.auto_restart': 'Relancer une recherche après nettoyage',
+    'download.config.stall.auto_restart_hint':
+      'Cherche une autre release une fois le téléchargement bloqué supprimé.',
+    'download.config.stall.include_manual_grabs':
+      'Inclure les téléchargements que vous avez lancés vous-même',
+    'download.config.stall.include_manual_grabs_hint':
+      'Par défaut, seuls les téléchargements lancés par la planification sont nettoyés.',
+    'download.config.general.title': 'Général',
+    'download.config.general.auto_grab_on_approval': 'Télécharger automatiquement après l’approbation d’une demande',
+    'download.config.general.auto_grab_on_approval_hint':
+      'Lance une recherche automatiquement quand un administrateur approuve une demande.',
+    'download.jobs.search_missing': 'Recherche des médias manquants',
+    'download.jobs.rss_sync': 'Synchronisation RSS',
+    'download.jobs.import_completed': 'Import des téléchargements terminés',
+    'download.jobs.clean_stalled': 'Nettoyage des torrents bloqués',
+    'download.jobs.clean_seeded': 'Nettoyage des torrents seedés',
+    'download.indexers.test.ok': 'Capacités lues, connexion OK',
+    'download.indexers.test.base_url_missing': 'L’URL de base est vide',
+    'download.indexers.test.http_error':
+      'L’indexeur a répondu avec une erreur HTTP',
+    'download.indexers.test.torznab_error': 'L’indexeur a signalé une erreur',
+    'download.indexers.test.unexpected_response':
+      'Réponse inattendue — pas un document de capacités Torznab',
+    'download.indexers.test.network_error': 'Impossible de contacter l’indexeur',
+    'download.indexers.test.unknown_implementation':
+      'Ce type d’indexeur n’est pas pris en charge',
+    'download.download_clients.test.ok': 'Connexion réussie',
+    'download.download_clients.test.host_missing': 'L’hôte est obligatoire',
+    'download.download_clients.test.auth_failed':
+      'Authentification échouée — vérifiez les identifiants',
+    'download.download_clients.test.network_error':
+      'Impossible de contacter le client de téléchargement',
+    'download.download_clients.test.unsupported_implementation':
+      'Ce type de client de téléchargement n’est pas pris en charge',
+    'download.download_clients.block.reason': 'Bloqué depuis la file d’activité',
+    'download.grab.errors.media_not_found': 'Aucun média trouvé pour cette demande',
+    'download.grab.errors.no_download_client': 'Aucun client de téléchargement actif n’est configuré',
+    'download.grab.errors.unprofiled': 'Ce titre n’a pas de profil de qualité — rien à télécharger',
+    'download.grab.errors.blocklisted': 'Cette release est sur liste de blocage',
+    'download.grab.errors.quality_not_allowed': 'La qualité de cette release n’est pas autorisée par le profil',
+    'download.grab.errors.no_eligible_release': 'Aucune release éligible n’a été trouvée',
+    'download.http.errors.not_found': 'Introuvable',
+    'download.http.errors.not_ready': 'Le plugin est encore en cours de démarrage',
+    'download.http.errors.bad_param': 'Paramètre d’URL invalide ou manquant',
+    'download.http.errors.bad_body': 'Champ invalide ou manquant dans le corps de la requête',
+    'download.http.errors.internal': 'Une erreur est survenue lors du traitement de cette requête',
+    'download.config.indexers.title': 'Indexeurs',
+    'download.config.indexers.implementations.torznab': 'Torznab',
+    'download.config.indexers.fields.base_url': 'URL de base',
+    'download.config.indexers.fields.api_key': 'Clé API',
+    'download.config.indexers.fields.request_delay': 'Délai entre requêtes (secondes)',
+    'download.config.indexers.fields.request_delay_hint':
+      'Délai minimum entre deux requêtes de recherche envoyées à cet indexeur.',
+    'download.config.indexers.fields.enable_search': 'Activer dans la recherche',
+    'download.config.indexers.fields.min_seeders': 'Nombre minimum de seeders',
+    'download.config.indexers.fields.seed_ratio': 'Ratio de partage cible',
+    'download.config.indexers.fields.seed_ratio_hint':
+      'Un téléchargement terminé est retiré du client une fois ce ratio atteint.',
+    'download.config.indexers.fields.unknown_language': 'Code de langue par défaut',
+    'download.config.indexers.fields.unknown_language_hint':
+      'Code ISO 639-1 à utiliser quand une release ne précise pas sa langue.',
+    'download.config.indexers.labels.new': 'Nouvel indexeur',
+    'download.config.indexers.labels.empty': 'Aucun indexeur configuré',
+    'download.config.indexers.labels.test': 'Tester la connexion',
+    'download.config.indexers.labels.delete_confirm': 'Supprimer cet indexeur ?',
+    'download.config.indexers.actions.stats': 'Stats',
+    'download.config.indexers.actions.clear_cooldown': 'Réinitialiser le cooldown',
+    'download.config.indexers.actions.clear_all_cooldowns': 'Réinitialiser tous les cooldowns',
+    'download.config.download_clients.title': 'Clients de téléchargement',
+    'download.config.download_clients.implementations.qbittorrent': 'qBittorrent',
+    'download.config.download_clients.fields.host': 'Hôte',
+    'download.config.download_clients.fields.port': 'Port',
+    'download.config.download_clients.fields.use_ssl': 'Utiliser HTTPS',
+    'download.config.download_clients.fields.username': 'Nom d’utilisateur',
+    'download.config.download_clients.fields.password': 'Mot de passe',
+    'download.config.download_clients.fields.category': 'Catégorie',
+    'download.config.download_clients.fields.movie_category': 'Catégorie films',
+    'download.config.download_clients.fields.series_category': 'Catégorie séries',
+    'download.config.download_clients.labels.new': 'Nouveau client de téléchargement',
+    'download.config.download_clients.labels.empty': 'Aucun client de téléchargement configuré',
+    'download.config.download_clients.labels.test': 'Tester la connexion',
+    'download.config.download_clients.labels.delete_confirm': 'Supprimer ce client de téléchargement ?',
+    'download.config.queue.title': 'File d’attente',
+    'download.config.queue.columns.title': 'Titre',
+    'download.config.queue.columns.state': 'État',
+    'download.config.queue.columns.progress': 'Progression',
+    'download.config.queue.columns.speed': 'Vitesse',
+    'download.config.queue.actions.open_media': 'Ouvrir',
   },
 };
 

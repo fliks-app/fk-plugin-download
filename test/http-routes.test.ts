@@ -235,17 +235,12 @@ interface ConfigPageLike {
   kind?: 'providers' | 'table';
   list?: string;
   implementations?: string;
-  actions?: { id: string; route: string }[];
+  actions?: { id: string; method: string; route: string }[];
   listActions?: { method: string; path: string }[];
 }
 
 function resolves(table: ReturnType<typeof createRouteTable>, method: string, path: string): boolean {
   return table.resolve(method, path.replace(/:[a-zA-Z]+/g, '1')) !== null;
-}
-
-function splitMethodAndPath(route: string): [string, string] {
-  const spaceAt = route.indexOf(' ');
-  return [route.slice(0, spaceAt), route.slice(spaceAt + 1)];
 }
 
 describe('route table — config pages reference only declared, handled routes', () => {
@@ -265,8 +260,10 @@ describe('route table — config pages reference only declared, handled routes',
           `${page.id}: implementations route "${page.implementations}" must resolve`,
         );
         for (const action of page.actions ?? []) {
-          const [method, path] = splitMethodAndPath(action.route);
-          assert.ok(resolves(table, method, path), `${page.id}: action "${action.id}" route "${action.route}" must resolve`);
+          assert.ok(
+            resolves(table, action.method, action.route),
+            `${page.id}: action "${action.id}" route "${action.route}" must resolve`,
+          );
         }
       }
       if (page.kind === 'table') {
