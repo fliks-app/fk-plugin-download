@@ -1,0 +1,390 @@
+import type { IndexerRow } from '../db/rows';
+import type { IndexerConnectionTestResult, IndexerRelease, IndexerRepository, IndexerStatsRecorder } from './types';
+import { buildTorznabQuery, describeTorznabQuery, parseTorznabItems } from './torznab-parse';
+import { IndexerThrottle } from './throttle';
+import { log } from '../log';
+
+const USER_AGENT = 'Fliks/1.0';
+
+/** A response outside the caller's accepted status range. Carries `retryAfter`
+ *  so 429/503 handling doesn't need an axios-style `isAxiosError` check. */
+export class TorznabHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfter: string | null,
+  ) {
+    super(`HTTP ${status}`);
+  }
+}
+
+interface FetchOptions {
+  timeoutMs: number;
+  /** Omitted = never throw on status, matching axios `validateStatus: () => true`. */
+  validateStatus?: (status: number) => boolean;
+}
+
+async function fetchText(url: string, opts: FetchOptions): Promise<{ status: number; body: string; headers: Headers }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': USER_AGENT } });
+    const body = await res.text();
+    if (opts.validateStatus && !opts.validateStatus(res.status)) {
+      throw new TorznabHttpError(res.status, res.headers.get('retry-after'));
+    }
+    return { status: res.status, body, headers: res.headers };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface TorznabClientDeps {
+  stats: IndexerStatsRecorder;
+  repo: Pick<IndexerRepository, 'update'>;
+  throttle: IndexerThrottle;
+}
+
+export class TorznabClient {
+  constructor(private readonly deps: TorznabClientDeps) {}
+
+  /** Drops indexers currently serving a failure / Retry-After cooldown from a
+   *  search fan-out. Without this, the throttle would sleep the next queued
+   *  call out for the full backoff (up to 6h) before firing — stalling a whole
+   *  `Promise.all`/`Promise.allSettled` fan-out, and an interactive search with
+   *  it, behind one broken host. A cooled indexer rejoins automatically once
+   *  its cooldown lapses; a healthy one queried seconds ago is never skipped. */
+  filterReadyIndexers(indexers: IndexerRow[]): IndexerRow[] {
+    const ready: IndexerRow[] = [];
+    const skipped: string[] = [];
+    for (const ix of indexers) {
+      const remainingMs = this.deps.throttle.cooldownRemainingMs(ix.id);
+      if (remainingMs > 0) {
+        skipped.push(`${ix.name} (${Math.ceil(remainingMs / 1000)}s)`);
+      } else {
+        ready.push(ix);
+      }
+    }
+    if (skipped.length) {
+      log.info(`skipping ${skipped.length} indexer(s) in cooldown: ${skipped.join(', ')}`);
+    }
+    return ready;
+  }
+
+  /** Detects Retry-After-bearing statuses (429, 503) and feeds the header to
+   *  the throttle. Returns true when the failure was rate-limit-shaped. */
+  private maybeHandleRateLimit(indexer: IndexerRow, e: unknown): boolean {
+    if (!(e instanceof TorznabHttpError)) return false;
+    if (e.status === 429 || e.status === 503) {
+      this.deps.throttle.setRetryAfter(indexer, e.retryAfter ?? undefined);
+      return true;
+    }
+    return false;
+  }
+
+  /** Calls `t=caps` and persists the result, resetting `capsSearchFallback` so a
+   *  reconfigured indexer gets a clean slate. Runs regardless of enabled/enableSearch
+   *  so a freshly (re)configured indexer always gets caps before an admin flips it on. */
+  async refreshCaps(indexer: IndexerRow): Promise<void> {
+    const target = this.resolveEndpoint(indexer);
+    if (!target) return;
+    const { baseUrl, apiKey } = target;
+
+    let capsMovieSearch = false;
+    let capsTvSearch = false;
+
+    try {
+      const res = await this.deps.throttle.run(indexer, () =>
+        fetchText(`${baseUrl}?t=caps&apikey=${encodeURIComponent(apiKey)}`, { timeoutMs: 10_000 }),
+      );
+      capsMovieSearch = /<movie-search\s[^>]*available="yes"/i.test(res.body);
+      capsTvSearch = /<tv-search\s[^>]*available="yes"/i.test(res.body);
+      log.info(`[${indexer.name}] caps refreshed — movieSearch=${capsMovieSearch}, tvSearch=${capsTvSearch}`);
+    } catch (e) {
+      this.maybeHandleRateLimit(indexer, e);
+      this.deps.throttle.notifyFailure(indexer, (e as Error).message);
+      log.warn(`[${indexer.name}] caps fetch failed: ${(e as Error).message}`);
+    }
+
+    await this.deps.repo.update(indexer.id, { capsMovieSearch, capsTvSearch, capsSearchFallback: false });
+    indexer.capsMovieSearch = capsMovieSearch;
+    indexer.capsTvSearch = capsTvSearch;
+    indexer.capsSearchFallback = false;
+  }
+
+  /** The endpoint for this indexer, independent of enabled/enableRss/enableSearch —
+   *  each caller applies its own gate. Null means unresolvable. */
+  private resolveEndpoint(indexer: IndexerRow): { baseUrl: string; apiKey: string } | null {
+    const settings = indexer.settings as { baseUrl?: string; apiKey?: string };
+    const implementation = indexer.implementation || '';
+
+    if (!implementation.toLowerCase().includes('torznab')) {
+      log.info(`[${indexer.name}] skipped — implementation "${indexer.implementation}" is not Torznab`);
+      return null;
+    }
+    const baseUrl = String(settings.baseUrl || '').replace(/\/$/, '');
+    if (!baseUrl) {
+      log.warn(`Indexer "${indexer.name}" has no baseUrl`);
+      return null;
+    }
+    return { baseUrl, apiKey: String(settings.apiKey || '') };
+  }
+
+  /** Gates a search call on enabled/enableSearch, then resolves the endpoint. */
+  private resolveSearchTarget(indexer: IndexerRow): { baseUrl: string; apiKey: string } | null {
+    if (!indexer.enabled) {
+      log.info(`[${indexer.name}] skipped — indexer disabled`);
+      return null;
+    }
+    if (!indexer.enableSearch) {
+      log.info(`[${indexer.name}] skipped — search disabled`);
+      return null;
+    }
+    return this.resolveEndpoint(indexer);
+  }
+
+  /** Executes a Torznab search URL. Returns results and the Torznab error message, if any. */
+  private async execSearch(
+    url: string,
+    queryType: string,
+    indexer: IndexerRow,
+  ): Promise<{ results: IndexerRelease[]; torznabError: string | null }> {
+    const query = describeTorznabQuery(url);
+    const start = Date.now();
+    try {
+      const res = await this.deps.throttle.run(indexer, () =>
+        fetchText(url, { timeoutMs: 90_000, validateStatus: (s) => s >= 200 && s < 400 }),
+      );
+      if (/<error\s+code=/i.test(res.body)) {
+        const msg = res.body.match(/description="([^"]*)"/i)?.[1]?.trim() || 'Torznab error';
+        void this.deps.stats.record({
+          indexerId: indexer.id,
+          queryType,
+          responseTimeMs: Date.now() - start,
+          resultCount: 0,
+          errorMessage: msg,
+        });
+        log.warn(`[${indexer.name}] ${query} → ${msg}`);
+        return { results: [], torznabError: msg };
+      }
+      const results = parseTorznabItems(res.body, indexer);
+      void this.deps.stats.record({
+        indexerId: indexer.id,
+        queryType,
+        responseTimeMs: Date.now() - start,
+        resultCount: results.length,
+        errorMessage: null,
+      });
+      log.info(`[${indexer.name}] ${query} → ${results.length} result(s) in ${Date.now() - start}ms`);
+      return { results, torznabError: null };
+    } catch (e) {
+      this.maybeHandleRateLimit(indexer, e);
+      this.deps.throttle.notifyFailure(indexer, (e as Error).message);
+      const msg = (e as Error).message;
+      void this.deps.stats.record({
+        indexerId: indexer.id,
+        queryType,
+        responseTimeMs: Date.now() - start,
+        resultCount: 0,
+        errorMessage: msg,
+      });
+      log.warn(`[${indexer.name}] ${query} failed: ${msg}`);
+      return { results: [], torznabError: msg };
+    }
+  }
+
+  /** If caps claimed typed-search support but it failed, retry with `t=search`. On
+   *  success, persists `capsSearchFallback=true` so future calls skip the caps check. */
+  private async retryWithSearchFallback(
+    indexer: IndexerRow,
+    fallbackUrl: string,
+    queryType: string,
+  ): Promise<IndexerRelease[]> {
+    const { results, torznabError } = await this.execSearch(fallbackUrl, queryType, indexer);
+    if (torznabError) return []; // indexer unavailable, don't save
+    log.info(`[${indexer.name}] t=search fallback succeeded — saving capsSearchFallback=true`);
+    void this.deps.repo.update(indexer.id, { capsSearchFallback: true });
+    indexer.capsSearchFallback = true; // in-memory, so later calls in the same batch see it
+    return results;
+  }
+
+  /** Calls `t=caps` to validate a URL/API key pair before an indexer row exists. No
+   *  throttle key to use yet — fired sporadically from the UI, safe to bypass the queue. */
+  async testConnection(baseUrl: string, apiKey: string): Promise<IndexerConnectionTestResult> {
+    const base = String(baseUrl || '').replace(/\/$/, '');
+    if (!base) {
+      return { ok: false, messageKey: 'download.indexers.test.base_url_missing' };
+    }
+    const url = `${base}?t=caps&apikey=${encodeURIComponent(apiKey || '')}`;
+    try {
+      const res = await fetchText(url, { timeoutMs: 30_000 });
+      if (res.status >= 400) {
+        return { ok: false, messageKey: 'download.indexers.test.http_error', detail: String(res.status) };
+      }
+      if (/<error\s+code=/i.test(res.body)) {
+        const detail = res.body.match(/description="([^"]*)"/i)?.[1]?.trim();
+        return { ok: false, messageKey: 'download.indexers.test.torznab_error', detail };
+      }
+      if (!/<caps/i.test(res.body)) {
+        return { ok: false, messageKey: 'download.indexers.test.unexpected_response' };
+      }
+      return { ok: true, messageKey: 'download.indexers.test.ok' };
+    } catch (e) {
+      return { ok: false, messageKey: 'download.indexers.test.network_error', detail: (e as Error).message };
+    }
+  }
+
+  /** RSS feed fetch — `t=search` with no query returns recent releases. */
+  async rssSearch(indexer: IndexerRow): Promise<IndexerRelease[]> {
+    if (!indexer.enabled || !indexer.enableRss) return [];
+    const target = this.resolveEndpoint(indexer);
+    if (!target) return [];
+    const { baseUrl, apiKey } = target;
+
+    const url = `${baseUrl}?t=search&q=&cat=2000&apikey=${encodeURIComponent(apiKey)}`;
+    const start = Date.now();
+    try {
+      const res = await this.deps.throttle.run(indexer, () =>
+        fetchText(url, { timeoutMs: 60_000, validateStatus: (s) => s >= 200 && s < 400 }),
+      );
+      const results = parseTorznabItems(res.body, indexer);
+      void this.deps.stats.record({
+        indexerId: indexer.id,
+        queryType: 'rss',
+        responseTimeMs: Date.now() - start,
+        resultCount: results.length,
+        errorMessage: null,
+      });
+      return results;
+    } catch (e) {
+      this.maybeHandleRateLimit(indexer, e);
+      this.deps.throttle.notifyFailure(indexer, (e as Error).message);
+      void this.deps.stats.record({
+        indexerId: indexer.id,
+        queryType: 'rss',
+        responseTimeMs: Date.now() - start,
+        resultCount: 0,
+        errorMessage: (e as Error).message,
+      });
+      log.warn(`RSS sync failed for "${indexer.name}": ${(e as Error).message}`);
+      return [];
+    }
+  }
+
+  /** Searches for a season pack (no episode number → indexer returns whole-season packs). */
+  async searchSeasonPack(
+    indexer: IndexerRow,
+    showTitle: string,
+    season: number,
+    externalIds?: { tvdbId?: number | null; imdbId?: string | null },
+  ): Promise<IndexerRelease[]> {
+    const target = this.resolveSearchTarget(indexer);
+    if (!target) return [];
+    const { baseUrl, apiKey } = target;
+
+    const useTvSearch = indexer.capsTvSearch && !indexer.capsSearchFallback;
+    // Text-mode search needs the season tag baked into `q` so the indexer's own
+    // result cap doesn't bury packs for popular shows below the cutoff.
+    const searchQ = useTvSearch ? showTitle : `${showTitle} S${String(season).padStart(2, '0')}`;
+    const typedUrl = `${baseUrl}?${buildTorznabQuery({
+      t: useTvSearch ? 'tvsearch' : 'search',
+      q: searchQ,
+      season: useTvSearch ? season : undefined,
+      cat: '5000',
+      apiKey,
+      tvdbId: useTvSearch ? externalIds?.tvdbId : undefined,
+      imdbId: useTvSearch ? externalIds?.imdbId : undefined,
+    })}`;
+
+    const { results, torznabError } = await this.execSearch(typedUrl, 'season', indexer);
+    if (!torznabError) return results;
+
+    if (useTvSearch) {
+      log.warn(`[${indexer.name}] tvsearch failed (${torznabError}), falling back to t=search`);
+      const fallbackQ = `${showTitle} S${String(season).padStart(2, '0')}`;
+      return this.retryWithSearchFallback(
+        indexer,
+        `${baseUrl}?${buildTorznabQuery({ t: 'search', q: fallbackQ, cat: '5000', apiKey })}`,
+        'season',
+      );
+    }
+    return [];
+  }
+
+  async searchSeries(
+    indexer: IndexerRow,
+    showTitle: string,
+    season: number,
+    episode: number,
+    externalIds?: { tvdbId?: number | null; imdbId?: string | null },
+  ): Promise<IndexerRelease[]> {
+    const target = this.resolveSearchTarget(indexer);
+    if (!target) return [];
+    const { baseUrl, apiKey } = target;
+
+    const useTvSearch = indexer.capsTvSearch && !indexer.capsSearchFallback;
+    // See searchSeasonPack: appending the season tag to a plain-text `q` keeps
+    // popular series from filling the indexer's result cap with loud 1080p hits.
+    const searchQ = useTvSearch ? showTitle : `${showTitle} S${String(season).padStart(2, '0')}`;
+    const typedUrl = `${baseUrl}?${buildTorznabQuery({
+      t: useTvSearch ? 'tvsearch' : 'search',
+      q: searchQ,
+      season: useTvSearch ? season : undefined,
+      ep: useTvSearch ? episode : undefined,
+      cat: '5000',
+      apiKey,
+      tvdbId: useTvSearch ? externalIds?.tvdbId : undefined,
+      imdbId: useTvSearch ? externalIds?.imdbId : undefined,
+    })}`;
+
+    const { results, torznabError } = await this.execSearch(typedUrl, 'tvsearch', indexer);
+    if (!torznabError) return results;
+
+    if (useTvSearch) {
+      log.warn(`[${indexer.name}] tvsearch failed (${torznabError}), falling back to t=search`);
+      const fallbackQ = `${showTitle} S${String(season).padStart(2, '0')}`;
+      return this.retryWithSearchFallback(
+        indexer,
+        `${baseUrl}?${buildTorznabQuery({ t: 'search', q: fallbackQ, cat: '5000', apiKey })}`,
+        'tvsearch',
+      );
+    }
+    return [];
+  }
+
+  async searchMovie(
+    indexer: IndexerRow,
+    query: string,
+    externalIds?: { imdbId?: string | null; tmdbId?: number | null },
+  ): Promise<IndexerRelease[]> {
+    const target = this.resolveSearchTarget(indexer);
+    if (!target) return [];
+    const { baseUrl, apiKey } = target;
+
+    const useMovieSearch =
+      indexer.capsMovieSearch && !indexer.capsSearchFallback && !!(externalIds?.imdbId || externalIds?.tmdbId);
+
+    const typedUrl = `${baseUrl}?${buildTorznabQuery({
+      t: useMovieSearch ? 'movie' : 'search',
+      q: query,
+      cat: '2000',
+      apiKey,
+      imdbId: useMovieSearch ? externalIds?.imdbId : undefined,
+      tmdbId: useMovieSearch ? externalIds?.tmdbId : undefined,
+    })}`;
+
+    const { results, torznabError } = await this.execSearch(typedUrl, 'search', indexer);
+    if (!torznabError) return results;
+
+    if (useMovieSearch) {
+      log.warn(`[${indexer.name}] t=movie failed (${torznabError}), falling back to t=search`);
+      return this.retryWithSearchFallback(
+        indexer,
+        `${baseUrl}?${buildTorznabQuery({ t: 'search', q: query, cat: '2000', apiKey })}`,
+        'search',
+      );
+    }
+
+    log.warn(`[${indexer.name}] search failed: ${torznabError}`);
+    return [];
+  }
+}

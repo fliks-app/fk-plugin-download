@@ -10,11 +10,16 @@
     "build": "tsx scripts/build.ts",
     "package": "tsx scripts/package-archive.ts",
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "migrate": "tsx src/db/migrate-cli.ts",
     "verify-with-core": "tsx scripts/verify-with-core.ts",
     "check-contract-drift": "tsx scripts/check-contract-drift.ts"
   },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.11.0",
     "esbuild": "^0.24.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"

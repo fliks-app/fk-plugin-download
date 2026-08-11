@@ -1,0 +1,151 @@
+import type { IndexerRow } from '../db/rows';
+import {
+  IndexerNotFoundError,
+  UnknownIndexerImplementationError,
+  type CreateIndexerInput,
+  type IndexerConnectionTestResult,
+  type IndexerRepository,
+  type IndexerWithCooldown,
+  type TestIndexerConnectionInput,
+  type UpdateIndexerInput,
+} from './types';
+import type { IndexerThrottle } from './throttle';
+import type { TorznabClient } from './torznab';
+
+/** Strips the stored API key so it never reaches an HTTP response. */
+export function redactApiKey(ix: IndexerRow): IndexerRow {
+  const settings = { ...(ix.settings ?? {}) };
+  delete settings.apiKey;
+  return { ...ix, settings };
+}
+
+export interface IndexerServiceDeps {
+  repo: IndexerRepository;
+  torznab: Pick<TorznabClient, 'refreshCaps' | 'testConnection'>;
+  throttle: Pick<IndexerThrottle, 'getCooldown' | 'clearCooldown' | 'clearAllCooldowns'>;
+}
+
+export class IndexerService {
+  constructor(private readonly deps: IndexerServiceDeps) {}
+
+  /** `"torznab"` is the only implementation this plugin runs. Throws, naming the
+   *  value, otherwise — reused by both create() and update(). */
+  private assertKnownImplementation(implementation: string): void {
+    if (implementation !== 'torznab') {
+      throw new UnknownIndexerImplementationError(`Unknown indexer implementation "${implementation}"`);
+    }
+  }
+
+  async testConnection(input: TestIndexerConnectionInput): Promise<IndexerConnectionTestResult> {
+    if (input.implementation !== 'torznab') {
+      return {
+        ok: false,
+        messageKey: 'download.indexers.test.unknown_implementation',
+        detail: input.implementation,
+      };
+    }
+    const baseUrl = String(input.settings?.baseUrl ?? '').trim();
+    const apiKey = String(input.settings?.apiKey ?? '').trim();
+    return this.deps.torznab.testConnection(baseUrl, apiKey);
+  }
+
+  private sanitizeSettings(settings: Record<string, unknown> | undefined): Record<string, unknown> {
+    const out = { ...(settings ?? {}) };
+    if ('minSeeders' in out) {
+      out['minSeeders'] = Math.max(0, Math.floor(Number(out['minSeeders']) || 0));
+    }
+    return out;
+  }
+
+  async create(input: CreateIndexerInput): Promise<IndexerRow> {
+    this.assertKnownImplementation(input.implementation);
+    const saved = await this.deps.repo.insert({
+      name: input.name,
+      implementation: input.implementation,
+      settings: this.sanitizeSettings(input.settings),
+      enableRss: input.enableRss ?? true,
+      enableSearch: input.enableSearch ?? true,
+      priority: input.priority ?? 25,
+      requestDelay: input.requestDelay ?? 2,
+      enabled: input.enabled ?? true,
+      capsMovieSearch: false,
+      capsTvSearch: false,
+      capsSearchFallback: false,
+    });
+
+    void this.deps.torznab.refreshCaps(saved);
+    return this.redact(saved);
+  }
+
+  redact(ix: IndexerRow): IndexerRow {
+    return redactApiKey(ix);
+  }
+
+  /** Relies on the repository returning rows ordered by `priority ASC, id ASC`. */
+  async findAll(): Promise<IndexerWithCooldown[]> {
+    const rows = await this.deps.repo.findAll();
+    return rows.map((ix) => {
+      const cd = this.deps.throttle.getCooldown(ix.id);
+      return {
+        ...this.redact(ix),
+        cooldown: cd
+          ? {
+              reason: cd.reason,
+              remainingMs: Math.max(0, cd.until - Date.now()),
+              until: new Date(cd.until).toISOString(),
+              failureCount: cd.failureCount,
+              detail: cd.detail,
+            }
+          : null,
+      };
+    });
+  }
+
+  /** Lifts the throttle window on one indexer. */
+  async clearCooldown(id: number): Promise<{ cleared: boolean }> {
+    await this.findOne(id);
+    return { cleared: this.deps.throttle.clearCooldown(id) };
+  }
+
+  /** Lifts every throttle window. */
+  clearAllCooldowns(): { cleared: number } {
+    return { cleared: this.deps.throttle.clearAllCooldowns() };
+  }
+
+  async findOne(id: number): Promise<IndexerRow> {
+    const ix = await this.deps.repo.findOne(id);
+    if (!ix) throw new IndexerNotFoundError(`Indexer #${id} not found`);
+    return ix;
+  }
+
+  async update(id: number, input: UpdateIndexerInput): Promise<IndexerRow> {
+    const existing = await this.findOne(id);
+    const patch: Partial<IndexerRow> = {};
+
+    if (input.name !== undefined) patch.name = input.name;
+    if (input.implementation !== undefined) {
+      this.assertKnownImplementation(input.implementation);
+      patch.implementation = input.implementation;
+    }
+    if (input.enableRss !== undefined) patch.enableRss = input.enableRss;
+    if (input.enableSearch !== undefined) patch.enableSearch = input.enableSearch;
+    if (input.priority !== undefined) patch.priority = input.priority;
+    if (input.requestDelay !== undefined) patch.requestDelay = input.requestDelay;
+    if (input.enabled !== undefined) patch.enabled = input.enabled;
+    if (input.settings !== undefined) {
+      // Blank/absent apiKey keeps the stored one — the client never sends the real value back on read.
+      const incoming = this.sanitizeSettings(input.settings);
+      const existingApiKey = (existing.settings as Record<string, unknown>)?.apiKey;
+      patch.settings = { ...incoming, apiKey: incoming.apiKey || existingApiKey };
+    }
+
+    const saved = await this.deps.repo.update(id, patch);
+    void this.deps.torznab.refreshCaps(saved);
+    return this.redact(saved);
+  }
+
+  async remove(id: number): Promise<void> {
+    await this.findOne(id);
+    await this.deps.repo.remove(id);
+  }
+}

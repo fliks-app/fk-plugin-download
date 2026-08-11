@@ -203,6 +203,18 @@ export const I18N = {
     'download.jobs.import_completed': 'Import completed downloads',
     'download.jobs.clean_stalled': 'Clean stalled downloads',
     'download.jobs.clean_seeded': 'Clean seeded downloads',
+    // Connection-test outcomes: the key names the reason, `detail` carries the
+    // indexer's own text or an HTTP status — the `rejections[].code` split.
+    'download.indexers.test.ok': 'Capabilities read, connection OK',
+    'download.indexers.test.base_url_missing': 'Base URL is empty',
+    'download.indexers.test.http_error':
+      'The indexer answered with an HTTP error',
+    'download.indexers.test.torznab_error': 'The indexer reported an error',
+    'download.indexers.test.unexpected_response':
+      'Unexpected response — not a Torznab capabilities document',
+    'download.indexers.test.network_error': 'Could not reach the indexer',
+    'download.indexers.test.unknown_implementation':
+      'This indexer type is not supported',
   },
 };
 

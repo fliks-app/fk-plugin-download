@@ -24,9 +24,17 @@ Real and working:
   call — never claim success — when nothing is registered; `event`/`config` notes are
   logged and dropped.
 
+Filled seams:
+
+- `src/seams/indexers.ts` — the Torznab client, its capability handling and the
+  per-indexer throttle, over `src/indexers/**`.
+- `src/db/**` and `migrations/**` — this plugin's own Postgres schema, its migration
+  runner and repositories over the six tables it owns. **Inert until `src/plugin.ts`
+  creates a pool and runs the migrations at boot.**
+
 Empty seams — an interface, no logic, one line naming what lands there:
 
-- `src/seams/indexers.ts`, `src/seams/download-clients.ts` — the two driver registries.
+- `src/seams/download-clients.ts` — the download-client driver registry.
 - `src/seams/grab-pipeline.ts`, `src/seams/completion.ts` — the search/grab flow and the
   completion poller.
 - `src/seams/jobs.ts`, `src/seams/http-routes.ts` — the dispatch tables `src/plugin.ts`'s
