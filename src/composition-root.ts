@@ -112,6 +112,12 @@ export function createAppGraph(repositories: Repositories, host: HostCaller): Ap
     grabPipeline,
     completionPoller,
     jobHandlers: createJobHandlers({ grabPipeline, completionPoller }),
-    routeTable: createRouteTable({ indexerService, downloadClientsService, grabPipeline }),
+    routeTable: createRouteTable({
+      indexerService,
+      downloadClientsService,
+      grabPipeline,
+      indexerStats: repositories.indexerStats,
+      blocklist: repositories.blocklist,
+    }),
   };
 }

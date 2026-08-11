@@ -287,6 +287,82 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
   assert.equal(indexersResp.status, 200);
   assert.deepEqual(indexersResp.body, { indexers: [] });
 
+  // The write surface this task adds: create -> read back -> update -> delete, all over the
+  // real socket against the real (migrated) DB, proving core can actually reach every one of
+  // them and that the apiKey secret never round-trips back out.
+  const createResp = await channel.call<{ status: number; body: Record<string, unknown> }>('http', {
+    method: 'POST',
+    path: '/indexers',
+    query: {},
+    body: {
+      name: 'Harness Indexer',
+      implementation: 'torznab',
+      settings: { baseUrl: 'https://example.invalid', apiKey: 'super-secret' },
+    },
+    principal: { kind: 'delegated', userId: 7 },
+  });
+  assert.equal(createResp.status, 201);
+  const createdId = createResp.body['id'] as number;
+  assert.equal(typeof createdId, 'number');
+  assert.equal((createResp.body['settings'] as Record<string, unknown>)['apiKey'], undefined, 'create must never echo the apiKey back');
+
+  const listAfterCreate = await channel.call<{ status: number; body: { indexers: Record<string, unknown>[] } }>('http', {
+    method: 'GET',
+    path: '/indexers',
+    query: {},
+    body: null,
+    principal: { kind: 'system' },
+  });
+  const readBack = listAfterCreate.body.indexers.find((ix) => ix['id'] === createdId);
+  assert.ok(readBack, 'the created indexer must be readable back from the list');
+  assert.equal(readBack!['name'], 'Harness Indexer');
+  assert.equal((readBack!['settings'] as Record<string, unknown>)['apiKey'], undefined, 'a read-back row must never carry the apiKey either');
+
+  const updateResp = await channel.call<{ status: number; body: Record<string, unknown> }>('http', {
+    method: 'PUT',
+    path: `/indexers/${createdId}`,
+    query: {},
+    body: {
+      name: 'Harness Indexer Renamed',
+      implementation: 'torznab',
+      settings: { baseUrl: 'https://example.invalid', apiKey: '' },
+    },
+    principal: { kind: 'delegated', userId: 7 },
+  });
+  assert.equal(updateResp.status, 200);
+  assert.equal(updateResp.body['name'], 'Harness Indexer Renamed');
+  assert.equal((updateResp.body['settings'] as Record<string, unknown>)['apiKey'], undefined, 'update must not echo the apiKey either');
+
+  // The response can never prove the secret survived (it is always redacted) — read the
+  // column directly to prove a blank apiKey on update kept the one already stored.
+  const { rows: storedRows } = await admin!.query<{ settings: { apiKey?: string } }>(
+    `SELECT "settings" FROM "${SCHEMA}"."indexers" WHERE "id" = $1`,
+    [createdId],
+  );
+  assert.equal(storedRows[0]?.settings.apiKey, 'super-secret', 'a blank apiKey on update must not blank the one already stored');
+
+  const deleteResp = await channel.call<{ status: number }>('http', {
+    method: 'DELETE',
+    path: `/indexers/${createdId}`,
+    query: {},
+    body: null,
+    principal: { kind: 'delegated', userId: 7 },
+  });
+  assert.equal(deleteResp.status, 200);
+
+  const listAfterDelete = await channel.call<{ status: number; body: { indexers: Record<string, unknown>[] } }>('http', {
+    method: 'GET',
+    path: '/indexers',
+    query: {},
+    body: null,
+    principal: { kind: 'system' },
+  });
+  assert.equal(
+    listAfterDelete.body.indexers.some((ix) => ix['id'] === createdId),
+    false,
+    'the deleted indexer must not reappear',
+  );
+
   // A legacy alias resolves to the same handler as its target and reaches the real grab
   // pipeline, which round-trips `media.acquisitionContext` over the mocked core socket.
   const legacyResp = await channel.call<{ status: number; body: { error: { key: string; detail?: string } } }>('http', {

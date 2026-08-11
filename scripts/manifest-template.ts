@@ -27,30 +27,41 @@ export const PERMISSIONS = {
   downloadClients: 'download-clients',
   delayProfiles: 'delay-profiles',
   queue: 'queue',
+  blocklist: 'blocklist',
 } as const;
 
 function subjectFor(name: string): string {
   return `plugin:${PLUGIN_ID}:${name}`;
 }
 
+/** `manage` (not `read`) backs every mutating route below — core's own equivalent
+ *  controllers gate the same operations with a single `Action.Manage` check too. */
 export const POLICY = {
   releasesRead: `read:${subjectFor(PERMISSIONS.releases)}`,
   releasesGrab: `grab:${subjectFor(PERMISSIONS.releases)}`,
   indexersRead: `read:${subjectFor(PERMISSIONS.indexers)}`,
+  indexersManage: `manage:${subjectFor(PERMISSIONS.indexers)}`,
   downloadClientsRead: `read:${subjectFor(PERMISSIONS.downloadClients)}`,
+  downloadClientsManage: `manage:${subjectFor(PERMISSIONS.downloadClients)}`,
   delayProfilesRead: `read:${subjectFor(PERMISSIONS.delayProfiles)}`,
   queueRead: `read:${subjectFor(PERMISSIONS.queue)}`,
+  blocklistRead: `read:${subjectFor(PERMISSIONS.blocklist)}`,
+  blocklistManage: `manage:${subjectFor(PERMISSIONS.blocklist)}`,
 } as const;
 
 /**
  * The 8 `Action.Grab`-era routes core keeps as declared aliases for one
  * major version (`media.controller.ts:198-302`), mirrored exactly —
  * `:id`/`:seasonId`/`:episodeId` match that controller's own param names —
- * plus one read-only listing route per admin resource this plugin owns.
- * Mutating routes for indexers/download-clients/delay-profiles are left
- * out: their wire shape belongs to the "providers" view kind, which has no
- * renderer yet (see the README), and guessing it now risks building it
- * twice once that PR lands.
+ * plus the indexers/download-clients/blocklist admin CRUD this plugin backs
+ * directly. `GET /delay-profiles` and `GET /queue` stay declared with no
+ * handler: their view kind ("providers"/"table") has no renderer yet (see
+ * the README).
+ *
+ * `/indexers/cooldowns` and `/blocklist/all` are declared ahead of their
+ * same-length `:id` siblings — this table and the plugin's own matcher
+ * (`src/seams/http-routes.ts`) both resolve first-match-wins, so the literal
+ * segment must come first or it reads as an id.
  */
 export const ROUTES: { method: string; path: string; policy: string; objectGuard?: string }[] = [
   { method: 'GET', path: '/:id/releases', policy: POLICY.releasesRead, objectGuard: 'mediaAccessible:id' },
@@ -82,7 +93,21 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
     objectGuard: 'mediaAccessible:id',
   },
   { method: 'GET', path: '/indexers', policy: POLICY.indexersRead },
+  { method: 'POST', path: '/indexers', policy: POLICY.indexersManage },
+  { method: 'POST', path: '/indexers/test-connection', policy: POLICY.indexersManage },
+  { method: 'DELETE', path: '/indexers/cooldowns', policy: POLICY.indexersManage },
+  { method: 'PUT', path: '/indexers/:id', policy: POLICY.indexersManage },
+  { method: 'DELETE', path: '/indexers/:id', policy: POLICY.indexersManage },
+  { method: 'DELETE', path: '/indexers/:id/cooldown', policy: POLICY.indexersManage },
+  { method: 'GET', path: '/indexers/:id/stats', policy: POLICY.indexersRead },
   { method: 'GET', path: '/download-clients', policy: POLICY.downloadClientsRead },
+  { method: 'POST', path: '/download-clients', policy: POLICY.downloadClientsManage },
+  { method: 'POST', path: '/download-clients/test-connection', policy: POLICY.downloadClientsManage },
+  { method: 'PUT', path: '/download-clients/:id', policy: POLICY.downloadClientsManage },
+  { method: 'DELETE', path: '/download-clients/:id', policy: POLICY.downloadClientsManage },
+  { method: 'GET', path: '/blocklist', policy: POLICY.blocklistRead },
+  { method: 'DELETE', path: '/blocklist/all', policy: POLICY.blocklistManage },
+  { method: 'DELETE', path: '/blocklist/:id', policy: POLICY.blocklistManage },
 ];
 
 /** `POST /api/media/:id/grab` (and the 7 siblings) forwarded to the paths above, one major version. */
@@ -154,16 +179,19 @@ export const INGEST_ROOTS = ['/downloads'];
  * has no renderer either (`plugin-view.ts` resolves every view kind to
  * "unavailable" until a later PR) — see the README for what that leaves unshippable.
  */
-/** Empty until the queue view has both a response shape and a renderer: a nav entry
- *  whose destination 404s is worse than no nav entry at all. */
-export const UI_CONTRIBUTIONS: {
-  id: string;
-  slot: string;
-  weight: number;
-  labelKey: string;
-  icon?: string;
-  action: { kind: string; path?: string };
-}[] = [];
+/** The settings-page link core puts in this plugin's own admin section — the
+ *  section only renders when a plugin contributes at least one page.
+ *  `:view` resolves against a `ui.configPages[]` id. */
+export const UI_CONTRIBUTIONS = [
+  {
+    id: 'fliks-download.settings.general',
+    slot: 'settings.page',
+    weight: 100,
+    labelKey: 'download.config.general.title',
+    icon: 'download',
+    action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/general` },
+  },
+];
 
 /**
  * One real, plugin-owned setting (`requests_auto_grab_on_approval`, per the
@@ -272,10 +300,12 @@ export const I18N = {
     'download.grab.errors.blocklisted': 'This release is blocklisted',
     'download.grab.errors.quality_not_allowed': "This release's quality is not allowed by the profile",
     'download.grab.errors.no_eligible_release': 'No eligible release was found',
-    // The HTTP route table's own errors — unmatched path, a malformed param, not-yet-ready, unexpected failure.
+    // The HTTP route table's own errors — unmatched path/resource, a malformed param or
+    // body field, not-yet-ready, unexpected failure.
     'download.http.errors.not_found': 'Not found',
     'download.http.errors.not_ready': 'The plugin is still starting up',
     'download.http.errors.bad_param': 'Invalid or missing path parameter',
+    'download.http.errors.bad_body': 'Invalid or missing field in the request body',
     'download.http.errors.internal': 'Something went wrong handling this request',
   },
 };
