@@ -114,11 +114,12 @@ manifest declares renders as a link to a page that currently says "unavailable".
 
 ### Routes deliberately left out
 
-Create/update/delete for `indexers`, `download-clients` and `delay-profiles` need the
-"providers" view kind's write protocol, which does not exist anywhere in the codebase
-yet (Phase 5.6 is still unshipped). Guessing that shape now risks building it twice.
-Only a read-only `GET` per resource is declared; the rest lands with whichever PR
-defines that protocol.
+`delay-profiles` stays core's table, so no route serves it here.
+
+Everything the three admin pages need is declared: full CRUD for `indexers` and
+`download-clients`, their connection tests, indexer stats and cooldowns, the blocklist,
+and a paged queue. The queue reports each row's client reachability rather than folding
+an unreachable client into an empty page.
 
 ## The RPC client (`src/host-client.ts`)
 

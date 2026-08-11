@@ -118,6 +118,9 @@ export function createAppGraph(repositories: Repositories, host: HostCaller): Ap
       grabPipeline,
       indexerStats: repositories.indexerStats,
       blocklist: repositories.blocklist,
+      downloadHistory: repositories.downloadHistory,
+      downloadClientsRepo: repositories.downloadClients,
+      downloadClientDrivers: DOWNLOAD_CLIENT_DRIVERS,
     }),
   };
 }

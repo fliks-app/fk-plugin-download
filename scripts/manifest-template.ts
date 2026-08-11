@@ -54,14 +54,14 @@ export const POLICY = {
  * major version (`media.controller.ts:198-302`), mirrored exactly —
  * `:id`/`:seasonId`/`:episodeId` match that controller's own param names —
  * plus the indexers/download-clients/blocklist admin CRUD this plugin backs
- * directly. `GET /delay-profiles` and `GET /queue` stay declared with no
- * handler: their view kind ("providers"/"table") has no renderer yet (see
- * the README).
+ * directly, the queue and each provider's `implementations` route. `GET
+ * /delay-profiles` stays declared with no handler: no page here needs it yet.
  *
- * `/indexers/cooldowns` and `/blocklist/all` are declared ahead of their
- * same-length `:id` siblings — this table and the plugin's own matcher
- * (`src/seams/http-routes.ts`) both resolve first-match-wins, so the literal
- * segment must come first or it reads as an id.
+ * `/indexers/cooldowns`, `/indexers/implementations`,
+ * `/download-clients/implementations` and `/blocklist/all` are declared
+ * ahead of their same-length `:id` siblings — this table and the plugin's
+ * own matcher (`src/seams/http-routes.ts`) both resolve first-match-wins, so
+ * the literal segment must come first or it reads as an id.
  */
 export const ROUTES: { method: string; path: string; policy: string; objectGuard?: string }[] = [
   { method: 'GET', path: '/:id/releases', policy: POLICY.releasesRead, objectGuard: 'mediaAccessible:id' },
@@ -92,10 +92,12 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
     policy: POLICY.releasesGrab,
     objectGuard: 'mediaAccessible:id',
   },
+  { method: 'GET', path: '/queue', policy: POLICY.queueRead },
   { method: 'GET', path: '/indexers', policy: POLICY.indexersRead },
   { method: 'POST', path: '/indexers', policy: POLICY.indexersManage },
   { method: 'POST', path: '/indexers/test-connection', policy: POLICY.indexersManage },
   { method: 'DELETE', path: '/indexers/cooldowns', policy: POLICY.indexersManage },
+  { method: 'GET', path: '/indexers/implementations', policy: POLICY.indexersRead },
   { method: 'PUT', path: '/indexers/:id', policy: POLICY.indexersManage },
   { method: 'DELETE', path: '/indexers/:id', policy: POLICY.indexersManage },
   { method: 'DELETE', path: '/indexers/:id/cooldown', policy: POLICY.indexersManage },
@@ -103,6 +105,7 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
   { method: 'GET', path: '/download-clients', policy: POLICY.downloadClientsRead },
   { method: 'POST', path: '/download-clients', policy: POLICY.downloadClientsManage },
   { method: 'POST', path: '/download-clients/test-connection', policy: POLICY.downloadClientsManage },
+  { method: 'GET', path: '/download-clients/implementations', policy: POLICY.downloadClientsRead },
   { method: 'PUT', path: '/download-clients/:id', policy: POLICY.downloadClientsManage },
   { method: 'DELETE', path: '/download-clients/:id', policy: POLICY.downloadClientsManage },
   { method: 'GET', path: '/blocklist', policy: POLICY.blocklistRead },
@@ -174,12 +177,10 @@ export const INGEST_ROOTS = ['/downloads'];
  * `nav.acquisition` and `card.actions` are the only slots with a live client
  * renderer today (`nav-contributions.service.ts` + `layout.ts`, and
  * `card-actions.service.ts` respectively) — `settings.page`, `media.actions`
- * and `media.season.actions` have no consumer yet. Even so, the *destination*
- * of this nav entry (the `table` view kind for `/plugins/fliks.download/queue`)
- * has no renderer either (`plugin-view.ts` resolves every view kind to
- * "unavailable" until a later PR) — see the README for what that leaves unshippable.
+ * and `media.season.actions` have no consumer yet, so the `settings.page`
+ * entries below render the section link but not yet its destination page.
  */
-/** The settings-page link core puts in this plugin's own admin section — the
+/** The settings-page links core puts in this plugin's own admin section — the
  *  section only renders when a plugin contributes at least one page.
  *  `:view` resolves against a `ui.configPages[]` id. */
 export const UI_CONTRIBUTIONS = [
@@ -191,13 +192,38 @@ export const UI_CONTRIBUTIONS = [
     icon: 'download',
     action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/general` },
   },
+  {
+    id: 'fliks-download.settings.indexers',
+    slot: 'settings.page',
+    weight: 110,
+    labelKey: 'download.config.indexers.title',
+    icon: 'search',
+    action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/indexers` },
+  },
+  {
+    id: 'fliks-download.settings.download-clients',
+    slot: 'settings.page',
+    weight: 120,
+    labelKey: 'download.config.download_clients.title',
+    icon: 'server',
+    action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/download-clients` },
+  },
+  {
+    id: 'fliks-download.nav.queue',
+    slot: 'nav.acquisition',
+    weight: 100,
+    labelKey: 'download.config.queue.title',
+    icon: 'download',
+    action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/queue` },
+  },
 ];
 
 /**
- * One real, plugin-owned setting (`requests_auto_grab_on_approval`, per the
- * plan's "Gets split" table) — not the indexers/download-clients/delay-profiles
- * admin surfaces, which are collections, not a config form, and belong to the
- * (also unshipped) "providers" view kind instead.
+ * Four pages: one real, plugin-owned setting (`requests_auto_grab_on_approval`,
+ * per the plan's "Gets split" table); the indexers and download-clients admin
+ * surfaces, each a `providers` page over this plugin's own CRUD + `implementations`
+ * routes; and a read-only `table` page over `GET /queue`. `delay-profiles` has
+ * no page — no route backs it yet.
  */
 export const CONFIG_PAGES = [
   {
@@ -241,6 +267,77 @@ export const CONFIG_PAGES = [
         hint: 'download.config.stall.include_manual_grabs_hint',
         default: false,
       },
+    ],
+  },
+  {
+    id: 'indexers',
+    kind: 'providers' as const,
+    labelKey: 'download.config.indexers.title',
+    icon: 'search',
+    list: '/indexers',
+    implementations: '/indexers/implementations',
+    showPriority: true,
+    defaultPriority: 25,
+    labels: {
+      newKey: 'download.config.indexers.labels.new',
+      emptyKey: 'download.config.indexers.labels.empty',
+      testKey: 'download.config.indexers.labels.test',
+      deleteConfirmKey: 'download.config.indexers.labels.delete_confirm',
+    },
+    // "METHOD path" mirrors this same file's `LEGACY_PATHS` convention — `route` carries
+    // no separate method field of its own.
+    actions: [
+      {
+        id: 'stats',
+        labelKey: 'download.config.indexers.actions.stats',
+        route: 'GET /indexers/:id/stats',
+        scope: 'row' as const,
+      },
+      {
+        id: 'clear-cooldown',
+        labelKey: 'download.config.indexers.actions.clear_cooldown',
+        route: 'DELETE /indexers/:id/cooldown',
+        scope: 'row' as const,
+      },
+      {
+        id: 'clear-all-cooldowns',
+        labelKey: 'download.config.indexers.actions.clear_all_cooldowns',
+        route: 'DELETE /indexers/cooldowns',
+        scope: 'list' as const,
+      },
+    ],
+  },
+  {
+    id: 'download-clients',
+    kind: 'providers' as const,
+    labelKey: 'download.config.download_clients.title',
+    icon: 'server',
+    list: '/download-clients',
+    implementations: '/download-clients/implementations',
+    // Unlike the old core page (`showPriority: false`), priority genuinely gates
+    // behaviour here — `pickClient` grabs to the first enabled client in priority order.
+    showPriority: true,
+    defaultPriority: 1,
+    labels: {
+      newKey: 'download.config.download_clients.labels.new',
+      emptyKey: 'download.config.download_clients.labels.empty',
+      testKey: 'download.config.download_clients.labels.test',
+      deleteConfirmKey: 'download.config.download_clients.labels.delete_confirm',
+    },
+  },
+  {
+    id: 'queue',
+    kind: 'table' as const,
+    labelKey: 'download.config.queue.title',
+    icon: 'download',
+    list: '/queue',
+    paged: true,
+    pageSize: 25,
+    columns: [
+      { key: 'title', labelKey: 'download.config.queue.columns.title' },
+      { key: 'state', labelKey: 'download.config.queue.columns.state' },
+      { key: 'progress', labelKey: 'download.config.queue.columns.progress', format: 'percent' as const },
+      { key: 'bytesPerSecond', labelKey: 'download.config.queue.columns.speed', format: 'bytes' as const },
     ],
   },
 ];
@@ -307,6 +404,47 @@ export const I18N = {
     'download.http.errors.bad_param': 'Invalid or missing path parameter',
     'download.http.errors.bad_body': 'Invalid or missing field in the request body',
     'download.http.errors.internal': 'Something went wrong handling this request',
+    'download.config.indexers.title': 'Indexers',
+    'download.config.indexers.implementations.torznab': 'Torznab',
+    'download.config.indexers.fields.base_url': 'Base URL',
+    'download.config.indexers.fields.api_key': 'API key',
+    'download.config.indexers.fields.request_delay': 'Request delay (seconds)',
+    'download.config.indexers.fields.request_delay_hint':
+      'Minimum time between two search requests sent to this indexer.',
+    'download.config.indexers.fields.enable_search': 'Enable in search',
+    'download.config.indexers.fields.min_seeders': 'Minimum seeders',
+    'download.config.indexers.fields.seed_ratio': 'Seed ratio target',
+    'download.config.indexers.fields.seed_ratio_hint':
+      'A completed download is removed from the client once it reaches this ratio.',
+    'download.config.indexers.fields.unknown_language': 'Unknown-language code',
+    'download.config.indexers.fields.unknown_language_hint':
+      'ISO 639-1 code to assume when a release does not name its language.',
+    'download.config.indexers.labels.new': 'New indexer',
+    'download.config.indexers.labels.empty': 'No indexers configured',
+    'download.config.indexers.labels.test': 'Test connection',
+    'download.config.indexers.labels.delete_confirm': 'Delete this indexer?',
+    'download.config.indexers.actions.stats': 'Stats',
+    'download.config.indexers.actions.clear_cooldown': 'Clear cooldown',
+    'download.config.indexers.actions.clear_all_cooldowns': 'Clear all cooldowns',
+    'download.config.download_clients.title': 'Download clients',
+    'download.config.download_clients.implementations.qbittorrent': 'qBittorrent',
+    'download.config.download_clients.fields.host': 'Host',
+    'download.config.download_clients.fields.port': 'Port',
+    'download.config.download_clients.fields.use_ssl': 'Use HTTPS',
+    'download.config.download_clients.fields.username': 'Username',
+    'download.config.download_clients.fields.password': 'Password',
+    'download.config.download_clients.fields.category': 'Category',
+    'download.config.download_clients.fields.movie_category': 'Movie category',
+    'download.config.download_clients.fields.series_category': 'Series category',
+    'download.config.download_clients.labels.new': 'New download client',
+    'download.config.download_clients.labels.empty': 'No download clients configured',
+    'download.config.download_clients.labels.test': 'Test connection',
+    'download.config.download_clients.labels.delete_confirm': 'Delete this download client?',
+    'download.config.queue.title': 'Queue',
+    'download.config.queue.columns.title': 'Title',
+    'download.config.queue.columns.state': 'State',
+    'download.config.queue.columns.progress': 'Progress',
+    'download.config.queue.columns.speed': 'Speed',
   },
 };
 

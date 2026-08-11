@@ -12,11 +12,50 @@ import {
   LEGACY_PATHS,
   type RouteDeps,
   type PluginHttpRequest,
+  type QueueItemDto,
 } from '../src/seams/http-routes';
 import { IndexerNotFoundError } from '../src/indexers/types';
 import { DownloadClientNotFoundError } from '../src/download-clients/types';
+import type { DownloadClientDriver } from '../src/download-clients/contract';
+import type { DownloadClientRow, DownloadHistoryRow } from '../src/db/rows';
+import { CONFIG_PAGES } from '../scripts/manifest-template';
 
-function fakeDeps(): RouteDeps {
+function historyRow(over: Partial<DownloadHistoryRow> = {}): DownloadHistoryRow {
+  return {
+    id: 1,
+    sourceTitle: 'A Title',
+    quality: '1080p',
+    language: null,
+    torrentHash: null,
+    status: 'grabbed',
+    statusMessage: null,
+    grabSource: 'auto',
+    mediaId: null,
+    episodeId: null,
+    seasonId: null,
+    indexerId: null,
+    downloadClientId: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...over,
+  };
+}
+
+function clientRow(over: Partial<DownloadClientRow> = {}): DownloadClientRow {
+  return {
+    id: 1,
+    name: 'qbit',
+    implementation: 'qbittorrent',
+    settings: {},
+    enabled: true,
+    priority: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...over,
+  };
+}
+
+function fakeDeps(over: Partial<RouteDeps> = {}): RouteDeps {
   return {
     indexerService: {
       findAll: async () => [],
@@ -45,6 +84,10 @@ function fakeDeps(): RouteDeps {
       remove: async () => {},
       clear: async () => {},
     },
+    downloadHistory: { findByStatuses: async () => [] },
+    downloadClientsRepo: { listEnabled: async () => [] },
+    downloadClientDrivers: {},
+    ...over,
   } as unknown as RouteDeps;
 }
 
@@ -96,10 +139,9 @@ describe('route table — shape matching', () => {
     assert.equal(table.resolve('GET', '/nonexistent'), null);
   });
 
-  test('a declared-but-unbacked route (delay-profiles, queue) also resolves to null', () => {
+  test('a declared-but-unbacked route (delay-profiles) also resolves to null', () => {
     const table = createRouteTable(fakeDeps());
     assert.equal(table.resolve('GET', '/delay-profiles'), null);
-    assert.equal(table.resolve('GET', '/queue'), null);
   });
 
   test('a legacy alias resolves to the same params and reaches the same handler as its target', async () => {
@@ -121,9 +163,9 @@ describe('route table — shape matching', () => {
     assert.equal(res.status, 400);
   });
 
-  test('every implemented manifest route and every legacy alias resolves; the two unbacked ones do not', () => {
+  test('every implemented manifest route and every legacy alias resolves; the unbacked one does not', () => {
     const table = createRouteTable(fakeDeps());
-    const unimplemented = new Set(['GET /delay-profiles', 'GET /queue']);
+    const unimplemented = new Set(['GET /delay-profiles']);
     for (const r of ROUTES) {
       const key = `${r.method} ${r.path}`;
       const sample = r.path.replace(/:[a-zA-Z]+/g, '1');
@@ -167,7 +209,7 @@ describe('route table — shape matching', () => {
 
 describe('route table — manifest/handler parity', () => {
   // Declared in ROUTES with no handler in this plugin — see canonicalRoutes()'s own comment.
-  const DECLARED_BUT_UNBACKED = new Set(['GET /delay-profiles', 'GET /queue']);
+  const DECLARED_BUT_UNBACKED = new Set(['GET /delay-profiles']);
 
   test('every canonical (non-legacy) handler key matches manifest ROUTES[], in both directions', () => {
     const manifestKeys = new Set(
@@ -181,6 +223,63 @@ describe('route table — manifest/handler parity', () => {
     for (const key of handlerKeys) {
       assert.ok(manifestKeys.has(key), `handler backs "${key}" but the manifest never declares it (unreachable — core never authorises it)`);
     }
+  });
+});
+
+/** Loose superset of the three `ConfigPage` shapes — this plugin has no import access to
+ *  the real `ui-contribution.ts` contract type, and the test only needs the route-bearing
+ *  fields, not the full discriminated union. */
+interface ConfigPageLike {
+  id: string;
+  kind?: 'providers' | 'table';
+  list?: string;
+  implementations?: string;
+  actions?: { id: string; route: string }[];
+  listActions?: { method: string; path: string }[];
+}
+
+function resolves(table: ReturnType<typeof createRouteTable>, method: string, path: string): boolean {
+  return table.resolve(method, path.replace(/:[a-zA-Z]+/g, '1')) !== null;
+}
+
+function splitMethodAndPath(route: string): [string, string] {
+  const spaceAt = route.indexOf(' ');
+  return [route.slice(0, spaceAt), route.slice(spaceAt + 1)];
+}
+
+describe('route table — config pages reference only declared, handled routes', () => {
+  test('every providers/table page\'s list, implementations and action routes resolve to a real handler', () => {
+    const table = createRouteTable(fakeDeps());
+    let providersPagesChecked = 0;
+    let tablePagesChecked = 0;
+
+    for (const page of CONFIG_PAGES as unknown as ConfigPageLike[]) {
+      if (page.kind === 'providers') {
+        providersPagesChecked++;
+        assert.ok(page.list, `${page.id}: a providers page must declare "list"`);
+        assert.ok(resolves(table, 'GET', page.list!), `${page.id}: list route "${page.list}" must resolve`);
+        assert.ok(page.implementations, `${page.id}: a providers page must declare "implementations"`);
+        assert.ok(
+          resolves(table, 'GET', page.implementations!),
+          `${page.id}: implementations route "${page.implementations}" must resolve`,
+        );
+        for (const action of page.actions ?? []) {
+          const [method, path] = splitMethodAndPath(action.route);
+          assert.ok(resolves(table, method, path), `${page.id}: action "${action.id}" route "${action.route}" must resolve`);
+        }
+      }
+      if (page.kind === 'table') {
+        tablePagesChecked++;
+        assert.ok(page.list, `${page.id}: a table page must declare "list"`);
+        assert.ok(resolves(table, 'GET', page.list!), `${page.id}: list route "${page.list}" must resolve`);
+        for (const la of page.listActions ?? []) {
+          assert.ok(resolves(table, la.method, la.path), `${page.id}: listAction route "${la.path}" must resolve`);
+        }
+      }
+    }
+
+    assert.equal(providersPagesChecked, 2, 'indexers and download-clients');
+    assert.equal(tablePagesChecked, 1, 'queue');
   });
 });
 
@@ -211,6 +310,185 @@ describe('route table — literal segments win over same-length :id patterns', (
     const resolved = table.resolve('DELETE', '/blocklist/7')!;
     assert.ok(resolved);
     assert.deepEqual(resolved.params, { id: '7' });
+  });
+
+  test('GET /indexers/implementations matches the literal route, not /indexers/:id', () => {
+    const table = createRouteTable(fakeDeps());
+    const resolved = table.resolve('GET', '/indexers/implementations')!;
+    assert.ok(resolved);
+    assert.deepEqual(resolved.params, {});
+  });
+
+  test('GET /indexers/42/stats still resolves to the :id route', () => {
+    const table = createRouteTable(fakeDeps());
+    const resolved = table.resolve('GET', '/indexers/42/stats')!;
+    assert.ok(resolved);
+    assert.deepEqual(resolved.params, { id: '42' });
+  });
+
+  test('GET /download-clients/implementations matches the literal route, not /download-clients/:id', async () => {
+    const table = createRouteTable(fakeDeps());
+    const resolved = table.resolve('GET', '/download-clients/implementations')!;
+    assert.ok(resolved);
+    assert.deepEqual(resolved.params, {});
+    const res = await resolved.handler(req({ path: '/download-clients/implementations' }), resolved.params);
+    assert.equal(res.status, 200, 'a numeric-looking id would 200 via the update handler instead — proves the literal won');
+  });
+
+  test('PUT /download-clients/42 still resolves to the :id route', () => {
+    const table = createRouteTable(fakeDeps());
+    const resolved = table.resolve('PUT', '/download-clients/42')!;
+    assert.ok(resolved);
+    assert.deepEqual(resolved.params, { id: '42' });
+  });
+});
+
+describe('route table — GET /queue', () => {
+  test('no in-flight rows and no enabled clients: an honest empty page, not flagged unreachable', async () => {
+    const table = createRouteTable(fakeDeps());
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { data: [], total: 0, page: 1, pageSize: 25, clientsUnreachable: false });
+  });
+
+  test('an "importing" row reports state=importing and full progress regardless of any client', async () => {
+    const deps = fakeDeps({
+      downloadHistory: { findByStatuses: async () => [historyRow({ id: 9, status: 'importing' })] },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[] };
+    assert.deepEqual(body.data, [
+      { id: 9, title: 'A Title', quality: '1080p', state: 'importing', progress: 1, bytesPerSecond: null, clientReachable: true },
+    ]);
+  });
+
+  test('a grabbed row matched to a live torrent maps the client\'s own state through the closed vocabulary', async () => {
+    const driver: DownloadClientDriver = {
+      supports: (c) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: [
+          {
+            hash: 'ABCD',
+            name: 'x',
+            size: 1000,
+            downloaded: 500,
+            progress: 0.5,
+            dlspeed: 12345,
+            upspeed: 0,
+            ratio: 0,
+            eta: 60,
+            state: 'stalledDL', // client vocabulary — never surfaced raw
+            category: '',
+            num_seeds: 0,
+            num_leechs: 0,
+            added_on: 0,
+          },
+        ],
+      }),
+      getTorrentFiles: async () => [],
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+    };
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 3, torrentHash: 'abcd', downloadClientId: 1 })],
+      },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; clientsUnreachable: boolean };
+    assert.deepEqual(body.data, [
+      { id: 3, title: 'A Title', quality: '1080p', state: 'stalled', progress: 0.5, bytesPerSecond: 12345, clientReachable: true },
+    ]);
+    assert.equal(body.clientsUnreachable, false);
+  });
+
+  test('an unreachable client: clientsUnreachable is set, and its rows report unknown progress rather than empty/zero', async () => {
+    const driver: DownloadClientDriver = {
+      supports: (c) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({ ok: false, torrents: [] }),
+      getTorrentFiles: async () => [],
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+    };
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 5, torrentHash: 'abcd', downloadClientId: 1 })],
+      },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; total: number; clientsUnreachable: boolean };
+    assert.equal(body.clientsUnreachable, true, 'the response must say the client could not be reached');
+    assert.equal(body.total, 1, 'the row still shows — it is not silently dropped to an empty page');
+    assert.deepEqual(body.data[0], {
+      id: 5,
+      title: 'A Title',
+      quality: '1080p',
+      state: 'queued',
+      progress: null,
+      bytesPerSecond: null,
+      clientReachable: false,
+    });
+  });
+
+  test('pagination: page/pageSize are read from the query and total reflects the unpaged count', async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => historyRow({ id: i + 1 }));
+    const deps = fakeDeps({ downloadHistory: { findByStatuses: async () => rows } });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue', query: { page: '2', pageSize: '2' } }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; total: number; page: number; pageSize: number };
+    assert.equal(body.total, 3);
+    assert.equal(body.page, 2);
+    assert.equal(body.pageSize, 2);
+    assert.deepEqual(body.data.map((i) => i.id), [1], 'newest (id 3, 2) on page 1; id 1 is the lone item on page 2');
+  });
+});
+
+describe('route table — implementations routes', () => {
+  test('GET /indexers/implementations answers a list with one entry, "torznab", and its fields', async () => {
+    const table = createRouteTable(fakeDeps());
+    const resolved = table.resolve('GET', '/indexers/implementations')!;
+    const res = await resolved.handler(req({ path: '/indexers/implementations' }), resolved.params);
+    assert.equal(res.status, 200);
+    const body = res.body as { implementation: string; labelKey: string; fields: { key: string }[] }[];
+    assert.ok(Array.isArray(body), 'the shape must still be a list, even with one implementation');
+    assert.equal(body.length, 1);
+    assert.equal(body[0]!.implementation, 'torznab');
+    assert.deepEqual(
+      body[0]!.fields.map((f) => f.key).sort(),
+      ['apiKey', 'baseUrl', 'enableSearch', 'minSeeders', 'requestDelay', 'seedRatio', 'unknownLanguageIsoCode'],
+    );
+  });
+
+  test('GET /download-clients/implementations answers a list with one entry, "qbittorrent", and its fields', async () => {
+    const table = createRouteTable(fakeDeps());
+    const resolved = table.resolve('GET', '/download-clients/implementations')!;
+    const res = await resolved.handler(req({ path: '/download-clients/implementations' }), resolved.params);
+    assert.equal(res.status, 200);
+    const body = res.body as { implementation: string; fields: { key: string }[] }[];
+    assert.ok(Array.isArray(body));
+    assert.equal(body.length, 1);
+    assert.equal(body[0]!.implementation, 'qbittorrent');
+    assert.deepEqual(
+      body[0]!.fields.map((f) => f.key).sort(),
+      ['category', 'host', 'movieCategory', 'password', 'port', 'seriesCategory', 'useSsl', 'username'],
+    );
   });
 });
 

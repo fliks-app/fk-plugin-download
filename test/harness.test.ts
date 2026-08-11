@@ -261,12 +261,76 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
 
   const notFound = await channel.call<{ status: number }>('http', {
     method: 'GET',
-    path: '/queue',
+    path: '/delay-profiles',
     query: {},
     body: null,
     principal: { kind: 'system' },
   });
   assert.equal(notFound.status, 404, 'a declared route with no backing model still 404s, not a fake response');
+
+  // The queue and implementations routes this task adds — the exact payload shape a
+  // renderer will receive, over the real socket, against the real (migrated) DB.
+  const emptyQueue = await channel.call<{
+    status: number;
+    body: { data: unknown[]; total: number; page: number; pageSize: number; clientsUnreachable: boolean };
+  }>('http', { method: 'GET', path: '/queue', query: {}, body: null, principal: { kind: 'system' } });
+  assert.equal(emptyQueue.status, 200);
+  assert.deepEqual(emptyQueue.body, { data: [], total: 0, page: 1, pageSize: 25, clientsUnreachable: false });
+
+  const indexerImpls = await channel.call<{
+    status: number;
+    body: { implementation: string; labelKey: string; fields: { key: string }[] }[];
+  }>('http', { method: 'GET', path: '/indexers/implementations', query: {}, body: null, principal: { kind: 'system' } });
+  assert.equal(indexerImpls.status, 200);
+  assert.ok(Array.isArray(indexerImpls.body), 'the shape must be a list even with one implementation');
+  assert.deepEqual(indexerImpls.body.map((i) => i.implementation), ['torznab']);
+  assert.ok(indexerImpls.body[0]!.fields.some((f) => f.key === 'baseUrl'));
+
+  const clientImpls = await channel.call<{
+    status: number;
+    body: { implementation: string; fields: { key: string }[] }[];
+  }>('http', {
+    method: 'GET',
+    path: '/download-clients/implementations',
+    query: {},
+    body: null,
+    principal: { kind: 'system' },
+  });
+  assert.equal(clientImpls.status, 200);
+  assert.deepEqual(clientImpls.body.map((i) => i.implementation), ['qbittorrent']);
+  assert.ok(clientImpls.body[0]!.fields.some((f) => f.key === 'host'));
+
+  // An enabled client with no host configured fails `getTorrentsResult` inline, with no
+  // network call — deterministic proof of the unreachable-client case the queue route
+  // must convey rather than hide behind an empty page.
+  const { rows: unreachableClientRows } = await admin!.query<{ id: number }>(
+    `INSERT INTO "${SCHEMA}"."download_clients" ("name", "implementation", "settings")
+       VALUES ('Unreachable qBittorrent', 'qbittorrent', '{}') RETURNING "id"`,
+  );
+  const unreachableClientId = unreachableClientRows[0]!.id;
+  await admin!.query(
+    `INSERT INTO "${SCHEMA}"."download_history"
+       ("sourceTitle", "quality", "torrentHash", "status", "downloadClientId")
+     VALUES ('Harness In-Flight Grab', '1080p', 'deadbeef', 'grabbed', $1)`,
+    [unreachableClientId],
+  );
+
+  const queueWithUnreachableClient = await channel.call<{
+    status: number;
+    body: {
+      data: { id: number; title: string; quality: string; state: string; progress: number | null; clientReachable: boolean }[];
+      total: number;
+      clientsUnreachable: boolean;
+    };
+  }>('http', { method: 'GET', path: '/queue', query: {}, body: null, principal: { kind: 'system' } });
+  assert.equal(queueWithUnreachableClient.status, 200);
+  assert.equal(queueWithUnreachableClient.body.total, 1, 'the in-flight row still shows — never dropped to an empty page');
+  assert.equal(queueWithUnreachableClient.body.clientsUnreachable, true, 'the client-down case must be flagged, not hidden');
+  const [queueRow] = queueWithUnreachableClient.body.data;
+  assert.equal(queueRow!.title, 'Harness In-Flight Grab');
+  assert.equal(queueRow!.state, 'queued');
+  assert.equal(queueRow!.progress, null);
+  assert.equal(queueRow!.clientReachable, false);
 
   // The composition root's real proof: all five manifest job names dispatch into a real
   // handler over the real socket, against the real (empty) fliks-migtest schema.

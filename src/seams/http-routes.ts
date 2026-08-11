@@ -1,5 +1,6 @@
 import type { Principal } from '../principal';
 import { GrabError, type ManualGrabInput } from '../grab/release-pipeline';
+import { torrentProgressState } from '../grab/progress-state';
 import {
   IndexerNotFoundError,
   UnknownIndexerImplementationError,
@@ -11,13 +12,21 @@ import {
 import {
   DownloadClientNotFoundError,
   UnsupportedDownloadClientError,
+  type ClientTorrent,
   type CreateDownloadClientInput,
+  type DownloadClientDriver,
   type DownloadClientsService,
   type TestDownloadClientInput,
   type UpdateDownloadClientInput,
 } from './download-clients';
 import type { DownloadGrabPipeline } from './grab-pipeline';
-import type { BlocklistRepository, IndexerStatsRepository } from '../db/repositories';
+import type {
+  BlocklistRepository,
+  DownloadClientsRepository,
+  DownloadHistoryRepository,
+  IndexerStatsRepository,
+} from '../db/repositories';
+import type { DownloadHistoryRow, DownloadHistoryStatus } from '../db/rows';
 import { LEGACY_PATHS, ROUTES } from '../../scripts/manifest-template';
 import { log } from '../log';
 
@@ -46,6 +55,11 @@ export interface RouteDeps {
   grabPipeline: Pick<DownloadGrabPipeline, 'searchReleases' | 'grabRelease'>;
   indexerStats: Pick<IndexerStatsRepository, 'dailyStats'>;
   blocklist: Pick<BlocklistRepository, 'list' | 'findById' | 'remove' | 'clear'>;
+  downloadHistory: Pick<DownloadHistoryRepository, 'findByStatuses'>;
+  /** Raw rows (credentials included) — unlike `downloadClientsService`, which redacts
+   *  them before a driver call ever happens. */
+  downloadClientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
+  downloadClientDrivers: Readonly<Record<string, DownloadClientDriver>>;
 }
 
 export interface ResolvedRoute {
@@ -310,6 +324,191 @@ async function handleRemoveBlocklistEntry(deps: RouteDeps, params: Record<string
   return jsonResponse(200, {});
 }
 
+/** What the queue table page renders per row — `state` is always one of core's closed
+ *  five progress values, never a client's own vocabulary (`progress-state.ts`). */
+export interface QueueItemDto {
+  id: number;
+  title: string;
+  quality: string;
+  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
+  progress: number | null;
+  bytesPerSecond: number | null;
+  /** False when this row's own client could not be queried — `progress`/`bytesPerSecond`
+   *  are then unknown, not zero. */
+  clientReachable: boolean;
+}
+
+const QUEUE_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing'];
+
+interface ClientTorrentIndex {
+  ok: boolean;
+  byHash: Map<string, ClientTorrent>;
+}
+
+/** One `getTorrentsResult` per enabled client — each client's `ok` flag is kept, not
+ *  collapsed, so a row can tell "client answered, torrent just isn't in it" apart from
+ *  "client never answered". */
+async function indexClientTorrents(
+  deps: RouteDeps,
+): Promise<{ byClientId: Map<number, ClientTorrentIndex>; anyUnreachable: boolean }> {
+  const clients = await deps.downloadClientsRepo.listEnabled();
+  const byClientId = new Map<number, ClientTorrentIndex>();
+  let anyUnreachable = false;
+  await Promise.all(
+    clients.map(async (client) => {
+      const driver = deps.downloadClientDrivers[client.implementation];
+      if (!driver || !driver.supports(client)) return;
+      const result = await driver.getTorrentsResult(client);
+      if (!result.ok) anyUnreachable = true;
+      byClientId.set(client.id, {
+        ok: result.ok,
+        byHash: new Map(result.torrents.map((t) => [t.hash.toLowerCase(), t])),
+      });
+    }),
+  );
+  return { byClientId, anyUnreachable };
+}
+
+/** `importing` is definitive regardless of the client (the download itself is already
+ *  done); `grabbed` without a live torrent match means "unknown", never a guessed state. */
+function toQueueItem(row: DownloadHistoryRow, byClientId: Map<number, ClientTorrentIndex>): QueueItemDto {
+  const base = { id: row.id, title: row.sourceTitle, quality: row.quality };
+  if (row.status === 'importing') {
+    return { ...base, state: 'importing', progress: 1, bytesPerSecond: null, clientReachable: true };
+  }
+  const index = row.downloadClientId != null ? byClientId.get(row.downloadClientId) : undefined;
+  const torrent = index && row.torrentHash ? index.byHash.get(row.torrentHash.toLowerCase()) : undefined;
+  if (torrent) {
+    return {
+      ...base,
+      state: torrentProgressState(torrent),
+      progress: torrent.progress,
+      bytesPerSecond: torrent.dlspeed,
+      clientReachable: true,
+    };
+  }
+  return { ...base, state: 'queued', progress: null, bytesPerSecond: null, clientReachable: index?.ok ?? false };
+}
+
+/** Sourced from `download_history` (always available) and enriched from the live
+ *  clients when they answer — never sourced from the clients alone, or a client outage
+ *  would render as an empty queue instead of an unreachable one. */
+async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
+  const page = Math.max(1, Math.trunc(Number(req.query['page'])) || 1);
+  const pageSize = Math.max(1, Math.trunc(Number(req.query['pageSize'])) || 25);
+
+  const [rows, { byClientId, anyUnreachable }] = await Promise.all([
+    deps.downloadHistory.findByStatuses(QUEUE_STATUSES),
+    indexClientTorrents(deps),
+  ]);
+
+  const items = rows.map((row) => toQueueItem(row, byClientId)).sort((a, b) => b.id - a.id);
+  const start = (page - 1) * pageSize;
+
+  return jsonResponse(200, {
+    data: items.slice(start, start + pageSize),
+    total: items.length,
+    page,
+    pageSize,
+    clientsUnreachable: anyUnreachable,
+  });
+}
+
+/** One input a `providers` page's create/edit form renders — the same seven-shape
+ *  `FieldDef` the manifest's own config pages use, restated here since a `process`
+ *  plugin has no import access to that contract type. */
+interface ImplementationFieldDef {
+  key: string;
+  type: 'text' | 'email' | 'password' | 'url' | 'number' | 'toggle' | 'select';
+  labelKey: string;
+  hint?: string;
+  required?: boolean;
+  secret?: boolean;
+  default?: string | number | boolean;
+  options?: { value: string; labelKey: string }[];
+  topLevel?: boolean;
+}
+
+interface ImplementationDef {
+  implementation: string;
+  labelKey: string;
+  fields: ImplementationFieldDef[];
+}
+
+/** `name`/`priority`/`enabled` are generic to every provider row (handled by the page
+ *  itself) — only implementation-specific settings are listed here. `requestDelay` and
+ *  `enableSearch` are `topLevel`: real columns on `indexers`, not `settings` keys. */
+const INDEXER_IMPLEMENTATIONS: ImplementationDef[] = [
+  {
+    implementation: 'torznab',
+    labelKey: 'download.config.indexers.implementations.torznab',
+    fields: [
+      { key: 'baseUrl', type: 'url', labelKey: 'download.config.indexers.fields.base_url', required: true },
+      { key: 'apiKey', type: 'password', labelKey: 'download.config.indexers.fields.api_key', secret: true },
+      {
+        key: 'requestDelay',
+        type: 'number',
+        labelKey: 'download.config.indexers.fields.request_delay',
+        hint: 'download.config.indexers.fields.request_delay_hint',
+        default: 2,
+        topLevel: true,
+      },
+      {
+        key: 'enableSearch',
+        type: 'toggle',
+        labelKey: 'download.config.indexers.fields.enable_search',
+        default: true,
+        topLevel: true,
+      },
+      { key: 'minSeeders', type: 'number', labelKey: 'download.config.indexers.fields.min_seeders', default: 0 },
+      {
+        key: 'seedRatio',
+        type: 'number',
+        labelKey: 'download.config.indexers.fields.seed_ratio',
+        hint: 'download.config.indexers.fields.seed_ratio_hint',
+        default: 1,
+      },
+      {
+        key: 'unknownLanguageIsoCode',
+        type: 'text',
+        labelKey: 'download.config.indexers.fields.unknown_language',
+        hint: 'download.config.indexers.fields.unknown_language_hint',
+      },
+    ],
+  },
+];
+
+const DOWNLOAD_CLIENT_IMPLEMENTATIONS: ImplementationDef[] = [
+  {
+    implementation: 'qbittorrent',
+    labelKey: 'download.config.download_clients.implementations.qbittorrent',
+    fields: [
+      {
+        key: 'host',
+        type: 'text',
+        labelKey: 'download.config.download_clients.fields.host',
+        required: true,
+        default: 'localhost',
+      },
+      { key: 'port', type: 'number', labelKey: 'download.config.download_clients.fields.port', default: 8080 },
+      { key: 'useSsl', type: 'toggle', labelKey: 'download.config.download_clients.fields.use_ssl', default: false },
+      { key: 'username', type: 'text', labelKey: 'download.config.download_clients.fields.username' },
+      { key: 'password', type: 'password', labelKey: 'download.config.download_clients.fields.password', secret: true },
+      { key: 'category', type: 'text', labelKey: 'download.config.download_clients.fields.category', default: 'fliks' },
+      { key: 'movieCategory', type: 'text', labelKey: 'download.config.download_clients.fields.movie_category' },
+      { key: 'seriesCategory', type: 'text', labelKey: 'download.config.download_clients.fields.series_category' },
+    ],
+  },
+];
+
+async function handleIndexerImplementations(): Promise<PluginHttpResponse> {
+  return jsonResponse(200, INDEXER_IMPLEMENTATIONS);
+}
+
+async function handleDownloadClientImplementations(): Promise<PluginHttpResponse> {
+  return jsonResponse(200, DOWNLOAD_CLIENT_IMPLEMENTATIONS);
+}
+
 /** Catches every handler's rejection so a domain error becomes a structured, i18n-keyed
  *  response rather than an RPC-level `ERR` frame carrying a raw message. */
 function wrap(handler: RouteHandler): RouteHandler {
@@ -331,13 +530,14 @@ function wrap(handler: RouteHandler): RouteHandler {
 }
 
 /**
- * Every route this plugin actually backs with a handler. `GET /delay-profiles` and
- * `GET /queue` are declared in the manifest (`ROUTES`) but have no backing model in this
- * plugin — deliberately absent here, so they 404 like any unknown path.
+ * Every route this plugin actually backs with a handler. `GET /delay-profiles` is
+ * declared in the manifest (`ROUTES`) but has no backing model in this plugin —
+ * deliberately absent here, so it 404s like any unknown path.
  *
- * `/indexers/cooldowns` and `/blocklist/all` are declared ahead of their `:id` siblings:
- * `createRouteTable` resolves first-match-wins, so the literal segment must come first
- * (see `test/http-routes.test.ts`'s ordering assertions).
+ * `/indexers/cooldowns`, `/indexers/implementations`, `/download-clients/implementations`
+ * and `/blocklist/all` are declared ahead of their `:id` siblings: `createRouteTable`
+ * resolves first-match-wins, so the literal segment must come first (see
+ * `test/http-routes.test.ts`'s ordering assertions).
  */
 function canonicalRoutes(deps: RouteDeps): { method: string; path: string; handler: RouteHandler }[] {
   const releases: RouteHandler = (req, params) => handleSearchReleases(deps, params, req);
@@ -351,10 +551,12 @@ function canonicalRoutes(deps: RouteDeps): { method: string; path: string; handl
     { method: 'POST', path: '/:id/seasons/:seasonId/grab', handler: grab },
     { method: 'GET', path: '/:id/episodes/:episodeId/releases', handler: releases },
     { method: 'POST', path: '/:id/episodes/:episodeId/grab', handler: grab },
+    { method: 'GET', path: '/queue', handler: (req) => handleQueue(deps, req) },
     { method: 'GET', path: '/indexers', handler: () => handleListIndexers(deps) },
     { method: 'POST', path: '/indexers', handler: (req) => handleCreateIndexer(deps, req) },
     { method: 'POST', path: '/indexers/test-connection', handler: (req) => handleTestIndexerConnection(deps, req) },
     { method: 'DELETE', path: '/indexers/cooldowns', handler: () => handleClearAllIndexerCooldowns(deps) },
+    { method: 'GET', path: '/indexers/implementations', handler: () => handleIndexerImplementations() },
     { method: 'PUT', path: '/indexers/:id', handler: (req, params) => handleUpdateIndexer(deps, params, req) },
     { method: 'DELETE', path: '/indexers/:id', handler: (_req, params) => handleDeleteIndexer(deps, params) },
     { method: 'DELETE', path: '/indexers/:id/cooldown', handler: (_req, params) => handleClearIndexerCooldown(deps, params) },
@@ -366,6 +568,7 @@ function canonicalRoutes(deps: RouteDeps): { method: string; path: string; handl
       path: '/download-clients/test-connection',
       handler: (req) => handleTestDownloadClientConnection(deps, req),
     },
+    { method: 'GET', path: '/download-clients/implementations', handler: () => handleDownloadClientImplementations() },
     { method: 'PUT', path: '/download-clients/:id', handler: (req, params) => handleUpdateDownloadClient(deps, params, req) },
     { method: 'DELETE', path: '/download-clients/:id', handler: (_req, params) => handleDeleteDownloadClient(deps, params) },
     { method: 'GET', path: '/blocklist', handler: (req) => handleListBlocklist(deps, req) },

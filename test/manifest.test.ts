@@ -139,3 +139,37 @@ test('jobs[] mirror the five acquisition-side core scheduler names, each with a 
     assert.ok(job.labelKey.length > 0);
   }
 });
+
+/** Walks any nested object/array, collecting the value of every property whose name is
+ *  "hint" or ends in "Key" (`labelKey`, `shortLabelKey`, `newKey`, `emptyKey`, `testKey`,
+ *  `deleteConfirmKey`, `confirmKey`, ...) — the manifest's own convention for "this string
+ *  names an i18n key, not literal text". */
+function collectI18nKeyRefs(node: unknown, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const item of node) collectI18nKeyRefs(item, out);
+  } else if (node && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node)) {
+      if ((key === 'hint' || key.endsWith('Key')) && typeof value === 'string') out.push(value);
+      else collectI18nKeyRefs(value, out);
+    }
+  }
+  return out;
+}
+
+test('every labelKey/hint/*Key referenced anywhere in ui.contributions and ui.configPages has an i18n.en entry', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'plugin.json'), 'utf8')) as {
+    ui: { contributions: unknown[]; configPages: unknown[] };
+    i18n: { en: Record<string, string> };
+  };
+  const referenced = new Set([
+    ...collectI18nKeyRefs(manifest.ui.contributions),
+    ...collectI18nKeyRefs(manifest.ui.configPages),
+  ]);
+  assert.ok(referenced.size > 10, 'sanity: the walk must actually find keys');
+  for (const key of referenced) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(manifest.i18n.en, key),
+      `"${key}" is referenced by ui.* but missing from i18n.en — it would render as a raw key, or a literal if never keyed at all`,
+    );
+  }
+});
