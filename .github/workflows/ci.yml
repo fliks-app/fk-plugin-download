@@ -9,6 +9,21 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # Without a database the migration, boot and cross-schema-grant tests skip
+    # themselves, so the suite would pass while covering none of them.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fliks
+          POSTGRES_PASSWORD: fliks
+          POSTGRES_DB: fliks
+        ports: ['55432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      FK_TEST_PG_DSN: postgresql://fliks:fliks@127.0.0.1:55432/fliks
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,6 +32,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # Stand-ins for the core tables this plugin holds `REFERENCES` grants on:
+      # the grant tests need the target to exist, not core's real shape. `media`
+      # also carries the two columns the tests insert into.
+      - name: Create core reference stubs
+        run: |
+          psql "$FK_TEST_PG_DSN" -c 'CREATE TABLE IF NOT EXISTS public."media" (id serial PRIMARY KEY, "title" text NOT NULL DEFAULT '"'"''"'"', "type" text NOT NULL DEFAULT '"'"'movie'"'"');'
+          for t in episodes seasons users; do
+            psql "$FK_TEST_PG_DSN" -c "CREATE TABLE IF NOT EXISTS public.\"$t\" (id serial PRIMARY KEY);"
+          done
       - run: npm test
       - run: npm run build
       - run: node --check dist/plugin.js

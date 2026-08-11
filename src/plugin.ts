@@ -6,12 +6,45 @@ import { HostClient } from './host-client';
 import { ROUTE_HANDLERS, type PluginHttpRequest } from './seams/http-routes';
 import { JOB_HANDLERS } from './seams/jobs';
 import { log } from './log';
+import { createPluginPool } from './db/pool';
+import { migrateUp } from './db/migrate';
+import { createRepositories, type Repositories } from './db/repositories';
 
 const token = process.env.FLIKS_PLUGIN_TOKEN ?? '';
 const pluginSockPath = process.env.FLIKS_PLUGIN_SOCK;
 const coreSockPath = process.env.FLIKS_CORE_SOCK;
+const dbUrl = process.env.FLIKS_DB_URL;
+const pluginId = process.env.FLIKS_PLUGIN_ID;
 
 const host = coreSockPath ? new HostClient(coreSockPath) : null;
+
+/** Populated once migrations succeed; stays null for the life of the process otherwise.
+ *  Seam handlers that touch the database must check for null before using it. */
+export let repositories: Repositories | null = null;
+
+type DbInit = { ok: true } | { ok: false; reason: string };
+
+/** Runs once per spawn, before `hello` ever replies. Never throws: rejecting here would
+ *  be an unhandled rejection in the window before anything awaits it (`hello` is the
+ *  first thing that does) — the failure is carried in the return value instead. */
+async function initDb(): Promise<DbInit> {
+  if (!dbUrl || !pluginId) {
+    return { ok: false, reason: 'FLIKS_DB_URL or FLIKS_PLUGIN_ID is not set' };
+  }
+  try {
+    const pool = createPluginPool({ dsn: dbUrl, pluginId });
+    pool.on('error', (err) => log.error(`pool error: ${err.message}`));
+    await migrateUp(pool);
+    repositories = createRepositories(pool);
+    return { ok: true };
+  } catch (err) {
+    log.error(`migration failed: ${(err as Error).message}`);
+    return { ok: false, reason: 'migrations did not complete — see plugin logs' };
+  }
+}
+
+/** Kicked off at module load so it races the socket connect, not the `hello` round-trip. */
+const dbInit: Promise<DbInit> = initDb();
 
 /** Read alongside `plugin.js` on every `hello` — the manifest core sees is always exactly
  *  the one that shipped in this archive, never a copy baked into the bundle that could drift from it. */
@@ -22,6 +55,8 @@ function loadManifest(): unknown {
 
 const requestHandlers: Record<string, (payload: unknown) => Promise<unknown>> = {
   hello: async () => {
+    const db = await dbInit;
+    if (!db.ok) throw new Error(`database not ready: ${db.reason}`);
     return { manifest: loadManifest(), token };
   },
 

@@ -16,6 +16,9 @@ const SCHEMA = pluginSchemaName(PLUGIN_ID);
 const SIX_TABLES = ['indexers', 'download_clients', 'indexer_stats', 'download_history', 'blocklist', 'stalled_checks'];
 
 let reachable = false;
+/** The two comparison tests need a Fliks-migrated `public`; a bare Postgres (CI)
+ *  has the reference stubs but none of the six originals. */
+let originalsPresent = false;
 let admin: Pool;
 let pool: Pool;
 let repos: Repositories;
@@ -26,6 +29,12 @@ before(async () => {
   admin = adminPool();
   await admin.query(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
   await admin.query(`CREATE SCHEMA "${SCHEMA}"`);
+  const found = await admin.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = ANY($1)`,
+    [SIX_TABLES],
+  );
+  originalsPresent = Number(found.rows[0]?.n ?? 0) === SIX_TABLES.length;
   pool = createPluginPool({ dsn: MIGTEST_DSN, pluginId: PLUGIN_ID });
   await migrateUp(pool);
   repos = createRepositories(pool);
@@ -86,6 +95,10 @@ test('migrated columns match the Fliks-originals in public, modulo the two decla
     t.skip('fliks-migtest not reachable on 127.0.0.1:55432');
     return;
   }
+  if (!originalsPresent) {
+    t.skip('the six originals are absent from "public" — this comparison needs a Fliks-migrated database, not a bare one');
+    return;
+  }
   interface ColumnRow {
     table_name: string;
     column_name: string;
@@ -135,6 +148,10 @@ test('migrated columns match the Fliks-originals in public, modulo the two decla
 test('cross-schema FK delete actions match the originals exactly', async (t) => {
   if (!reachable) {
     t.skip('fliks-migtest not reachable on 127.0.0.1:55432');
+    return;
+  }
+  if (!originalsPresent) {
+    t.skip('the six originals are absent from "public" — this comparison needs a Fliks-migrated database, not a bare one');
     return;
   }
   interface FkRow {

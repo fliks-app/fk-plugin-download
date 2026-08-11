@@ -16,6 +16,8 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { randomBytes } from 'crypto';
 import { build } from '../scripts/build';
 import { FrameReader, encodeFrame, parseFrame, isReq, type Note, type Req } from '../src/protocol';
+import { isDatabaseReachable, adminPool, MIGTEST_DSN } from './db-test-helpers';
+import { pluginSchemaName } from '../src/db/pool';
 
 const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
@@ -100,6 +102,10 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<number | n
   });
 }
 
+const PLUGIN_ID = 'fliks.download';
+const SCHEMA = pluginSchemaName(PLUGIN_ID);
+const SIX_TABLES = ['indexers', 'download_clients', 'indexer_stats', 'download_history', 'blocklist', 'stalled_checks'];
+
 let runtimeDir: string;
 let coreSockPath: string;
 let pluginSockPath: string;
@@ -109,9 +115,20 @@ let child: ChildProcess;
 let stdout = '';
 let stderr = '';
 let coreDialedIn = false;
+let reachable = false;
+let admin: ReturnType<typeof adminPool> | undefined;
 const token = randomBytes(32).toString('hex');
 
 before(async () => {
+  // `hello` never replies until migrations have run, so this harness needs a real
+  // database; skips (see the test body) rather than fails when migtest is absent.
+  reachable = await isDatabaseReachable();
+  if (reachable) {
+    admin = adminPool();
+    await admin.query(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
+    await admin.query(`CREATE SCHEMA "${SCHEMA}"`);
+  }
+
   build();
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -130,6 +147,8 @@ before(async () => {
     new Promise<void>((r) => pluginServer.listen(pluginSockPath, r)),
   ]);
 
+  if (!reachable) return; // nothing to spawn — the test below skips itself
+
   const permFlag = resolvePermissionFlag();
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -139,9 +158,9 @@ before(async () => {
     FLIKS_CORE_SOCK: coreSockPath,
     FLIKS_PLUGIN_SOCK: pluginSockPath,
     FLIKS_PLUGIN_TOKEN: token,
-    FLIKS_PLUGIN_ID: 'fliks.download',
+    FLIKS_PLUGIN_ID: PLUGIN_ID,
     FLIKS_API_VERSION: '0',
-    FLIKS_DB_URL: '',
+    FLIKS_DB_URL: MIGTEST_DSN,
   };
   const args = [
     permFlag,
@@ -158,19 +177,29 @@ before(async () => {
 });
 
 after(async () => {
-  try {
-    child.kill('SIGKILL');
-  } catch {
-    // already exited
+  if (reachable) {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // already exited
+    }
   }
   coreServer?.close();
   pluginServer?.close();
   fs.rmSync(runtimeDir, { recursive: true, force: true });
+  if (admin) {
+    await admin.query(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
+    await admin.end();
+  }
   console.log('--- plugin stdout ---\n' + stdout.trimEnd());
   console.log('--- plugin stderr ---\n' + stderr.trimEnd());
 });
 
-test('speaks the full protocol without core: connect, hello, health, event, config, http, job, shutdown', async () => {
+test('speaks the full protocol without core: connect, hello, health, event, config, http, job, shutdown', async (t) => {
+  if (!reachable) {
+    t.skip('fliks-migtest not reachable on 127.0.0.1:55432');
+    return;
+  }
   const socket = await waitForConnection(pluginServer, 10_000);
   const channel = new CoreSideChannel(socket);
 
@@ -182,6 +211,16 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
   assert.equal(hello.token, token, 'hello must echo FLIKS_PLUGIN_TOKEN verbatim');
   assert.equal(hello.manifest.id, 'fliks.download');
   assert.equal(hello.manifest.kind, 'process');
+
+  const { rows: tables } = await admin!.query<{ table_name: string }>(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name`,
+    [SCHEMA],
+  );
+  assert.deepEqual(
+    tables.map((r) => r.table_name),
+    ['_migrations', ...SIX_TABLES].sort(),
+    'hello must not reply until migrateUp has actually created the six tables',
+  );
 
   const health = await channel.call<{ ok: boolean }>('health', {});
   assert.equal(health.ok, true);
