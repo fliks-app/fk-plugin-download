@@ -324,6 +324,8 @@ export const CONFIG_PAGES = [
       emptyKey: 'download.config.indexers.labels.empty',
       testKey: 'download.config.indexers.labels.test',
       deleteConfirmKey: 'download.config.indexers.labels.delete_confirm',
+      createTitleKey: 'download.config.indexers.labels.create_title',
+      editTitleKey: 'download.config.indexers.labels.edit_title',
     },
     actions: [
       {
@@ -378,6 +380,8 @@ export const CONFIG_PAGES = [
       emptyKey: 'download.config.download_clients.labels.empty',
       testKey: 'download.config.download_clients.labels.test',
       deleteConfirmKey: 'download.config.download_clients.labels.delete_confirm',
+      createTitleKey: 'download.config.download_clients.labels.create_title',
+      editTitleKey: 'download.config.download_clients.labels.edit_title',
     },
   },
   {
@@ -404,6 +408,10 @@ export const CONFIG_PAGES = [
 
 export const I18N = {
   en: {
+    'download.config.indexers.labels.create_title': 'New indexer',
+    'download.config.indexers.labels.edit_title': 'Edit indexer',
+    'download.config.download_clients.labels.create_title': 'New download client',
+    'download.config.download_clients.labels.edit_title': 'Edit download client',
     'download.season.search_releases': 'View packs',
     'download.season.grab_best': 'Download the season',
     'download.media.grab_best': 'Grab the best release',
@@ -520,6 +528,10 @@ export const I18N = {
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
   // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
   fr: {
+    'download.config.indexers.labels.create_title': 'Nouvel indexeur',
+    'download.config.indexers.labels.edit_title': "Modifier l'indexeur",
+    'download.config.download_clients.labels.create_title': 'Nouveau client de téléchargement',
+    'download.config.download_clients.labels.edit_title': 'Modifier le client de téléchargement',
     'download.season.search_releases': 'Voir les packs',
     'download.season.grab_best': 'Télécharger la saison',
     'download.media.grab_best': 'Récupérer la meilleure release',
