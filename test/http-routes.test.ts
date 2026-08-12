@@ -235,6 +235,7 @@ interface ConfigPageLike {
   kind?: 'providers' | 'table';
   list?: string;
   implementations?: string;
+  testConnection?: { route: string };
   actions?: { id: string; method: string; route: string }[];
   listActions?: { method: string; path: string }[];
 }
@@ -258,6 +259,11 @@ describe('route table — config pages reference only declared, handled routes',
         assert.ok(
           resolves(table, 'GET', page.implementations!),
           `${page.id}: implementations route "${page.implementations}" must resolve`,
+        );
+        assert.ok(page.testConnection, `${page.id}: a providers page must declare "testConnection"`);
+        assert.ok(
+          resolves(table, 'POST', page.testConnection!.route),
+          `${page.id}: testConnection route "${page.testConnection!.route}" must resolve`,
         );
         for (const action of page.actions ?? []) {
           assert.ok(

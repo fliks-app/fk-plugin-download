@@ -284,6 +284,7 @@ export const CONFIG_PAGES = [
     icon: 'search',
     list: '/indexers',
     implementations: '/indexers/implementations',
+    testConnection: { route: '/indexers/test-connection' },
     showPriority: true,
     defaultPriority: 25,
     labels: {
@@ -323,6 +324,7 @@ export const CONFIG_PAGES = [
     icon: 'server',
     list: '/download-clients',
     implementations: '/download-clients/implementations',
+    testConnection: { route: '/download-clients/test-connection' },
     // Unlike the old core page (`showPriority: false`), priority genuinely gates
     // behaviour here — `pickClient` grabs to the first enabled client in priority order.
     showPriority: true,
