@@ -244,6 +244,24 @@ export const UI_CONTRIBUTIONS = [
     when: ['hasPermission:media.grab', '!mediaType:series', 'hasQualityProfile'],
     action: { kind: 'action' as const, actionId: 'media.search-releases' },
   },
+  {
+    id: 'fliks-download.season.search-releases',
+    slot: 'media.season.actions',
+    weight: 500,
+    labelKey: 'download.season.search_releases',
+    icon: 'package',
+    when: ['hasPermission:media.grab', 'hasQualityProfile'],
+    action: { kind: 'action' as const, actionId: 'season.search-releases' },
+  },
+  {
+    id: 'fliks-download.season.grab-best',
+    slot: 'media.season.actions',
+    weight: 600,
+    labelKey: 'download.season.grab_best',
+    icon: 'download',
+    when: ['hasPermission:media.grab', 'hasQualityProfile'],
+    action: { kind: 'action' as const, actionId: 'season.grab-best' },
+  },
 ];
 
 /**
@@ -392,6 +410,8 @@ export const CONFIG_PAGES = [
 
 export const I18N = {
   en: {
+    'download.season.search_releases': 'View packs',
+    'download.season.grab_best': 'Download the season',
     'download.media.grab_best': 'Grab the best release',
     'download.media.search_releases': 'Search releases',
     'download.config.stall.samples': 'Stalled-download checks before cleanup',
@@ -506,6 +526,8 @@ export const I18N = {
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
   // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
   fr: {
+    'download.season.search_releases': 'Voir les packs',
+    'download.season.grab_best': 'Télécharger la saison',
     'download.media.grab_best': 'Récupérer la meilleure release',
     'download.media.search_releases': 'Rechercher des releases',
     'download.config.stall.samples': 'Vérifications avant nettoyage d’un téléchargement bloqué',
