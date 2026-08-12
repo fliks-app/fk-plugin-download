@@ -33,7 +33,8 @@ export async function tryAutoGrab(
     return false;
   };
 
-  if (!target.want) return logSkip('no quality/language profile on media, or already satisfied');
+  if (!target.want) return logSkip('no quality/language profile on media');
+  if (target.want.decision === 'skip') return logSkip('media already satisfies its profile');
   if (pendingCheck && (await pendingCheck())) return logSkip('a grab is already pending');
 
   const scored = await searchScored(target);

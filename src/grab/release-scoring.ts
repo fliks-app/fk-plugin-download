@@ -86,6 +86,8 @@ export function pickRelease<T extends Pick<ScoredRelease, 'rank' | 'rejections'>
   want: AcquisitionWant,
 ): T | undefined {
   if (!want) return undefined;
+  // A title that already satisfies its profile is searchable by hand, never picked for the user.
+  if (want.decision === 'skip') return undefined;
   return sorted.find((r) => {
     if (r.rejections.length > 0) return false;
     if (r.rank <= want.minRankExclusive || r.rank > want.maxRankInclusive) return false;

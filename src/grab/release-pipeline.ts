@@ -133,8 +133,7 @@ export async function searchScored(deps: ReleasePipelineDeps, target: Acquisitio
  * + `searchSeasonReleases`. The missing-vs-upgrade split those four upstream
  * methods encoded is now carried entirely by `AcquisitionTarget.want` (its
  * `decision` + rank window cover both cases uniformly), so one function
- * serves every caller; `want: null` (unprofiled, or already satisfied) means
- * nothing to search for.
+ * serves every caller. A search runs for any non-null `want`, `decision: 'skip'` included.
  */
 export async function searchReleases(
   deps: ReleasePipelineDeps,
@@ -144,14 +143,19 @@ export async function searchReleases(
   customQuery?: string,
 ): Promise<RankedRelease[]> {
   const target = await loadTarget(deps, mediaId, seasonId, episodeId);
-  if (!target.want) return [];
-  return searchScored(deps, target, customQuery);
+  if (!target.want) throw new GrabError('download.grab.errors.unprofiled');
+  const scored = await searchScored(deps, target, customQuery);
+  const satisfied = target.want.decision === 'skip' ? ' (profile already satisfied)' : '';
+  log.info(`Search #${mediaId} "${target.title}"${satisfied} q="${searchQuery(target, customQuery)}" → ${scored.length} result(s)`);
+  return scored;
 }
 
 export interface ManualGrabInput {
   downloadUrl: string;
   sourceTitle?: string;
   indexerId?: number;
+  /** Bypasses the quality-not-allowed refusal only; a blocklisted release is never forceable. */
+  force?: boolean;
 }
 
 async function scoreSingleRelease(
@@ -193,12 +197,9 @@ async function scoreSingleRelease(
  *
  * A manual grab only checks the quality-profile-allowed + blocklist guard
  * upstream also enforced — it does not re-run the full `rejections` array
- * (seeders/size heuristics that don't apply to a user-supplied URL). It
- * still requires a profile (`want` non-null) to know `allowed`: `want: null`
- * collapses "unprofiled" and "already satisfied" into one signal this port
- * cannot tell apart, so a manual grab is blocked in both cases — a narrowing
- * versus upstream (which let a manual grab through at cutoff). Flagged in
- * the port report.
+ * (seeders/size heuristics that don't apply to a user-supplied URL).
+ * `manual.force` opts out of the quality-not-allowed refusal only; the
+ * blocklist refusal is never forceable.
  */
 export async function grabRelease(
   deps: ReleasePipelineDeps,
@@ -228,8 +229,8 @@ export async function grabRelease(
     const sourceTitle = manual.sourceTitle?.trim() || inferTitleFromTorrentUrl(manual.downloadUrl);
     const scored = await scoreSingleRelease(deps, target, sourceTitle, manual.downloadUrl);
     if (scored.blocklisted) throw new GrabError('download.grab.errors.blocklisted', sourceTitle);
-    if (!scored.allowed) throw new GrabError('download.grab.errors.quality_not_allowed', scored.qualityName);
-    log.info(`Grab #${mediaId} "${target.title}" — manual URL`);
+    if (!scored.allowed && !manual.force) throw new GrabError('download.grab.errors.quality_not_allowed', scored.qualityName);
+    log.info(`Grab #${mediaId} "${target.title}" — manual URL${!scored.allowed ? ' (forced)' : ''}`);
     return grabAndRecord(execDeps(deps), {
       ...grabCommon,
       sourceTitle,

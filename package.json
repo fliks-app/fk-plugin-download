@@ -1,6 +1,6 @@
 {
   "name": "fliks-download-plugin",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Fliks process-tier plugin: indexer search, download-client management and the acquisition grab pipeline.",
   "license": "AGPL-3.0-or-later",

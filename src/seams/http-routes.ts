@@ -215,6 +215,7 @@ function readManualGrabInput(body: unknown): ManualGrabInput | undefined {
     downloadUrl,
     sourceTitle: typeof b['sourceTitle'] === 'string' ? b['sourceTitle'] : undefined,
     indexerId: typeof b['sourceId'] === 'number' ? b['sourceId'] : undefined,
+    force: b['force'] === true,
   };
 }
 

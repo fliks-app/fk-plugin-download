@@ -41,7 +41,7 @@ export async function searchMissing(deps: SchedulerDeps, mediaIds?: number[]): P
     const page = await deps.host.call('acquisition.candidates', { mediaIds, availableOn: today, limit: 200, cursor: cursor ?? undefined });
     for (const target of page.items) {
       count++;
-      if (!target.want) continue;
+      if (!target.want || target.want.decision === 'skip') continue;
       await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t), () => pendingCheck(deps.historyRepo, target));
     }
     cursor = page.cursor;
@@ -111,7 +111,7 @@ export async function rssSync(deps: SchedulerDeps): Promise<void> {
         limit: 100,
       });
       const target = page.items.find((it) => (m.seasonNumber == null ? !it.season : it.season?.number === m.seasonNumber) && (m.episodeNumber == null ? !it.episode : it.episode?.number === m.episodeNumber));
-      if (!target || !target.want) continue;
+      if (!target || !target.want || target.want.decision === 'skip') continue;
 
       await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t), () => pendingCheck(deps.historyRepo, target));
     }
