@@ -188,7 +188,7 @@ test('ui.contributions: settings.page paths sit under the admin settings shell, 
     }
   }
 
-  assert.equal(settingsPagesChecked, 3, 'general, indexers, download-clients');
+  assert.equal(settingsPagesChecked, 4, 'general, indexers, download-clients, history');
   assert.equal(navChecked, 1, 'the queue nav item');
 });
 

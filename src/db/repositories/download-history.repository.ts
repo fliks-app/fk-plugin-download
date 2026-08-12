@@ -109,6 +109,19 @@ export class DownloadHistoryRepository {
     return rows;
   }
 
+  /** Newest first, one page at a time: the table is append-only and outlives every torrent in it,
+   *  so a history view can never read it whole. */
+  async listPage(limit: number, offset: number): Promise<{ rows: DownloadHistoryRow[]; total: number }> {
+    const [page, count] = await Promise.all([
+      this.pool.query<DownloadHistoryRow>(
+        `SELECT ${COLUMNS} FROM "download_history" ORDER BY "createdAt" DESC, "id" DESC LIMIT $1 OFFSET $2`,
+        [limit, offset],
+      ),
+      this.pool.query<{ count: string }>(`SELECT COUNT(*)::text AS "count" FROM "download_history"`),
+    ]);
+    return { rows: page.rows, total: Number(count.rows[0]?.count ?? 0) };
+  }
+
   /** `completion.service.ts:1145` — completed rows whose hash is among the ones a client currently holds. */
   async findCompletedByHashes(hashes: string[]): Promise<DownloadHistoryRow[]> {
     const { rows } = await this.pool.query<DownloadHistoryRow>(

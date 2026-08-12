@@ -60,6 +60,10 @@ blocking every search behind it. You can see and clear cooldowns from the indexe
 handles, and if a typed search is refused it falls back to a plain text search and remembers that
 for next time.
 
+**Every grab is kept.** *Settings → Download → Download history* lists them newest first, with the
+tracker, whether it was automatic or yours, and the failure reason when there is one — the queue
+only shows what is still in flight, so a download that failed leaves it at once.
+
 **Where its data lives.** Trackers, download clients, history and the block list are the
 plugin's own — they live in its own database schema. Uninstalling deletes them; switching the
 plugin off from the plugins page does not.

@@ -29,7 +29,7 @@ import type {
   DownloadHistoryRepository,
   IndexerStatsRepository,
 } from '../db/repositories';
-import type { DownloadHistoryRow, DownloadHistoryStatus } from '../db/rows';
+import type { DownloadHistoryRow, DownloadHistoryStatus, GrabSource } from '../db/rows';
 import {  ROUTES } from '../../scripts/manifest-template';
 import { log } from '../log';
 
@@ -58,7 +58,7 @@ export interface RouteDeps {
   grabPipeline: Pick<DownloadGrabPipeline, 'searchReleases' | 'grabRelease'>;
   indexerStats: Pick<IndexerStatsRepository, 'dailyStats'>;
   blocklist: Pick<BlocklistRepository, 'list' | 'findById' | 'remove' | 'clear'>;
-  downloadHistory: Pick<DownloadHistoryRepository, 'findByStatuses'>;
+  downloadHistory: Pick<DownloadHistoryRepository, 'findByStatuses' | 'listPage'>;
   /** Raw rows (credentials included) — unlike `downloadClientsService`, which redacts
    *  them before a driver call ever happens. */
   downloadClientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
@@ -421,6 +421,50 @@ async function attachMediaTypes(deps: RouteDeps, pageItems: QueueItemDto[]): Pro
   });
 }
 
+/** One row of the history view. `status` and `statusMessage` are the point of it: a failed grab
+ *  leaves the queue immediately and this is the only place it can still be read. */
+interface HistoryItemDto {
+  id: number;
+  date: string;
+  title: string;
+  quality: string;
+  status: DownloadHistoryStatus;
+  statusMessage: string | null;
+  grabSource: GrabSource;
+  source: string;
+  mediaId: number | null;
+  mediaType: MediaKind | null;
+}
+
+/** Every grab ever recorded, newest first — the queue only shows what is still in flight. */
+async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
+  const page = Math.max(1, Math.trunc(Number(req.query['page'])) || 1);
+  const pageSize = Math.min(100, Math.max(1, Math.trunc(Number(req.query['pageSize'])) || 25));
+
+  const [{ rows, total }, indexers] = await Promise.all([
+    deps.downloadHistory.listPage(pageSize, (page - 1) * pageSize),
+    deps.indexerService.findAll(),
+  ]);
+  const indexerNames = new Map(indexers.map((ix: { id: number; name: string }) => [ix.id, ix.name]));
+
+  const items: HistoryItemDto[] = rows.map((row) => ({
+    id: row.id,
+    date: row.createdAt,
+    title: row.sourceTitle,
+    quality: row.quality,
+    status: row.status,
+    statusMessage: row.statusMessage,
+    grabSource: row.grabSource,
+    source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
+    mediaId: row.mediaId,
+    mediaType: null,
+  }));
+
+  // Same bound as the queue: `media.resolve` refuses more than 100 ids, and only this page's are sent.
+  const data = await attachMediaTypes(deps, items as unknown as QueueItemDto[]);
+  return jsonResponse(200, { data, total, page, pageSize });
+}
+
 /** Sourced from `download_history` (always available) and enriched from the live
  *  clients when they answer — never sourced from the clients alone, or a client outage
  *  would render as an empty queue instead of an unreachable one. */
@@ -589,6 +633,7 @@ function canonicalRoutes(deps: RouteDeps): { method: string; path: string; handl
     { method: 'GET', path: '/:id/episodes/:episodeId/releases', handler: releases },
     { method: 'POST', path: '/:id/episodes/:episodeId/grab', handler: grab },
     { method: 'GET', path: '/queue', handler: (req) => handleQueue(deps, req) },
+    { method: 'GET', path: '/history', handler: (req) => handleHistory(deps, req) },
     { method: 'GET', path: '/indexers', handler: () => handleListIndexers(deps) },
     { method: 'POST', path: '/indexers', handler: (req) => handleCreateIndexer(deps, req) },
     { method: 'POST', path: '/indexers/test-connection', handler: (req) => handleTestIndexerConnection(deps, req) },

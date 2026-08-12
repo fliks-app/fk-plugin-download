@@ -92,6 +92,7 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
     objectGuard: 'mediaAccessible:id',
   },
   { method: 'GET', path: '/queue', policy: POLICY.queueRead },
+  { method: 'GET', path: '/history', policy: POLICY.queueRead },
   { method: 'GET', path: '/indexers', policy: POLICY.indexersRead },
   { method: 'POST', path: '/indexers', policy: POLICY.indexersManage },
   { method: 'POST', path: '/indexers/test-connection', policy: POLICY.indexersManage },
@@ -217,6 +218,14 @@ export const UI_CONTRIBUTIONS = [
     labelKey: 'download.config.queue.title',
     icon: 'download',
     action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/queue` },
+  },
+  {
+    id: 'fliks-download.settings.history',
+    slot: 'settings.page',
+    weight: 130,
+    labelKey: 'download.config.history.title',
+    icon: 'history',
+    action: { kind: 'route' as const, path: settingsPagePath('history') },
   },
   {
     // Core owns the release picker and declares these two action ids; this plugin only
@@ -404,10 +413,41 @@ export const CONFIG_PAGES = [
       { kind: 'action' as const, labelKey: 'download.config.queue.actions.open_media', actionId: 'table.open-media' },
     ],
   },
+  {
+    // The queue holds what is in flight; a row that completes or fails leaves it immediately.
+    // Without this page a failed grab is readable only in the logs.
+    id: 'history',
+    kind: 'table' as const,
+    labelKey: 'download.config.history.title',
+    icon: 'history',
+    list: '/history',
+    paged: true,
+    pageSize: 25,
+    columns: [
+      { key: 'date', labelKey: 'download.config.history.columns.date', format: 'date' as const },
+      { key: 'title', labelKey: 'download.config.history.columns.title' },
+      { key: 'quality', labelKey: 'download.config.history.columns.quality' },
+      { key: 'source', labelKey: 'download.config.history.columns.source' },
+      { key: 'grabSource', labelKey: 'download.config.history.columns.grab_source' },
+      { key: 'status', labelKey: 'download.config.history.columns.status' },
+      { key: 'statusMessage', labelKey: 'download.config.history.columns.detail' },
+    ],
+    rowActions: [
+      { kind: 'action' as const, labelKey: 'download.config.queue.actions.open_media', actionId: 'table.open-media' },
+    ],
+  },
 ];
 
 export const I18N = {
   en: {
+    'download.config.history.title': 'Download history',
+    'download.config.history.columns.date': 'Date',
+    'download.config.history.columns.title': 'Release',
+    'download.config.history.columns.quality': 'Quality',
+    'download.config.history.columns.source': 'Tracker',
+    'download.config.history.columns.grab_source': 'Grabbed',
+    'download.config.history.columns.status': 'Status',
+    'download.config.history.columns.detail': 'Detail',
     'download.config.indexers.fields.max_retention_days': 'Maximum seeding days',
     'download.config.indexers.fields.max_retention_days_hint':
       'Remove a finished torrent this many days after it completed, even if the share ratio is not reached. Leave empty to wait for the ratio alone.',
@@ -531,6 +571,14 @@ export const I18N = {
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
   // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
   fr: {
+    'download.config.history.title': 'Historique des téléchargements',
+    'download.config.history.columns.date': 'Date',
+    'download.config.history.columns.title': 'Release',
+    'download.config.history.columns.quality': 'Qualité',
+    'download.config.history.columns.source': 'Tracker',
+    'download.config.history.columns.grab_source': 'Récupéré',
+    'download.config.history.columns.status': 'Statut',
+    'download.config.history.columns.detail': 'Détail',
     'download.config.indexers.fields.max_retention_days': 'Jours de partage maximum',
     'download.config.indexers.fields.max_retention_days_hint':
       "Supprime un torrent terminé ce nombre de jours après sa fin, même si le ratio de partage n'est pas atteint. Laisser vide pour n'attendre que le ratio.",

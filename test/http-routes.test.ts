@@ -83,7 +83,7 @@ function fakeDeps(over: Partial<RouteDeps> = {}): RouteDeps {
       remove: async () => {},
       clear: async () => {},
     },
-    downloadHistory: { findByStatuses: async () => [] },
+    downloadHistory: { findByStatuses: async () => [], listPage: async () => ({ rows: [], total: 0 }) },
     downloadClientsRepo: { listEnabled: async () => [] },
     downloadClientDrivers: {},
     host: { call: async () => ({}) },
@@ -266,7 +266,7 @@ describe('route table — config pages reference only declared, handled routes',
     }
 
     assert.equal(providersPagesChecked, 2, 'indexers and download-clients');
-    assert.equal(tablePagesChecked, 1, 'queue');
+    assert.equal(tablePagesChecked, 2, 'queue and history');
   });
 });
 
@@ -341,7 +341,7 @@ describe('route table — GET /queue', () => {
 
   test('an "importing" row reports state=importing and full progress regardless of any client', async () => {
     const deps = fakeDeps({
-      downloadHistory: { findByStatuses: async () => [historyRow({ id: 9, status: 'importing' })] },
+      downloadHistory: { findByStatuses: async () => [historyRow({ id: 9, status: 'importing' })], listPage: async () => ({ rows: [], total: 0 }) },
     });
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
@@ -395,6 +395,7 @@ describe('route table — GET /queue', () => {
     const deps = fakeDeps({
       downloadHistory: {
         findByStatuses: async () => [historyRow({ id: 3, torrentHash: 'abcd', downloadClientId: 1 })],
+        listPage: async () => ({ rows: [], total: 0 }),
       },
       downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
@@ -432,6 +433,7 @@ describe('route table — GET /queue', () => {
     const deps = fakeDeps({
       downloadHistory: {
         findByStatuses: async () => [historyRow({ id: 5, torrentHash: 'abcd', downloadClientId: 1 })],
+        listPage: async () => ({ rows: [], total: 0 }),
       },
       downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
@@ -457,7 +459,7 @@ describe('route table — GET /queue', () => {
 
   test('pagination: page/pageSize are read from the query and total reflects the unpaged count', async () => {
     const rows = Array.from({ length: 3 }, (_, i) => historyRow({ id: i + 1 }));
-    const deps = fakeDeps({ downloadHistory: { findByStatuses: async () => rows } });
+    const deps = fakeDeps({ downloadHistory: { findByStatuses: async () => rows, listPage: async () => ({ rows, total: rows.length }) } });
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue', query: { page: '2', pageSize: '2' } }), resolved.params);
@@ -472,6 +474,7 @@ describe('route table — GET /queue', () => {
     const deps = fakeDeps({
       downloadHistory: {
         findByStatuses: async () => [historyRow({ id: 1, mediaId: 42 }), historyRow({ id: 2, mediaId: null })],
+        listPage: async () => ({ rows: [], total: 0 }),
       },
       host: {
         call: async (_method: string, payload: unknown) => {
@@ -494,7 +497,7 @@ describe('route table — GET /queue', () => {
 
   test('a mediaId present but absent from the resolve reply (deleted/unknown media) still gets no button', async () => {
     const deps = fakeDeps({
-      downloadHistory: { findByStatuses: async () => [historyRow({ id: 1, mediaId: 99 })] },
+      downloadHistory: { findByStatuses: async () => [historyRow({ id: 1, mediaId: 99 })], listPage: async () => ({ rows: [], total: 0 }) },
       host: { call: async () => ({}) } as unknown as RouteDeps['host'], // core found nothing for id 99
     });
     const table = createRouteTable(deps);
@@ -508,7 +511,7 @@ describe('route table — GET /queue', () => {
     const rows = Array.from({ length: 130 }, (_, i) => historyRow({ id: i + 1, mediaId: i + 1 }));
     const calls: { method: string; payload: unknown }[] = [];
     const deps = fakeDeps({
-      downloadHistory: { findByStatuses: async () => rows },
+      downloadHistory: { findByStatuses: async () => rows, listPage: async () => ({ rows, total: rows.length }) },
       host: {
         call: async (method: string, payload: unknown) => {
           calls.push({ method, payload });
@@ -639,5 +642,53 @@ describe('route table — admin write handlers', () => {
     const res = await resolved.handler(req({ method: 'POST', path: '/download-clients/test-connection', body: {} }), resolved.params);
     assert.equal(res.status, 400);
     assert.deepEqual(res.body, { error: { key: 'download.http.errors.bad_body', detail: 'implementation' } });
+  });
+});
+
+describe('route table — download history', () => {
+  test('VERDICT: answers every status newest-first, so a failed grab is still readable', async () => {
+    const rows = [
+      historyRow({ id: 2, status: 'failed', statusMessage: 'no file could be placed', sourceTitle: 'B', indexerId: 7 }),
+      historyRow({ id: 1, status: 'completed', sourceTitle: 'A' }),
+    ];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [],
+        listPage: async () => ({ rows, total: 2 }),
+      },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/history')!;
+    const res = await resolved.handler(req({ path: '/history' }), resolved.params);
+
+    assert.equal(res.status, 200);
+    const body = res.body as { data: Record<string, unknown>[]; total: number };
+    assert.equal(body.total, 2);
+    // The queue filters to grabbed/importing; a history that did the same would be the same page.
+    assert.deepEqual(
+      body.data.map((r) => [r['status'], r['title']]),
+      [['failed', 'B'], ['completed', 'A']],
+    );
+    assert.equal(body.data[0]!['statusMessage'], 'no file could be placed');
+    assert.ok('date' in body.data[0]!, 'the column the page sorts and formats on must be present');
+  });
+
+  test('page and pageSize reach the repository as limit/offset, capped', async () => {
+    const seen: { limit: number; offset: number }[] = [];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [],
+        listPage: async (limit: number, offset: number) => {
+          seen.push({ limit, offset });
+          return { rows: [], total: 0 };
+        },
+      },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/history')!;
+    await resolved.handler(req({ path: '/history', query: { page: '3', pageSize: '5000' } }), resolved.params);
+
+    // An unbounded pageSize would read the whole append-only table into memory.
+    assert.deepEqual(seen, [{ limit: 100, offset: 200 }]);
   });
 });
