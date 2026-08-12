@@ -646,7 +646,7 @@ export const MANIFEST_TEMPLATE = {
   fliks: '>=2.0.0 <3.0.0',
   author: 'Fliks',
   description: 'Indexer search, download-client management and the acquisition grab pipeline for Fliks.',
-  license: 'MIT',
+  license: 'AGPL-3.0-or-later',
   logo: 'logo.svg',
   kind: 'process' as const,
   runtime: 'node' as const,

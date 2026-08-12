@@ -291,3 +291,7 @@ equivalent API).
   (`inspect()` from the Fliks repo's `backend/src/modules/plugins/archive/zip-inspector.ts`,
   imported live via `tsx` since this checkout carries no compiled `dist/`) via
   `scripts/verify-with-core.ts` — accepted as a valid `process`-tier manifest.
+
+## License
+
+[AGPL-3.0-or-later](LICENSE) — the same licence as Fliks itself, which this plugin's code was extracted from.
