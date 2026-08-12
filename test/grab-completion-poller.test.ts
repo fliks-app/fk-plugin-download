@@ -362,7 +362,7 @@ describe('DownloadCompletionPoller.poll — import hand-off', () => {
     let ingestCalls = 0;
     h.host.on('library.ingest', (p: unknown) => {
       ingestCalls++;
-      return { imported: [{ mediaFileId: 1, relativePath: 'Movie.mkv', quality: 'WEBDL-1080p' }], seasonNumber: undefined, episodeNumber: undefined };
+      return { imported: [{ mediaFileId: 1, relativePath: 'Movie.mkv', quality: 'WEBDL-1080p' }], alreadyPresent: [], seasonNumber: undefined, episodeNumber: undefined };
     });
 
     await h.poller.poll();
@@ -372,6 +372,38 @@ describe('DownloadCompletionPoller.poll — import hand-off', () => {
     const published = h.host.calls.filter((c) => c.method === 'events.publish');
     const imported = published.flatMap((c) => c.payload as { type: string }[]).find((e) => e.type === 'acquisition.imported');
     assert.ok(imported, 'must publish acquisition.imported');
+  });
+
+  test('VERDICT: a retried ingest that writes nothing because the file is already there completes the row', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'done', progress: 1, state: 'stalledUP' })] });
+    h.driver.filesByHash.set('done', [{ name: 'Movie.mkv', size: 100, progress: 1, priority: 1 }]);
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'done', status: 'grabbed', mediaId: 7 }));
+    h.host.on('library.ingest', () => ({ imported: [], alreadyPresent: ['/downloads/Movie.mkv'] }));
+    h.host.on('events.publish', () => undefined);
+
+    await h.poller.poll();
+
+    const row = h.historyRepo.rows[0]!;
+    // The first attempt timed out while core finished the copy: failing here is what put a landed
+    // import in the failed state, once a minute, for good.
+    assert.equal(row.status, 'completed');
+  });
+
+  test('the ingest call is given more time than a lookup — a copy is not a metadata read', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'done', progress: 1, state: 'stalledUP' })] });
+    h.driver.filesByHash.set('done', [{ name: 'Movie.mkv', size: 100, progress: 1, priority: 1 }]);
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'done', status: 'grabbed', mediaId: 7 }));
+    h.host.on('library.ingest', () => ({ imported: [{ mediaFileId: 1, relativePath: 'Movie.mkv', quality: 'x' }], alreadyPresent: [] }));
+    h.host.on('events.publish', () => undefined);
+
+    await h.poller.poll();
+
+    const call = h.host.calls.find((c) => c.method === 'library.ingest');
+    assert.ok((call?.timeoutMs ?? 0) > 60_000, 'a default-timeout ingest gave up while core was still writing');
   });
 
   test('idempotency: a row that already imported drops out of the candidate set — library.ingest is not called again', async () => {

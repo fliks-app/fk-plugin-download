@@ -13,6 +13,9 @@ import { log } from '../log';
 
 /** Ported from `common/constants/video-extensions.ts` — small and stable
  *  enough to inline rather than add a file for it. */
+/** Core allows 30 minutes for an ingest; wait past that so its error frame is what we see. */
+const INGEST_CALL_TIMEOUT_MS = 31 * 60_000;
+
 const VIDEO_EXTS: ReadonlySet<string> = new Set(['.mkv', '.mp4', '.avi', '.mov', '.ts', '.m2ts', '.wmv', '.flv']);
 
 /** How long a `grabbed`/`importing` row may stay without a matching torrent
@@ -323,13 +326,27 @@ export class DownloadCompletionPoller {
       return;
     }
 
-    const result = await this.deps.host.call('library.ingest', {
-      idempotencyKey: `download-history:${history.id}`,
-      mediaId: history.mediaId,
-      paths: videoFiles,
-      transfer: 'copy',
-      sourceLabel: history.sourceTitle,
-    });
+    const result = await this.deps.host.call(
+      'library.ingest',
+      {
+        idempotencyKey: `download-history:${history.id}`,
+        mediaId: history.mediaId,
+        paths: videoFiles,
+        transfer: 'copy',
+        sourceLabel: history.sourceTitle,
+      },
+      // Longer than core's own deadline for this method: copying a release is not a lookup, and
+      // giving up first would record a failure while core is still writing.
+      INGEST_CALL_TIMEOUT_MS,
+    );
+
+    // A retried ingest writes nothing because the file is already in place. Core says which paths
+    // those were; without that this reads exactly like "nothing could be placed".
+    if (!result.imported.length && result.alreadyPresent.length) {
+      log.info(`Import[${history.sourceTitle}]: already in the library — completing the row`);
+      await this.deps.historyRepo.completeImport(history.id);
+      return;
+    }
 
     if (!result.imported.length) {
       const statusMessage = `Import failed: no file could be placed under the library root for "${torrent.name}"`;

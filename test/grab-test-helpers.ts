@@ -333,15 +333,15 @@ export class FakeDriver implements DownloadClientDriver {
  *  configured for this test" so an unexpected call fails loudly. */
 export class FakeHost implements HostCaller {
   handlers = new Map<string, (payload: unknown) => unknown>();
-  calls: { method: string; payload: unknown }[] = [];
+  calls: { method: string; payload: unknown; timeoutMs?: number }[] = [];
 
   on<M extends string>(method: M, handler: (payload: unknown) => unknown): this {
     this.handlers.set(method, handler);
     return this;
   }
 
-async call<M extends HostMethodName>(method: M, payload: HostParams<M>): Promise<HostResult<M>> {
-    this.calls.push({ method, payload });
+  async call<M extends HostMethodName>(method: M, payload: HostParams<M>, timeoutMs?: number): Promise<HostResult<M>> {
+    this.calls.push({ method, payload, timeoutMs });
     const handler = this.handlers.get(method);
     if (!handler) throw new Error(`FakeHost: no handler registered for "${method}"`);
     return handler(payload) as HostResult<M>;
