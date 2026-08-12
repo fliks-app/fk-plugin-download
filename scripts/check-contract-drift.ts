@@ -30,9 +30,11 @@ function interfaceFields(source: string, name: string): Set<string> {
   if (start === -1) return new Set();
   const body = source.slice(start, source.indexOf('\n}', start));
   const fields = new Set<string>();
-  const pattern = /^\s{2}([a-zA-Z][\w]*)\??:/gm;
+  // Name *and* declared type: `rejections` matched by name on both sides while core carried
+  // `{code, params}` and this restatement `{code, detail}`, which renders every reason blank.
+  const pattern = /^\s{2}([a-zA-Z][\w]*\??:[^;]*);/gm;
   let m: RegExpExecArray | null;
-  while ((m = pattern.exec(body))) fields.add(m[1]!);
+  while ((m = pattern.exec(body))) fields.add(m[1]!.replace(/\s+/g, ' '));
   return fields;
 }
 
