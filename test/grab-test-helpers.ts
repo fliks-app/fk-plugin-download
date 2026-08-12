@@ -8,7 +8,7 @@ import type { IndexersRepository } from '../src/db/repositories/indexers.reposit
 import type { DownloadClientsRepository } from '../src/db/repositories/download-clients.repository';
 import type { HostCaller } from '../src/grab/types';
 import type { HostMethodName, HostParams, HostResult } from '../src/host-client';
-import type { DownloadClientDriver, ClientTorrent, ClientTorrentsResult, ClientTorrentFile } from '../src/download-clients/contract';
+import type { DownloadClientDriver, ClientTorrent, ClientTorrentsResult, ClientTorrentFile, ClientTorrentFilesResult } from '../src/download-clients/contract';
 
 let nextHistoryId = 1;
 
@@ -299,6 +299,8 @@ export function asClientsRepo(fake: FakeClientsRepo): DownloadClientsRepository 
 export class FakeDriver implements DownloadClientDriver {
   torrentsByClient = new Map<number, ClientTorrentsResult>();
   filesByHash = new Map<string, ClientTorrentFile[]>();
+  /** Set false to simulate a client that could not be asked for its files. */
+  filesOk = true;
   deleted: { clientId: number; hash: string; deleteFiles?: boolean }[] = [];
   added: { downloadUrl: string; rejectIfAlreadyPresent?: boolean }[] = [];
   nextHash = 'added-hash';
@@ -316,8 +318,8 @@ export class FakeDriver implements DownloadClientDriver {
   async getTorrentsResult(client: DownloadClientRow): Promise<ClientTorrentsResult> {
     return this.torrentsByClient.get(client.id) ?? { ok: true, torrents: [] };
   }
-  async getTorrentFiles(_client: DownloadClientRow, hash: string): Promise<ClientTorrentFile[]> {
-    return this.filesByHash.get(hash) ?? [];
+  async getTorrentFilesResult(_client: DownloadClientRow, hash: string): Promise<ClientTorrentFilesResult> {
+    return { ok: this.filesOk, files: this.filesByHash.get(hash) ?? [] };
   }
   async addTorrentUrl(_client: DownloadClientRow, downloadUrl: string, _mediaType?: 'movie' | 'series', rejectIfAlreadyPresent?: boolean): Promise<string> {
     this.added.push({ downloadUrl, rejectIfAlreadyPresent });

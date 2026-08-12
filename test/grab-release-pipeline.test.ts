@@ -147,4 +147,18 @@ describe('grabRelease — auto-pick', () => {
     assert.equal(historyRepo.insertCalls[0]?.grabSource, 'auto');
     assert.equal(historyRepo.insertCalls[0]?.sourceTitle, 'Movie.2020.1080p');
   });
+
+  test('a failing events.publish never fails the grab — notify-only, like notifications.dispatch', async () => {
+    const { deps, host, historyRepo, driver } = buildDeps({
+      target: target({}),
+      releases: [{ title: 'Movie.2020.1080p', downloadUrl: 'u1', indexerId: 1 }],
+      scored: [{ id: '0', qualityId: 5, rank: 30, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageAllowed: true, isFullSeason: false, sizeDeviation: 0, videoCodec: null, rejections: [] }],
+    });
+    host.on('events.publish', () => {
+      throw new Error('core is down');
+    });
+    const result = await grabRelease(deps, 1);
+    assert.equal(result.torrentHash, driver.nextHash);
+    assert.equal(historyRepo.insertCalls.length, 1, 'the history row must be recorded regardless of the publish outcome');
+  });
 });

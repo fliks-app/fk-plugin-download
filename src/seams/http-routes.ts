@@ -355,6 +355,7 @@ export interface QueueItemDto {
 }
 
 const QUEUE_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing'];
+const HISTORY_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing', 'completed', 'failed', 'warning'];
 
 interface ClientTorrentIndex {
   ok: boolean;
@@ -436,13 +437,18 @@ interface HistoryItemDto {
   mediaType: MediaKind | null;
 }
 
-/** Every grab ever recorded, newest first — the queue only shows what is still in flight. */
+/** Every grab ever recorded, newest first — the queue only shows what is still in flight.
+ *  An unrecognised `status` is dropped, never forwarded to the repository. */
 async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
   const page = Math.max(1, Math.trunc(Number(req.query['page'])) || 1);
   const pageSize = Math.min(100, Math.max(1, Math.trunc(Number(req.query['pageSize'])) || 25));
+  const q = typeof req.query['q'] === 'string' ? req.query['q'].trim() : '';
+  const status = HISTORY_STATUSES.includes(req.query['status'] as DownloadHistoryStatus)
+    ? (req.query['status'] as DownloadHistoryStatus)
+    : undefined;
 
   const [{ rows, total }, indexers] = await Promise.all([
-    deps.downloadHistory.listPage(pageSize, (page - 1) * pageSize),
+    deps.downloadHistory.listPage(pageSize, (page - 1) * pageSize, { ...(q ? { q } : {}), ...(status ? { status } : {}) }),
     deps.indexerService.findAll(),
   ]);
   const indexerNames = new Map(indexers.map((ix: { id: number; name: string }) => [ix.id, ix.name]));

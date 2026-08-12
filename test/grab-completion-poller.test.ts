@@ -9,6 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DownloadCompletionPoller, type CompletionPollerDeps } from '../src/grab/completion-poller';
+import { HostCallError } from '../src/host-client';
 import { TorrentHistoryMatcher } from '../src/grab/torrent-name-matcher';
 import {
   FakeHistoryRepo,
@@ -130,6 +131,18 @@ describe('DownloadCompletionPoller.poll — orphan sweep (reconcileOrphanHistory
     // allClientsResponded is a whole-tick gate — one bad client holds the
     // entire sweep back, not just the rows that would key off its torrents.
     assert.equal(h.historyRepo.rows[0]?.status, 'grabbed');
+  });
+
+  test('VERDICT: a row parked for retry still reaches a terminal state once its torrent is really gone', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [] });
+    // The status a retry parks a row at has to be one the orphan sweep expires, or the row never ends.
+    h.historyRepo.rows.push(makeHistoryRow({ id: 7, status: 'grabbed', torrentHash: 'gone', updatedAt: HOUR_AGO }));
+
+    await h.poller.poll();
+
+    assert.equal(h.historyRepo.rows[0]?.status, 'failed');
   });
 
   test('no history row at all — nothing to reconcile, regardless of torrents', async () => {
@@ -379,9 +392,8 @@ describe('DownloadCompletionPoller.poll — import hand-off', () => {
     h.clientsRepo.rows.push(makeClient({ id: 1 }));
     h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'done', progress: 1, state: 'stalledUP' })] });
     h.driver.filesByHash.set('done', [{ name: 'Movie.mkv', size: 100, progress: 1, priority: 1 }]);
-    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'done', status: 'grabbed', mediaId: 7 }));
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'done', status: 'grabbed', mediaId: 7, sourceTitle: 'Movie' }));
     h.host.on('library.ingest', () => ({ imported: [], alreadyPresent: ['/downloads/Movie.mkv'] }));
-    h.host.on('events.publish', () => undefined);
 
     await h.poller.poll();
 
@@ -389,6 +401,9 @@ describe('DownloadCompletionPoller.poll — import hand-off', () => {
     // The first attempt timed out while core finished the copy: failing here is what put a landed
     // import in the failed state, once a minute, for good.
     assert.equal(row.status, 'completed');
+    const published = h.host.calls.filter((c) => c.method === 'events.publish');
+    const imported = published.flatMap((c) => c.payload as { type: string }[]).find((e) => e.type === 'acquisition.imported');
+    assert.ok(imported, 'a lost-reply retry must still notify core once the row completes');
   });
 
   test('the ingest call is given more time than a lookup — a copy is not a metadata read', async () => {
@@ -429,6 +444,55 @@ describe('DownloadCompletionPoller.poll — import hand-off', () => {
     assert.equal(ingestCalls, 1, 'a completed row must never re-enter the import candidate set');
   });
 
+  test('VERDICT: an unknown-outcome host error (e.g. a core timeout) retries instead of blocklisting', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'done', progress: 1, state: 'stalledUP' })] });
+    h.driver.filesByHash.set('done', [{ name: 'Movie.mkv', size: 100, progress: 1, priority: 1 }]);
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'done', status: 'grabbed', mediaId: 5, sourceTitle: 'Movie' }));
+    let ingestCalls = 0;
+    h.host.on('library.ingest', () => {
+      ingestCalls++;
+      throw new HostCallError('"library.ingest" timed out after 1860000ms', 'unknown');
+    });
+
+    await h.poller.poll();
+
+    const row = h.historyRepo.rows[0]!;
+    assert.equal(row.status, 'grabbed', 'must stay retryable and visible in the queue, never failed or "warning"');
+    assert.match(row.statusMessage ?? '', /timed out/);
+    assert.equal(h.blocklistRepo.inserted.length, 0, 'core being slow must never blocklist a good release');
+
+    // Next pass: core answers this time — the same row (still 'grabbed') is retried, not skipped.
+    h.host.on('library.ingest', () => {
+      ingestCalls++;
+      return { imported: [{ mediaFileId: 1, relativePath: 'Movie.mkv', quality: 'WEBDL-1080p' }], alreadyPresent: [] };
+    });
+    h.host.on('events.publish', () => undefined);
+
+    await h.poller.poll();
+
+    assert.equal(ingestCalls, 2);
+    assert.equal(h.historyRepo.rows[0]?.status, 'completed');
+  });
+
+  test('VERDICT: a core error reply fails the row, and never blocklists on core\'s own state', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'done', progress: 1, state: 'stalledUP' })] });
+    h.driver.filesByHash.set('done', [{ name: 'Movie.mkv', size: 100, progress: 1, priority: 1 }]);
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'done', status: 'grabbed', mediaId: 5, sourceTitle: 'Movie' }));
+    h.host.on('library.ingest', () => {
+      throw new HostCallError('ERR_INGEST: media no longer exists', 'rejected');
+    });
+
+    await h.poller.poll();
+
+    const row = h.historyRepo.rows[0]!;
+    assert.equal(row.status, 'failed');
+    assert.equal(h.blocklistRepo.inserted.length, 0);
+  });
+
   test('no valid video file in the torrent -> blocklists, deletes the dud torrent, marks the row failed', async () => {
     const h = buildPoller();
     h.clientsRepo.rows.push(makeClient({ id: 1 }));
@@ -441,6 +505,21 @@ describe('DownloadCompletionPoller.poll — import hand-off', () => {
     assert.equal(h.historyRepo.rows[0]?.status, 'failed');
     assert.equal(h.blocklistRepo.inserted.length, 1);
     assert.deepEqual(h.driver.deleted, [{ clientId: 1, hash: 'dud', deleteFiles: true }]);
+  });
+
+  test('VERDICT: the client could not be asked for its files -> retries, never deletes or blocklists', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'unreachable', progress: 1, state: 'stalledUP' })] });
+    h.driver.filesOk = false;
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'unreachable', status: 'grabbed', mediaId: 5, sourceTitle: 'Movie' }));
+
+    await h.poller.poll();
+
+    const row = h.historyRepo.rows[0]!;
+    assert.equal(row.status, 'grabbed', 'must stay retryable and visible in the queue, never failed');
+    assert.equal(h.blocklistRepo.inserted.length, 0, 'a qBittorrent restart must never blocklist a good release');
+    assert.equal(h.driver.deleted.length, 0, 'a qBittorrent restart must never delete a completed download');
   });
 });
 

@@ -1,6 +1,6 @@
 import { decodeHtmlEntities } from '../indexers/decode-html-entities';
 import { log } from '../log';
-import type { ClientTestResult, ClientTorrent, ClientTorrentFile, ClientTorrentsResult, DownloadClientDriver } from './contract';
+import type { ClientTestResult, ClientTorrent, ClientTorrentFile, ClientTorrentFilesResult, ClientTorrentsResult, DownloadClientDriver } from './contract';
 import type { DownloadClientRow } from '../db/rows';
 import { extractMagnetInfoHash, computeInfoHash } from './torrent-hash';
 import {
@@ -245,15 +245,16 @@ export class QbittorrentDriver implements DownloadClientDriver {
     }
   }
 
-  async getTorrentFiles(client: DownloadClientRow, hash: string): Promise<ClientTorrentFile[]> {
+  async getTorrentFilesResult(client: DownloadClientRow, hash: string): Promise<ClientTorrentFilesResult> {
     const s = client.settings as QbittorrentSettings;
     const base = buildBaseUrl(s);
-    if (!base) return [];
+    if (!base) return { ok: false, files: [] };
     let cookie: string;
     try {
       cookie = await login(base, s, 15_000);
-    } catch {
-      return [];
+    } catch (e) {
+      log.warn(`getTorrentFilesResult: auth failed for client "${client.name}": ${(e as Error).message}`);
+      return { ok: false, files: [] };
     }
     try {
       const res = await httpRequest(`${base}/api/v2/torrents/files?hash=${encodeURIComponent(hash)}`, {
@@ -261,10 +262,14 @@ export class QbittorrentDriver implements DownloadClientDriver {
         timeoutMs: 15_000,
       });
       const parsed = await parseJsonArray(res);
-      return (parsed as ClientTorrentFile[] | null) ?? [];
+      if (!parsed) {
+        log.warn(`getTorrentFilesResult: unexpected response for hash ${hash} (HTTP ${res.status})`);
+        return { ok: false, files: [] };
+      }
+      return { ok: true, files: parsed as ClientTorrentFile[] };
     } catch (e) {
-      log.warn(`getTorrentFiles: error for hash ${hash}: ${(e as Error).message}`);
-      return [];
+      log.warn(`getTorrentFilesResult: error for hash ${hash}: ${(e as Error).message}`);
+      return { ok: false, files: [] };
     }
   }
 

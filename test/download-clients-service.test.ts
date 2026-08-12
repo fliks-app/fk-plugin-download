@@ -25,7 +25,7 @@ function fakeDriver(over: Partial<DownloadClientDriver> = {}): DownloadClientDri
     testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
     getTorrents: async () => [],
     getTorrentsResult: async () => ({ ok: true, torrents: [] }),
-    getTorrentFiles: async () => [],
+    getTorrentFilesResult: async () => ({ ok: true, files: [] }),
     addTorrentUrl: async () => 'a'.repeat(40),
     deleteTorrent: async () => {},
     ...over,
