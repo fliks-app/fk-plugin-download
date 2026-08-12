@@ -224,6 +224,26 @@ export const UI_CONTRIBUTIONS = [
     icon: 'download',
     action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/queue` },
   },
+  {
+    // Core owns the release picker and declares these two action ids; this plugin only
+    // contributes the entries that open it, so nothing about grabbing shows without it.
+    id: 'fliks-download.media.grab-best',
+    slot: 'media.actions',
+    weight: 500,
+    labelKey: 'download.media.grab_best',
+    icon: 'download',
+    when: ['hasPermission:media.grab', '!mediaType:series', 'hasQualityProfile'],
+    action: { kind: 'action' as const, actionId: 'media.grab-best' },
+  },
+  {
+    id: 'fliks-download.media.search-releases',
+    slot: 'media.actions',
+    weight: 600,
+    labelKey: 'download.media.search_releases',
+    icon: 'search',
+    when: ['hasPermission:media.grab', '!mediaType:series', 'hasQualityProfile'],
+    action: { kind: 'action' as const, actionId: 'media.search-releases' },
+  },
 ];
 
 /**
@@ -372,6 +392,8 @@ export const CONFIG_PAGES = [
 
 export const I18N = {
   en: {
+    'download.media.grab_best': 'Grab the best release',
+    'download.media.search_releases': 'Search releases',
     'download.config.stall.samples': 'Stalled-download checks before cleanup',
     'download.config.stall.samples_hint':
       'Leave empty to never clean up stalled downloads. Removing one deletes the torrent and its files.',
@@ -484,6 +506,8 @@ export const I18N = {
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
   // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
   fr: {
+    'download.media.grab_best': 'Récupérer la meilleure release',
+    'download.media.search_releases': 'Rechercher des releases',
     'download.config.stall.samples': 'Vérifications avant nettoyage d’un téléchargement bloqué',
     'download.config.stall.samples_hint':
       'Laissez vide pour ne jamais nettoyer les téléchargements bloqués. Supprimer un torrent efface aussi ses fichiers.',

@@ -44,6 +44,23 @@ test('creates with the "torznab" implementation and triggers a caps refresh', as
   assert.equal(refreshCapsCalls.length, 1);
 });
 
+test('a caps probe that rejects never becomes an unhandled rejection', async () => {
+  const { service, torznab } = makeService();
+  torznab.refreshCaps = () => Promise.reject(new IndexerNotFoundError('Indexer #1 not found'));
+  const unhandled: unknown[] = [];
+  const onUnhandled = (e: unknown) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    await service.create({ name: 'X', implementation: 'torznab', settings: { baseUrl: 'https://x.tld', apiKey: 'k' } });
+    await service.update(1, { name: 'Y' });
+    // Two macrotask turns: an unhandled rejection is only reported once the microtask queue drains.
+    await new Promise((r) => setTimeout(r, 10));
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+  assert.deepEqual(unhandled, [], 'a rejected fire-and-forget probe would take the whole plugin process down');
+});
+
 test('refuses an unregistered implementation on create, naming it', async () => {
   const { service } = makeService();
   await assert.rejects(

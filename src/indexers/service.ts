@@ -1,4 +1,5 @@
 import type { IndexerRow } from '../db/rows';
+import { log } from '../log';
 import {
   IndexerNotFoundError,
   UnknownIndexerImplementationError,
@@ -73,7 +74,9 @@ export class IndexerService {
       capsSearchFallback: false,
     });
 
-    void this.deps.torznab.refreshCaps(saved);
+    // Fire-and-forget: a failed probe — or a row deleted while it was in flight — must never
+    // reject into an unhandled rejection, which takes the whole plugin process down.
+    void this.deps.torznab.refreshCaps(saved).catch((e: unknown) => log.warn(`caps refresh failed: ${String(e)}`));
     return this.redact(saved);
   }
 
@@ -140,7 +143,9 @@ export class IndexerService {
     }
 
     const saved = await this.deps.repo.update(id, patch);
-    void this.deps.torznab.refreshCaps(saved);
+    // Fire-and-forget: a failed probe — or a row deleted while it was in flight — must never
+    // reject into an unhandled rejection, which takes the whole plugin process down.
+    void this.deps.torznab.refreshCaps(saved).catch((e: unknown) => log.warn(`caps refresh failed: ${String(e)}`));
     return this.redact(saved);
   }
 

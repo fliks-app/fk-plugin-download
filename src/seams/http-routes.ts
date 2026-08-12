@@ -195,17 +195,20 @@ async function handleSearchReleases(deps: RouteDeps, params: Record<string, stri
   if (episodeId === null) return badRequest('episodeId');
   const customQuery = typeof req.query?.['q'] === 'string' ? req.query['q'] : undefined;
 
-  const releases = await deps.grabPipeline.searchReleases(mediaId, seasonId, episodeId, customQuery);
-  return jsonResponse(200, { releases });
+  // A bare array: these routes answer core's own legacy URLs, whose shape the frozen
+  // native clients already speak.
+  return jsonResponse(200, await deps.grabPipeline.searchReleases(mediaId, seasonId, episodeId, customQuery));
 }
 
+/** Core names the release source `sourceId`; inside this plugin that source is an indexer row. */
 function readManualGrabInput(body: unknown): ManualGrabInput | undefined {
-  const b = (body ?? {}) as Partial<ManualGrabInput>;
-  if (typeof b.downloadUrl !== 'string' || !b.downloadUrl) return undefined;
+  const b = (body ?? {}) as Record<string, unknown>;
+  const downloadUrl = b['downloadUrl'];
+  if (typeof downloadUrl !== 'string' || !downloadUrl) return undefined;
   return {
-    downloadUrl: b.downloadUrl,
-    sourceTitle: typeof b.sourceTitle === 'string' ? b.sourceTitle : undefined,
-    indexerId: typeof b.indexerId === 'number' ? b.indexerId : undefined,
+    downloadUrl,
+    sourceTitle: typeof b['sourceTitle'] === 'string' ? b['sourceTitle'] : undefined,
+    indexerId: typeof b['sourceId'] === 'number' ? b['sourceId'] : undefined,
   };
 }
 

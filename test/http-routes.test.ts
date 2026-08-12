@@ -152,7 +152,7 @@ describe('route table — shape matching', () => {
     assert.deepEqual(resolved!.params, { id: '42' });
     const res = await resolved!.handler(req({ path: '/api/media/42/releases' }), resolved!.params);
     assert.equal(res.status, 200);
-    assert.deepEqual(res.body, { releases: [{ probe: 'releases', mediaId: 42, seasonId: undefined, episodeId: undefined }] });
+    assert.deepEqual(res.body, [{ probe: 'releases', mediaId: 42, seasonId: undefined, episodeId: undefined }]);
   });
 
   test('a season/episode id with no core objectGuard is still validated by the handler', async () => {
