@@ -70,10 +70,19 @@ function buildDeps(opts: { target: AcquisitionTarget | null; releases?: { title:
 }
 
 describe('searchReleases', () => {
-  test('returns [] when want is null — nothing to search for', async () => {
+  test('throws unprofiled when want is null, instead of returning [] silently', async () => {
     const { deps } = buildDeps({ target: target({ want: null }), releases: [{ title: 'x', downloadUrl: 'u', indexerId: 1 }] });
+    await assert.rejects(() => searchReleases(deps, 1), (e: unknown) => e instanceof GrabError && e.messageKey === 'download.grab.errors.unprofiled');
+  });
+
+  test('a skip-decision target still searches and returns scored releases — a manual search always searches', async () => {
+    const { deps } = buildDeps({
+      target: target({ want: { decision: 'skip', allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false } }),
+      releases: [{ title: 'Movie.2020.1080p', downloadUrl: 'u1', indexerId: 1 }],
+    });
     const result = await searchReleases(deps, 1);
-    assert.deepEqual(result, []);
+    assert.equal(result.length, 1);
+    assert.equal(result[0]?.title, 'Movie.2020.1080p');
   });
 
   test('throws media_not_found when acquisitionContext resolves null', async () => {
@@ -114,12 +123,49 @@ describe('grabRelease — manual URL', () => {
     assert.equal(historyRepo.insertCalls[0]?.grabSource, 'manual');
     assert.equal(historyRepo.insertCalls[0]?.indexerId, 7);
   });
+
+  test('force lets a manual grab through despite a quality the profile does not allow', async () => {
+    const { deps, driver } = buildDeps({
+      target: target({}),
+      scored: [{ id: '0', qualityId: 5, rank: 30, allowed: false, customFormatScore: 0, blocklisted: false, languageId: null, languageAllowed: true, isFullSeason: false, sizeDeviation: 0, videoCodec: null, rejections: [] }],
+    });
+    const result = await grabRelease(deps, 1, undefined, undefined, { downloadUrl: 'magnet:?xt=urn:btih:aaa', force: true });
+    assert.equal(result.torrentHash, driver.nextHash);
+  });
+
+  test('a blocklisted release refuses even when forced', async () => {
+    const { deps, driver } = buildDeps({
+      target: target({}),
+      scored: [{ id: '0', qualityId: 5, rank: 30, allowed: false, customFormatScore: 0, blocklisted: true, languageId: null, languageAllowed: true, isFullSeason: false, sizeDeviation: 0, videoCodec: null, rejections: [] }],
+    });
+    await assert.rejects(
+      () => grabRelease(deps, 1, undefined, undefined, { downloadUrl: 'magnet:?xt=urn:btih:aaa', force: true }),
+      (e: unknown) => e instanceof GrabError && e.messageKey === 'download.grab.errors.blocklisted',
+    );
+    assert.equal(driver.added.length, 0);
+  });
 });
 
 describe('grabRelease — auto-pick', () => {
   test('throws unprofiled when want is null', async () => {
     const { deps } = buildDeps({ target: target({ want: null }) });
     await assert.rejects(() => grabRelease(deps, 1), (e: unknown) => e instanceof GrabError && e.messageKey === 'download.grab.errors.unprofiled');
+  });
+
+  test('VERDICT: never auto-picks for a title that already satisfies its profile', async () => {
+    const skipWant = { decision: 'skip' as const, allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 40, maxRankInclusive: 62, minResolution: 0, resolutionUpgradeOnly: false };
+    const { deps, driver } = buildDeps({
+      target: target({ want: skipWant }),
+      releases: [{ title: 'Some.Release.1080p', downloadUrl: 'magnet:?xt=urn:btih:aaa', indexerId: 1 }],
+      // Rank inside the skip window and no rejection: only the decision itself can hold it back.
+      scored: [{ id: '0', qualityId: 5, rank: 62, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageAllowed: true, isFullSeason: false, sizeDeviation: 0, videoCodec: null, rejections: [] }],
+    });
+
+    await assert.rejects(
+      () => grabRelease(deps, 1),
+      (e: unknown) => e instanceof GrabError && e.messageKey === 'download.grab.errors.no_eligible_release',
+    );
+    assert.equal(driver.added.length, 0, 'the profile forbids this upgrade — nothing may reach the client');
   });
 
   test('throws no_download_client when no configured client supports the driver', async () => {

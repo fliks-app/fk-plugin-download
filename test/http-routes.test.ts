@@ -187,7 +187,25 @@ describe('route table — shape matching', () => {
       resolved.params,
     );
     assert.equal(res.status, 200);
-    assert.deepEqual(seen, [{ mediaId: 5, seasonId: undefined, episodeId: undefined, manual: { downloadUrl: 'magnet:?xt=x', sourceTitle: 'A Title', indexerId: undefined } }]);
+    assert.deepEqual(seen, [{ mediaId: 5, seasonId: undefined, episodeId: undefined, manual: { downloadUrl: 'magnet:?xt=x', sourceTitle: 'A Title', indexerId: undefined, force: false } }]);
+  });
+
+  test('a POST grab body with force: true threads force through to grabRelease', async () => {
+    const seen: unknown[] = [];
+    const deps: RouteDeps = {
+      ...fakeDeps(),
+      grabPipeline: {
+        searchReleases: fakeDeps().grabPipeline.searchReleases,
+        grabRelease: async (mediaId, seasonId, episodeId, manual) => {
+          seen.push(manual);
+          return { torrentHash: 'x' };
+        },
+      },
+    };
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('POST', '/5/grab')!;
+    await resolved.handler(req({ method: 'POST', path: '/5/grab', body: { downloadUrl: 'magnet:?xt=x', force: true } }), resolved.params);
+    assert.deepEqual(seen, [{ downloadUrl: 'magnet:?xt=x', sourceTitle: undefined, indexerId: undefined, force: true }]);
   });
 });
 

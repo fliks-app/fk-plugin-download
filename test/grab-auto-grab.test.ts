@@ -79,12 +79,24 @@ function buildDeps() {
 }
 
 describe('tryAutoGrab', () => {
-  test('skips when want is null (unprofiled or already satisfied) without searching', async () => {
+  test('skips when want is null (unprofiled) without searching', async () => {
     const { deps } = buildDeps();
     let searched = false;
     const ok = await tryAutoGrab(deps, target({ want: null }), makeClient(), async () => {
       searched = true;
       return [];
+    });
+    assert.equal(ok, false);
+    assert.equal(searched, false);
+  });
+
+  test('skips a skip-decision target (already satisfies its profile) without searching — never grabbed unattended', async () => {
+    const { deps } = buildDeps();
+    let searched = false;
+    const skipWant = { decision: 'skip' as const, allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false };
+    const ok = await tryAutoGrab(deps, target({ want: skipWant }), makeClient(), async () => {
+      searched = true;
+      return [release({})];
     });
     assert.equal(ok, false);
     assert.equal(searched, false);

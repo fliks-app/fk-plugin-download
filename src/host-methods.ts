@@ -33,7 +33,7 @@ export interface AcquisitionTarget {
   tvdbId: number | null;
   libraryId: number;
   want: {
-    decision: 'missing' | 'upgrade';
+    decision: 'missing' | 'upgrade' | 'skip';
     allowedQualityIds: number[];
     allowedLanguageIds: number[];
     minRankExclusive: number;
