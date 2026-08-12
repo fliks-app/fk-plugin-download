@@ -30,8 +30,7 @@ the actual wire protocol and a real database.
     the completion poller; wired by `src/seams/grab-pipeline.ts` and
     `src/seams/completion.ts`.
   - `src/seams/jobs.ts` — one handler per manifest job, dispatched by name.
-  - `src/seams/http-routes.ts` — the full route table, matched first-match-wins,
-    canonical paths and `legacyPaths` aliases alike.
+  - `src/seams/http-routes.ts` — the full route table, matched first-match-wins.
   - `src/db/**` + `migrations/**` — this plugin's own schema, migration runner and six
     repositories (below).
 - **`src/host-methods.ts`** / **`src/principal.ts`** — hand-kept, types-only mirrors of
@@ -71,9 +70,10 @@ is a one-line edit there.
   manifest's route table and this plugin's own matcher (`src/seams/http-routes.ts`)
   resolve first-match-wins, so the literal segment has to come first or it reads as an
   id. `GET /delay-profiles` is not declared at all (no page needs it yet).
-- **`legacyPaths`**: 8 entries, each an old `/api/media/:id/...` URL mapped to its
-  modern equivalent above — a compatibility shim for clients written against the
-  pre-plugin API, not a core-side deprecation window.
+- **`ui.releasePicker`**: the six routes core's release picker calls — `movie`, `season`
+  and `episode`, each a `search` (`GET`) and a `grab` (`POST`). Core prefixes each with
+  its proxy path and substitutes the ids; every one must also appear in `routes[]`, or
+  core refuses the manifest, since a route it does not know carries no policy.
 - **`jobs`**: `SearchMissing`, `RssSync`, `ImportCompleted`, `CleanStalled`,
   `CleanSeeded`, cron literals copied from the `CronExpression` values the equivalent
   `@Cron` decorators used before the acquisition stack was removed from core. Core's own
@@ -279,8 +279,8 @@ equivalent API).
 - `node --check dist/plugin.js` passes.
 - `test/harness.test.ts` spawns `dist/plugin.js` under the exact env allowlist and
   `node --permission`/`--allow-fs-*` flags `spawn-plan.ts` uses, then drives the full
-  protocol (`hello` → `health` → `event`/`config` notes → `http` CRUD + queue + legacy
-  alias + path-traversal rejection → `job` × 5 → `shutdown`) against a real, freshly
+  protocol (`hello` → `health` → `event`/`config` notes → `http` CRUD + queue + release
+  search + path-traversal rejection → `job` × 5 → `shutdown`) against a real, freshly
   migrated schema, with no core process involved beyond a canned-reply stand-in.
 - `test/host-client.test.ts` drives `HostClient` against a real unix-socket stub: reply
   correlation under out-of-order replies, per-call timeout without affecting other
