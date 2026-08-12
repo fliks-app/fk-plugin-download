@@ -9,6 +9,7 @@ import type { Pool } from 'pg';
 import { isDatabaseReachable, adminPool, MIGTEST_DSN } from './db-test-helpers';
 import { createPluginPool, pluginSchemaName } from '../src/db/pool';
 import { migrateUp, migrateDown } from '../src/db/migrate';
+import { MIGRATIONS } from '../migrations';
 import { createRepositories, type Repositories } from '../src/db/repositories';
 
 const PLUGIN_ID = 'test.download';
@@ -66,23 +67,25 @@ test('migrateUp -> migrateDown -> migrateUp, in its own throwaway schema', async
   await admin.query(`CREATE SCHEMA "${udoSchema}"`);
   const udoPool = createPluginPool({ dsn: MIGTEST_DSN, pluginId: udoPluginId });
   try {
+    const allNames = MIGRATIONS.map((m) => m.name);
     const ranUp1 = await migrateUp(udoPool);
     console.log('[up#1]', ranUp1);
-    assert.deepEqual(ranUp1, ['0001_initial_schema']);
+    assert.deepEqual(ranUp1, allNames, 'every migration, in declaration order');
     assert.deepEqual(await tableNames(udoPool, udoSchema), ['_migrations', ...SIX_TABLES].sort());
 
     const ranUpAgain = await migrateUp(udoPool);
     console.log('[up-again, idempotent]', ranUpAgain);
     assert.deepEqual(ranUpAgain, [], 'a second up must apply nothing');
 
-    const ranDown = await migrateDown(udoPool, 1);
+    // Down the whole chain: a partial rollback would leave tables the next up cannot recreate.
+    const ranDown = await migrateDown(udoPool, allNames.length);
     console.log('[down]', ranDown);
-    assert.deepEqual(ranDown, ['0001_initial_schema']);
+    assert.deepEqual(ranDown, [...allNames].reverse(), 'rolled back newest first');
     assert.deepEqual(await tableNames(udoPool, udoSchema), ['_migrations'], 'only the tracking table survives a down');
 
     const ranUp2 = await migrateUp(udoPool);
     console.log('[up#2]', ranUp2);
-    assert.deepEqual(ranUp2, ['0001_initial_schema']);
+    assert.deepEqual(ranUp2, allNames);
     assert.deepEqual(await tableNames(udoPool, udoSchema), ['_migrations', ...SIX_TABLES].sort());
   } finally {
     await udoPool.end();
