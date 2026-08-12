@@ -222,14 +222,14 @@ async function handleGrab(deps: RouteDeps, params: Record<string, string>, req: 
   return jsonResponse(200, result);
 }
 
+/** A bare array: the `providers` renderer reads the body as the row list, and a wrapper
+ *  renders as an empty table with no error. */
 async function handleListIndexers(deps: RouteDeps): Promise<PluginHttpResponse> {
-  const indexers = await deps.indexerService.findAll();
-  return jsonResponse(200, { indexers });
+  return jsonResponse(200, await deps.indexerService.findAll());
 }
 
 async function handleListDownloadClients(deps: RouteDeps): Promise<PluginHttpResponse> {
-  const downloadClients = await deps.downloadClientsService.findAll();
-  return jsonResponse(200, { downloadClients });
+  return jsonResponse(200, await deps.downloadClientsService.findAll());
 }
 
 async function handleCreateIndexer(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
