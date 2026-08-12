@@ -108,7 +108,7 @@ let resolvableMediaId: number | undefined;
 
 /** Canned replies for the one host method the five jobs actually reach on an empty DB
  *  (`CleanStalled`'s `config.get` — every other job returns before calling out, since
- *  no indexer/client rows exist) plus the handful the http drive's grab/legacy paths hit.
+ *  no indexer/client rows exist) plus the handful the http drive's grab paths hit.
  *  `media.resolve` mirrors core's own behaviour: only ids it actually knows come back —
  *  everything else (including any id before `resolvableMediaId` is set) resolves to nothing. */
 function cannedHostReply(method: string, payload: unknown): unknown {
@@ -483,18 +483,18 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
     'the deleted indexer must not reappear',
   );
 
-  // A legacy alias resolves to the same handler as its target and reaches the real grab
-  // pipeline, which round-trips `media.acquisitionContext` over the mocked core socket.
-  const legacyResp = await channel.call<{ status: number; body: { error: { key: string; detail?: string } } }>('http', {
+  // A search reaches the real grab pipeline, which round-trips `media.acquisitionContext`
+  // over the mocked core socket.
+  const searchResp = await channel.call<{ status: number; body: { error: { key: string; detail?: string } } }>('http', {
     method: 'GET',
-    path: '/api/media/1/releases',
+    path: '/1/releases',
     query: {},
     body: null,
     principal: { kind: 'delegated', userId: 7 },
   });
-  assert.equal(legacyResp.status, 404);
-  assert.equal(legacyResp.body.error.key, 'download.grab.errors.media_not_found');
-  assert.equal(legacyResp.body.error.detail, '1');
+  assert.equal(searchResp.status, 404);
+  assert.equal(searchResp.body.error.key, 'download.grab.errors.media_not_found');
+  assert.equal(searchResp.body.error.detail, '1');
 
   // A ".." path segment where a numeric id is expected: the shape still matches (one
   // segment, whatever its content) but the handler's own param validation rejects it.

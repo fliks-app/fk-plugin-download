@@ -9,7 +9,6 @@ import {
   createRouteTable,
   canonicalRoutes,
   ROUTES,
-  LEGACY_PATHS,
   type RouteDeps,
   type PluginHttpRequest,
   type QueueItemDto,
@@ -145,19 +144,6 @@ describe('route table — shape matching', () => {
     assert.equal(table.resolve('GET', '/delay-profiles'), null);
   });
 
-  test('a legacy alias resolves to the same params and reaches the same handler as its target', async () => {
-    const table = createRouteTable(fakeDeps());
-    const resolved = table.resolve('GET', '/api/media/42/releases');
-    assert.ok(resolved);
-    assert.deepEqual(resolved!.params, { id: '42' });
-    const res = await resolved!.handler(req({ path: '/api/media/42/releases' }), resolved!.params);
-    assert.equal(res.status, 200);
-    assert.deepEqual(res.body, [
-      // `sourceId`/`sourceName` project the indexer columns into core's own vocabulary.
-      { probe: 'releases', mediaId: 42, seasonId: undefined, episodeId: undefined, sourceId: undefined, sourceName: undefined },
-    ]);
-  });
-
   test('a season/episode id with no core objectGuard is still validated by the handler', async () => {
     const table = createRouteTable(fakeDeps());
     const resolved = table.resolve('GET', '/1/seasons/../releases')!;
@@ -167,7 +153,7 @@ describe('route table — shape matching', () => {
     assert.equal(res.status, 400);
   });
 
-  test('every implemented manifest route and every legacy alias resolves; the unbacked one does not', () => {
+  test('every implemented manifest route resolves; the unbacked one does not', () => {
     const table = createRouteTable(fakeDeps());
     const unimplemented = new Set(['GET /delay-profiles']);
     for (const r of ROUTES) {
@@ -179,12 +165,6 @@ describe('route table — shape matching', () => {
       } else {
         assert.ok(resolved, `${key} must resolve`);
       }
-    }
-    for (const oldKey of Object.keys(LEGACY_PATHS)) {
-      const spaceAt = oldKey.indexOf(' ');
-      const method = oldKey.slice(0, spaceAt);
-      const path = oldKey.slice(spaceAt + 1).replace(/:[a-zA-Z]+/g, '1');
-      assert.ok(table.resolve(method, path), `${oldKey} must resolve`);
     }
   });
 
@@ -215,7 +195,7 @@ describe('route table — manifest/handler parity', () => {
   // Declared in ROUTES with no handler in this plugin — see canonicalRoutes()'s own comment.
   const DECLARED_BUT_UNBACKED = new Set(['GET /delay-profiles']);
 
-  test('every canonical (non-legacy) handler key matches manifest ROUTES[], in both directions', () => {
+  test('every handler key matches manifest ROUTES[], in both directions', () => {
     const manifestKeys = new Set(
       ROUTES.map((r) => `${r.method} ${r.path}`).filter((k) => !DECLARED_BUT_UNBACKED.has(k)),
     );

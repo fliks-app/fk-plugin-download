@@ -63,13 +63,13 @@ test('searchMovie resolves baseUrl/apiKey from settings and builds a plain t=sea
   const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
   try {
     const results = await client.searchMovie(
-      indexer({ settings: { baseUrl: 'https://legacy.tld/api', apiKey: 'legacy-key' } }),
+      indexer({ settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'probe-key' } }),
       'Some Movie',
     );
     assert.deepEqual(results, []);
     assert.equal(stub.calls.length, 1);
-    assert.ok(stub.calls[0]?.startsWith('https://legacy.tld/api?'));
-    assert.ok(stub.calls[0]?.includes('apikey=legacy-key'));
+    assert.ok(stub.calls[0]?.startsWith('https://tracker.tld/api?'));
+    assert.ok(stub.calls[0]?.includes('apikey=probe-key'));
     assert.ok(stub.calls[0]?.includes('t=search'));
   } finally {
     stub.restore();
@@ -81,7 +81,7 @@ test('searchMovie skips when enableSearch is false, even though the indexer is e
   const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
   try {
     const results = await client.searchMovie(
-      indexer({ enableSearch: false, settings: { baseUrl: 'https://legacy.tld/api', apiKey: 'k' } }),
+      indexer({ enableSearch: false, settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } }),
       'Some Movie',
     );
     assert.deepEqual(results, []);
@@ -96,7 +96,7 @@ test('rssSearch skips when enableRss is false, even though enabled and enableSea
   const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
   try {
     const results = await client.rssSearch(
-      indexer({ enableRss: false, settings: { baseUrl: 'https://legacy.tld/api', apiKey: 'k' } }),
+      indexer({ enableRss: false, settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } }),
     );
     assert.deepEqual(results, []);
     assert.equal(stub.calls.length, 0);
@@ -112,7 +112,7 @@ test('refreshCaps has no enabled/enableSearch gate — still refreshes a disable
     body: '<caps><searching><movie-search available="yes"/><tv-search available="no"/></searching></caps>',
   }));
   try {
-    const ix = indexer({ enabled: false, enableSearch: false, settings: { baseUrl: 'https://legacy.tld/api', apiKey: 'k' } });
+    const ix = indexer({ enabled: false, enableSearch: false, settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
     await client.refreshCaps(ix);
     assert.equal(stub.calls.length, 1);
     assert.equal(updates.length, 1);
@@ -143,7 +143,7 @@ test('a 429 with Retry-After during execSearch feeds the throttle, and the retry
       : { status: 200, body: emptyTorznabBody };
   });
   try {
-    const ix = indexer({ settings: { baseUrl: 'https://legacy.tld/api', apiKey: 'k' } });
+    const ix = indexer({ settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
     const results = await client.searchMovie(ix, 'Some Movie');
     assert.deepEqual(results, []);
     const remaining = throttle.cooldownRemainingMs(ix.id);

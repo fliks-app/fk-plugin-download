@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { build } from '../scripts/build';
-import { CORE_REFS, JOBS, LEGACY_PATHS, PERMISSIONS, PLUGIN_ID, ROUTES, SCOPES } from '../scripts/manifest-template';
+import { CORE_REFS, JOBS, PERMISSIONS, PLUGIN_ID, RELEASE_PICKER, ROUTES, SCOPES } from '../scripts/manifest-template';
 
 const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
@@ -91,7 +91,7 @@ test('every route policy is "<Action>:plugin:fliks.download:<declared permission
     permissions: string[];
   };
   assert.deepEqual(manifest.routes, ROUTES);
-  assert.ok(manifest.routes.length >= 8, 'at least the 8 legacy grab/release routes must be declared');
+  assert.ok(manifest.routes.length >= 6, "at least the release picker's six routes must be declared");
 
   for (const route of manifest.routes) {
     const m = /^[a-z]+:plugin:fliks\.download:([a-z0-9_-]+)$/.exec(route.policy);
@@ -111,16 +111,20 @@ test('every route policy is "<Action>:plugin:fliks.download:<declared permission
   }
 });
 
-test('legacyPaths values are each one of the declared routes, verbatim', () => {
+test('ui.releasePicker names six declared routes, with the method each half implies', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'plugin.json'), 'utf8')) as {
-    legacyPaths: Record<string, string>;
+    ui: { releasePicker: Record<string, { search: string; grab: string }> };
     routes: { method: string; path: string }[];
   };
-  assert.deepEqual(manifest.legacyPaths, LEGACY_PATHS);
+  assert.deepEqual(manifest.ui.releasePicker, RELEASE_PICKER);
   const declared = new Set(manifest.routes.map((r) => `${r.method} ${r.path}`));
-  for (const [oldPath, newPath] of Object.entries(manifest.legacyPaths)) {
-    assert.match(oldPath, /^(GET|POST) \/api\/media\//, `legacy path "${oldPath}" must be a real old media.controller.ts URL`);
-    assert.ok(declared.has(newPath), `legacyPaths target "${newPath}" must be one of routes[]`);
+  const contexts = Object.entries(manifest.ui.releasePicker);
+  assert.equal(contexts.length, 3, 'movie, season, episode');
+  for (const [context, pair] of contexts) {
+    // Core refuses the whole manifest when one of these is not a declared route: an
+    // undeclared route carries no policy.
+    assert.ok(declared.has(`GET ${pair.search}`), `releasePicker.${context}.search must be a declared GET`);
+    assert.ok(declared.has(`POST ${pair.grab}`), `releasePicker.${context}.grab must be a declared POST`);
   }
 });
 

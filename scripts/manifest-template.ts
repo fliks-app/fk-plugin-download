@@ -67,8 +67,6 @@ export const POLICY = {
 export const ROUTES: { method: string; path: string; policy: string; objectGuard?: string }[] = [
   { method: 'GET', path: '/:id/releases', policy: POLICY.releasesRead, objectGuard: 'mediaAccessible:id' },
   { method: 'POST', path: '/:id/grab', policy: POLICY.releasesGrab, objectGuard: 'mediaAccessible:id' },
-  { method: 'GET', path: '/:id/upgrade-releases', policy: POLICY.releasesRead, objectGuard: 'mediaAccessible:id' },
-  { method: 'POST', path: '/:id/upgrade', policy: POLICY.releasesGrab, objectGuard: 'mediaAccessible:id' },
   {
     method: 'GET',
     path: '/:id/seasons/:seasonId/releases',
@@ -115,15 +113,11 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
 ];
 
 /** `POST /api/media/:id/grab` (and the 7 siblings) forwarded to the paths above, one major version. */
-export const LEGACY_PATHS: Record<string, string> = {
-  'GET /api/media/:id/releases': 'GET /:id/releases',
-  'POST /api/media/:id/grab': 'POST /:id/grab',
-  'GET /api/media/:id/upgrade-releases': 'GET /:id/upgrade-releases',
-  'POST /api/media/:id/upgrade': 'POST /:id/upgrade',
-  'GET /api/media/:id/seasons/:seasonId/releases': 'GET /:id/seasons/:seasonId/releases',
-  'POST /api/media/:id/seasons/:seasonId/grab': 'POST /:id/seasons/:seasonId/grab',
-  'GET /api/media/:id/episodes/:episodeId/releases': 'GET /:id/episodes/:episodeId/releases',
-  'POST /api/media/:id/episodes/:episodeId/grab': 'POST /:id/episodes/:episodeId/grab',
+/** Fills core's release picker: core prefixes each with the proxy path and substitutes the ids. */
+export const RELEASE_PICKER = {
+  movie: { search: '/:id/releases', grab: '/:id/grab' },
+  season: { search: '/:id/seasons/:seasonId/releases', grab: '/:id/seasons/:seasonId/grab' },
+  episode: { search: '/:id/episodes/:episodeId/releases', grab: '/:id/episodes/:episodeId/grab' },
 };
 
 /**
@@ -647,7 +641,6 @@ export const MANIFEST_TEMPLATE = {
   memoryMb: 256,
   database: { schema: true, coreRefs: [...CORE_REFS] as string[] },
   routes: ROUTES,
-  legacyPaths: LEGACY_PATHS,
   scopes: [...SCOPES] as string[],
   ingestRoots: INGEST_ROOTS,
   jobs: JOBS,
@@ -655,6 +648,7 @@ export const MANIFEST_TEMPLATE = {
   ui: {
     contributions: UI_CONTRIBUTIONS,
     configPages: CONFIG_PAGES,
+    releasePicker: RELEASE_PICKER,
   },
   i18n: I18N,
 };

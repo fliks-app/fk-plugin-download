@@ -30,7 +30,7 @@ import type {
   IndexerStatsRepository,
 } from '../db/repositories';
 import type { DownloadHistoryRow, DownloadHistoryStatus } from '../db/rows';
-import { LEGACY_PATHS, ROUTES } from '../../scripts/manifest-template';
+import {  ROUTES } from '../../scripts/manifest-template';
 import { log } from '../log';
 
 export interface PluginHttpRequest {
@@ -578,8 +578,6 @@ function canonicalRoutes(deps: RouteDeps): { method: string; path: string; handl
   return [
     { method: 'GET', path: '/:id/releases', handler: releases },
     { method: 'POST', path: '/:id/grab', handler: grab },
-    { method: 'GET', path: '/:id/upgrade-releases', handler: releases },
-    { method: 'POST', path: '/:id/upgrade', handler: grab },
     { method: 'GET', path: '/:id/seasons/:seasonId/releases', handler: releases },
     { method: 'POST', path: '/:id/seasons/:seasonId/grab', handler: grab },
     { method: 'GET', path: '/:id/episodes/:episodeId/releases', handler: releases },
@@ -658,19 +656,7 @@ function matchOne(route: CompiledRoute, method: string, rawSegments: string[]): 
 }
 
 function buildCompiledRoutes(deps: RouteDeps): CompiledRoute[] {
-  const canonical = canonicalRoutes(deps);
-  const byKey = new Map(canonical.map((r) => [`${r.method} ${r.path}`, r]));
-
-  const legacy = Object.entries(LEGACY_PATHS).flatMap(([oldKey, newKey]) => {
-    const target = byKey.get(newKey);
-    if (!target) return []; // manifest.test.ts already proves every legacyPaths value names a declared route
-    const spaceAt = oldKey.indexOf(' ');
-    const method = oldKey.slice(0, spaceAt);
-    const path = oldKey.slice(spaceAt + 1);
-    return [{ method, path, handler: target.handler }];
-  });
-
-  return [...canonical, ...legacy].map((r) => ({
+  return canonicalRoutes(deps).map((r) => ({
     method: r.method,
     segments: compileTemplate(r.path),
     handler: wrap(r.handler),
@@ -692,7 +678,7 @@ export function createRouteTable(deps: RouteDeps): RouteTable {
 }
 
 /** Re-exported for tests that want to prove the table's shape against the manifest's own
- *  `ROUTES`/`LEGACY_PATHS` arrays rather than a hand-copied list. `canonicalRoutes` itself
+ *  `ROUTES` array rather than a hand-copied list. `canonicalRoutes` itself
  *  (not just `createRouteTable`'s resolution) is exposed so a parity test can diff its
  *  method+path keys against `ROUTES` directly, in both directions. */
-export { ROUTES, LEGACY_PATHS, canonicalRoutes };
+export { ROUTES, canonicalRoutes };
