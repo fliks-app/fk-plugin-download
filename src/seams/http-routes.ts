@@ -2,6 +2,7 @@ import type { Principal } from '../principal';
 import type { MediaKind } from '../host-methods';
 import type { HostCaller } from '../grab/types';
 import { GrabError, type ManualGrabInput } from '../grab/release-pipeline';
+import type { RankedRelease } from '../grab/release-scoring';
 import { torrentProgressState } from '../grab/progress-state';
 import {
   IndexerNotFoundError,
@@ -195,9 +196,14 @@ async function handleSearchReleases(deps: RouteDeps, params: Record<string, stri
   if (episodeId === null) return badRequest('episodeId');
   const customQuery = typeof req.query?.['q'] === 'string' ? req.query['q'] : undefined;
 
-  // A bare array: these routes answer core's own legacy URLs, whose shape the frozen
-  // native clients already speak.
-  return jsonResponse(200, await deps.grabPipeline.searchReleases(mediaId, seasonId, episodeId, customQuery));
+  const releases = await deps.grabPipeline.searchReleases(mediaId, seasonId, episodeId, customQuery);
+  // A bare array of core-vocabulary rows: these routes answer core's own URLs.
+  return jsonResponse(200, releases.map(toWireRelease));
+}
+
+/** Core names the release source `sourceId`/`sourceName`; inside this plugin it is an indexer row. */
+function toWireRelease({ indexerId, indexerName, ...rest }: RankedRelease): Record<string, unknown> {
+  return { ...rest, sourceId: indexerId, sourceName: indexerName };
 }
 
 /** Core names the release source `sourceId`; inside this plugin that source is an indexer row. */
