@@ -58,7 +58,7 @@ describe('pickRelease', () => {
   });
 
   test('skips every release with a rejection, even a high-rank one', () => {
-    const sorted = [scored({ id: '0', rank: 90, rejections: [{ code: 'seeders', detail: '0 < 5' }] })];
+    const sorted = [scored({ id: '0', rank: 90, rejections: [{ code: 'MIN_SEEDERS', params: { actual: 0, min: 5 } }] })];
     assert.equal(pickRelease(sorted, want), undefined);
   });
 

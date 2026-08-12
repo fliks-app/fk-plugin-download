@@ -53,7 +53,7 @@ export interface IndexerStatsRecorder {
 /** Every message `IndexerService.testConnection`/`TorznabClient.testConnection` can report,
  *  translated by the manifest's `i18n` dictionary — never a literal in any language. Detail
  *  carries the dynamic part (an HTTP status, an indexer's own error text, an implementation
- *  name), same split as `ScoredRelease.rejections[].{code,detail}` in `src/host-methods.ts`. */
+ *  name), same split as `ScoredRelease.rejections[].{code,params}` in `src/host-methods.ts`. */
 export type IndexerConnectionMessageKey =
   | 'download.indexers.test.unknown_implementation'
   | 'download.indexers.test.base_url_missing'
