@@ -45,6 +45,10 @@ releases* from the title's own menu.
 
 ## Living with it
 
+**Two ways to stop seeding.** Per tracker you set a share-ratio target and, if you want, a maximum
+number of days: a finished torrent leaves when either is reached, so one that will never hit the
+ratio still goes on time.
+
 **Priorities matter.** Each tracker has a priority; when two releases score the same, the
 higher-priority tracker wins. Each also has a minimum seeder count and a request delay, so a
 tracker that rate-limits you is not hammered.
@@ -63,7 +67,6 @@ plugin off from the plugins page does not.
 ## What this version does not do
 
 - **Only qBittorrent.** No other download client is supported yet.
-- **No cleanup by age.** Finished torrents are cleared by seed ratio, not after N days.
 - **The unknown-language field is free text.** A typo in an ISO code is stored as typed, with
   nothing to catch it.
 

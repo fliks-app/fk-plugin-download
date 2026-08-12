@@ -239,12 +239,7 @@ concurrency is per plugin id, so two ids dispatched at once both push and one lo
   (`src/seams/http-routes.ts`'s `INDEXER_IMPLEMENTATIONS`) is a plain text input, not a
   validated select over known ISO 639-1 codes — a typo is stored and used as-is, with
   nothing to catch it.
-- **No retention-day cleanup for seeded torrents.** `CleanSeeded` only ports the
-  ratio-target half of the original job (`src/grab/completion-poller.ts`'s
-  `cleanSeeded`). The `maxRetentionDays` half needs each torrent's completion timestamp,
-  and `ClientTorrent` (`src/download-clients/contract.ts`) carries no
-  `completion_on`/finish-time field — dropped rather than approximated with a
-  materially different clock (`added_on`).
+
 - **One indexer protocol, one download client.** `IndexerService` only ever accepts
   `"torznab"` (`src/indexers/service.ts`), and `DOWNLOAD_CLIENT_DRIVERS`
   (`src/seams/download-clients.ts`) has exactly one entry, `qbittorrent`. Both are

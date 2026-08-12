@@ -546,7 +546,7 @@ describe('route table — implementations routes', () => {
     assert.equal(body[0]!.implementation, 'torznab');
     assert.deepEqual(
       body[0]!.fields.map((f) => f.key).sort(),
-      ['apiKey', 'baseUrl', 'enableSearch', 'minSeeders', 'requestDelay', 'seedRatio', 'unknownLanguageIsoCode'],
+      ['apiKey', 'baseUrl', 'enableSearch', 'maxRetentionDays', 'minSeeders', 'requestDelay', 'seedRatio', 'unknownLanguageIsoCode'],
     );
   });
 

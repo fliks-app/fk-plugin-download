@@ -233,7 +233,11 @@ export class QbittorrentDriver implements DownloadClientDriver {
       }
       // Decode HTML entities baked into the `.torrent` `name` field by misbehaving
       // indexers (`Berl&iacute;n` → `Berlín`) so history matching sees the real title.
-      const torrents = (parsed as ClientTorrent[]).map((t) => (t.name ? { ...t, name: decodeHtmlEntities(t.name) } : t));
+      const torrents = (parsed as ClientTorrent[]).map((t) => ({
+        ...t,
+        name: t.name ? decodeHtmlEntities(t.name) : t.name,
+        completion_on: Number.isFinite(Number(t.completion_on)) ? Number(t.completion_on) : undefined,
+      }));
       return { ok: true, torrents };
     } catch (e) {
       log.warn(`getTorrentsResult: error fetching torrents from "${client.name}": ${(e as Error).message}`);

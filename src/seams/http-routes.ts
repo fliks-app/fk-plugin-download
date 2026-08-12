@@ -502,6 +502,12 @@ const INDEXER_IMPLEMENTATIONS: ImplementationDef[] = [
         default: 1,
       },
       {
+        key: 'maxRetentionDays',
+        type: 'number',
+        labelKey: 'download.config.indexers.fields.max_retention_days',
+        hint: 'download.config.indexers.fields.max_retention_days_hint',
+      },
+      {
         key: 'unknownLanguageIsoCode',
         type: 'text',
         labelKey: 'download.config.indexers.fields.unknown_language',

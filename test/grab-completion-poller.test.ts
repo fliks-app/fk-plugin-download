@@ -290,6 +290,66 @@ describe('DownloadCompletionPoller.cleanSeeded — adversarial table', () => {
 
     assert.equal(h.driver.deleted.length, 0);
   });
+  test('retention reached before the ratio target -> deletes on age', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.indexersRepo.rows.push({
+      id: 7,
+      name: 'tracker',
+      implementation: 'torznab',
+      settings: { seedRatio: 99, maxRetentionDays: 2 },
+      enableRss: true,
+      enableSearch: true,
+      priority: 25,
+      enabled: true,
+      capsSearchFallback: false,
+      capsMovieSearch: false,
+      capsTvSearch: false,
+      capsProbedAt: null,
+      requestDelay: 0,
+      createdAt: 'now',
+      updatedAt: 'now',
+    });
+    const threeDaysAgo = Math.floor(Date.now() / 1000) - 3 * 86_400;
+    h.driver.torrentsByClient.set(1, {
+      ok: true,
+      torrents: [makeTorrent({ hash: 'H1', ratio: 0.1, progress: 1, completion_on: threeDaysAgo })],
+    });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'H1', status: 'completed', indexerId: 7 }));
+
+    await h.poller.cleanSeeded();
+
+    // A ratio of 99 is unreachable: only the age rule can have removed this.
+    assert.deepEqual(h.driver.deleted, [{ clientId: 1, hash: 'H1', deleteFiles: true }]);
+  });
+
+  test('VERDICT: no completion time reported -> judged on ratio alone, never treated as age zero', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.indexersRepo.rows.push({
+      id: 7,
+      name: 'tracker',
+      implementation: 'torznab',
+      settings: { seedRatio: 99, maxRetentionDays: 1 },
+      enableRss: true,
+      enableSearch: true,
+      priority: 25,
+      enabled: true,
+      capsSearchFallback: false,
+      capsMovieSearch: false,
+      capsTvSearch: false,
+      capsProbedAt: null,
+      requestDelay: 0,
+      createdAt: 'now',
+      updatedAt: 'now',
+    });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'H1', ratio: 0.1, progress: 1 })] });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'H1', status: 'completed', indexerId: 7 }));
+
+    await h.poller.cleanSeeded();
+
+    assert.equal(h.driver.deleted.length, 0);
+  });
 });
 
 describe('DownloadCompletionPoller.poll — import hand-off', () => {

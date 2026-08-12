@@ -18,6 +18,9 @@ export interface ClientTorrent {
   dlspeed: number;
   upspeed: number;
   ratio: number;
+  /** Epoch seconds when the download finished. Absent or <= 0 when the client reports none,
+   *  which is not the same as "just finished" — a retention rule must skip it, not assume now. */
+  completion_on?: number;
   /** Seconds. Some clients report a sentinel for "unknown" rather than null. */
   eta: number;
   /** The client's own vocabulary. Mapped to core's closed progress state at the

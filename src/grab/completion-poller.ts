@@ -451,12 +451,10 @@ export class DownloadCompletionPoller {
   // ---------------------------------------------------------------------------
 
   /**
-   * Ported from `cleanSeededTorrents` — ratio-target path only. The
-   * `maxRetentionDays` path cannot be ported: it needs each torrent's
-   * completion timestamp, and `ClientTorrent` (`download-clients/contract.ts`,
-   * not owned here) carries no `completion_on`/finish-time field. Not
-   * substituted with `added_on` (a materially different clock) — dropped and
-   * flagged, not silently changed.
+   * Removes a finished torrent once its indexer's seed target is met: either
+   * `maxRetentionDays` since the download completed, or `seedRatio` reached. Retention is
+   * checked first so a long-seeding torrent leaves on time rather than waiting for a ratio
+   * it may never reach.
    */
   async cleanSeeded(): Promise<void> {
     const clients = await this.deps.clientsRepo.listEnabled();
@@ -486,10 +484,10 @@ export class DownloadCompletionPoller {
       const { client, torrent } = entry;
       const indexer = history.indexerId ? indexerMap.get(history.indexerId) : undefined;
       const settings = indexer?.settings ?? {};
-      const targetRatio = Number(settings['seedRatio'] ?? 1);
-      if (torrent.ratio < targetRatio) continue;
+      const reason = this.seedCleanupReason(torrent, settings);
+      if (!reason) continue;
 
-      log.info(`SeedCleanup: removing "${torrent.name}" (ratio ${torrent.ratio.toFixed(2)} >= ${targetRatio})`);
+      log.info(`SeedCleanup: removing "${torrent.name}" (${reason})`);
       try {
         await this.deps.driver.deleteTorrent(client, torrent.hash, true);
         deleted = true;
@@ -499,6 +497,20 @@ export class DownloadCompletionPoller {
     }
 
     if (deleted) await this.deps.host.call('events.publish', [{ type: 'acquisition.queue.changed' }]);
+  }
+
+  /** Empty means keep seeding. A torrent whose client reports no completion time is judged on
+   *  ratio alone: the age of an unknown finish is unknowable, not zero. */
+  private seedCleanupReason(torrent: ClientTorrent, settings: Record<string, unknown>): string {
+    const maxRetentionDays = settings['maxRetentionDays'] != null ? Number(settings['maxRetentionDays']) : null;
+    const completedAt = Number(torrent.completion_on ?? 0);
+    if (maxRetentionDays != null && maxRetentionDays > 0 && completedAt > 0) {
+      const ageDays = (Date.now() / 1000 - completedAt) / 86_400;
+      if (ageDays >= maxRetentionDays) return `retention ${Math.round(ageDays)}d >= ${maxRetentionDays}d`;
+    }
+    const targetRatio = Number(settings['seedRatio'] ?? 1);
+    if (torrent.ratio >= targetRatio) return `ratio ${torrent.ratio.toFixed(2)} >= ${targetRatio}`;
+    return '';
   }
 
   // ---------------------------------------------------------------------------

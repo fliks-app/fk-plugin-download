@@ -408,6 +408,9 @@ export const CONFIG_PAGES = [
 
 export const I18N = {
   en: {
+    'download.config.indexers.fields.max_retention_days': 'Maximum seeding days',
+    'download.config.indexers.fields.max_retention_days_hint':
+      'Remove a finished torrent this many days after it completed, even if the share ratio is not reached. Leave empty to wait for the ratio alone.',
     'download.config.indexers.labels.create_title': 'New indexer',
     'download.config.indexers.labels.edit_title': 'Edit indexer',
     'download.config.download_clients.labels.create_title': 'New download client',
@@ -528,6 +531,9 @@ export const I18N = {
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
   // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
   fr: {
+    'download.config.indexers.fields.max_retention_days': 'Jours de partage maximum',
+    'download.config.indexers.fields.max_retention_days_hint':
+      "Supprime un torrent terminé ce nombre de jours après sa fin, même si le ratio de partage n'est pas atteint. Laisser vide pour n'attendre que le ratio.",
     'download.config.indexers.labels.create_title': 'Nouvel indexeur',
     'download.config.indexers.labels.edit_title': "Modifier l'indexeur",
     'download.config.download_clients.labels.create_title': 'Nouveau client de téléchargement',
