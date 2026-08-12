@@ -72,14 +72,18 @@ export async function grabAndRecord(deps: GrabExecutorDeps, args: GrabArgs): Pro
     }),
   );
 
-  await deps.host.call('events.publish', [
-    {
-      type: 'acquisition.grabbed',
-      mediaId: args.mediaId,
-      seasonNumber: args.seasonNumber,
-      episodeNumber: args.episodeNumber,
-    },
-  ]);
+  // Pure notification for an already-recorded grab — a slow/failed publish must never
+  // fail the grab itself or duplicate the history row on retry.
+  void deps.host
+    .call('events.publish', [
+      {
+        type: 'acquisition.grabbed',
+        mediaId: args.mediaId,
+        seasonNumber: args.seasonNumber,
+        episodeNumber: args.episodeNumber,
+      },
+    ])
+    .catch((e: Error) => log.warn(`AutoGrab: events.publish failed: ${e.message}`));
 
   void deps.host
     .call('notifications.dispatch', {

@@ -342,6 +342,47 @@ test('download_history repository: insertGrab, status transitions, completeImpor
   }
 });
 
+test('download_history repository: listPage filters q/status with bound params, count matches the same WHERE', async () => {
+  if (!reachable) return;
+  const media = await admin.query<{ id: number }>(`INSERT INTO public.media ("title", "type") VALUES ($1, 'movie') RETURNING id`, [
+    'DB Repo Filter Test Media',
+  ]);
+  const mediaId = media.rows[0]!.id;
+  try {
+    const grabs = await Promise.all([
+      repos.downloadHistory.insertGrab({ sourceTitle: 'ZFilterTest.Alpha.1080p', quality: '1080p', grabSource: 'auto', mediaId }),
+      repos.downloadHistory.insertGrab({ sourceTitle: "ZFilterTest.Beta's.Cut.720p", quality: '720p', grabSource: 'auto', mediaId }),
+      repos.downloadHistory.insertGrab({ sourceTitle: 'ZFilterTest.Gamma.2160p', quality: '2160p', grabSource: 'manual', mediaId }),
+      repos.downloadHistory.insertGrab({ sourceTitle: "ZFilterTest.O'Brien.50%.Extended", quality: '480p', grabSource: 'auto', mediaId }),
+    ]);
+    await repos.downloadHistory.markFailed(grabs[1]!.id, 'boom');
+
+    const byQ = await repos.downloadHistory.listPage(10, 0, { q: 'zfiltertest' });
+    assert.equal(byQ.total, 4, 'case-insensitive substring match, unbound by the exact case typed');
+    assert.deepEqual(byQ.rows.map((r) => r.id).sort(), grabs.map((g) => g.id).sort());
+
+    const byQAndStatus = await repos.downloadHistory.listPage(10, 0, { q: 'zfiltertest', status: 'failed' });
+    assert.equal(byQAndStatus.total, 1, 'the count must reflect the same WHERE as the page, not the unfiltered table');
+    assert.deepEqual(byQAndStatus.rows.map((r) => r.id), [grabs[1]!.id]);
+
+    const byStatusOnly = await repos.downloadHistory.listPage(10, 0, { q: 'zfiltertest', status: 'grabbed' });
+    assert.deepEqual(byStatusOnly.rows.map((r) => r.id).sort(), [grabs[0]!.id, grabs[2]!.id, grabs[3]!.id].sort());
+
+    // The search term itself carries a quote and a % — reaching the query as anything but a
+    // bound parameter would break on the quote rather than match this one row.
+    const byQuotePercent = await repos.downloadHistory.listPage(10, 0, { q: "o'brien.50%" });
+    assert.equal(byQuotePercent.total, 1);
+    assert.deepEqual(byQuotePercent.rows.map((r) => r.id), [grabs[3]!.id]);
+
+    // A bare % must match the one title containing a literal percent, not all four rows.
+    const byPercent = await repos.downloadHistory.listPage(10, 0, { q: '%' });
+    assert.equal(byPercent.total, 1);
+    assert.deepEqual(byPercent.rows.map((r) => r.id), [grabs[3]!.id]);
+  } finally {
+    await admin.query(`DELETE FROM public.media WHERE id = $1`, [mediaId]);
+  }
+});
+
 test('blocklist repository: insert, isBlocked case-insensitivity, list, remove, clear', async () => {
   if (!reachable) return;
   const entry = await repos.blocklist.insert({ sourceTitle: 'Blocked.Release.2024' });

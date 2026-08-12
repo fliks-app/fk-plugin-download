@@ -329,7 +329,7 @@ test('addTorrentUrl: propagates a login failure as a rejection, never as an empt
 });
 
 // ---------------------------------------------------------------------------
-// deleteTorrent / getTorrentFiles
+// deleteTorrent / getTorrentFilesResult
 // ---------------------------------------------------------------------------
 
 test('deleteTorrent: removes the torrent from the fake client', async () => {
@@ -354,28 +354,34 @@ test('deleteTorrent: rejects when the client refuses with a non-200', async () =
   }
 });
 
-test('getTorrentFiles: returns the fake client\'s file list', async () => {
+test('getTorrentFilesResult: ok:true with the fake client\'s file list', async () => {
   const server = await FakeQbitServer.start({ ...CREDS });
   server.files = [{ name: 'movie.mkv', size: 123, progress: 1, priority: 1 }];
   try {
     const driver = new QbittorrentDriver();
-    const files = await driver.getTorrentFiles(clientFor(server.url), MAGNET_HASH);
-    assert.deepEqual(files, server.files);
+    const result = await driver.getTorrentFilesResult(clientFor(server.url), MAGNET_HASH);
+    assert.deepEqual(result, { ok: true, files: server.files });
   } finally {
     await server.close();
   }
 });
 
-test('getTorrentFiles: returns [] (not a throw) when the body is not an array', async () => {
+test('getTorrentFilesResult: ok:false (not a throw) when the body is not an array', async () => {
   const server = await FakeQbitServer.start({ ...CREDS });
   server.filesMode = 'not-array';
   try {
     const driver = new QbittorrentDriver();
-    const files = await driver.getTorrentFiles(clientFor(server.url), MAGNET_HASH);
-    assert.deepEqual(files, []);
+    const result = await driver.getTorrentFilesResult(clientFor(server.url), MAGNET_HASH);
+    assert.deepEqual(result, { ok: false, files: [] });
   } finally {
     await server.close();
   }
+});
+
+test('getTorrentFilesResult: connection refused -> ok:false, files=[]', async () => {
+  const driver = new QbittorrentDriver();
+  const result = await driver.getTorrentFilesResult(clientFor('http://127.0.0.1:39999'), MAGNET_HASH);
+  assert.deepEqual(result, { ok: false, files: [] });
 });
 
 // ---------------------------------------------------------------------------

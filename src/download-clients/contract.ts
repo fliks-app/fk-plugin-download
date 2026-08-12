@@ -54,6 +54,13 @@ export interface ClientTorrentsResult {
   torrents: ClientTorrent[];
 }
 
+/** Same ok/data split as {@link ClientTorrentsResult} — a client that could not be
+ *  asked must never read as "this torrent has no files". */
+export interface ClientTorrentFilesResult {
+  ok: boolean;
+  files: ClientTorrentFile[];
+}
+
 export interface ClientTestResult {
   ok: boolean;
   /** An i18n key, never prose: user-facing text lives in the manifest. */
@@ -68,10 +75,10 @@ export interface DownloadClientDriver {
   testConnection(settings: Record<string, unknown>): Promise<ClientTestResult>;
   getTorrents(client: DownloadClientRow): Promise<ClientTorrent[]>;
   getTorrentsResult(client: DownloadClientRow): Promise<ClientTorrentsResult>;
-  getTorrentFiles(
+  getTorrentFilesResult(
     client: DownloadClientRow,
     hash: string,
-  ): Promise<ClientTorrentFile[]>;
+  ): Promise<ClientTorrentFilesResult>;
   /** Resolves to the torrent hash. Rejects rather than returning null — a grab
    *  that could not be added must not be recorded as one. */
   addTorrentUrl(

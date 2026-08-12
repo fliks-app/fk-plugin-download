@@ -14,7 +14,16 @@ export const DEFAULT_CALL_TIMEOUT_MS = 10_000;
  *  immediately rather than queuing behind 256 that may never resolve. */
 export const MAX_OUTSTANDING_CALLS = 256;
 
-export class HostCallError extends Error {}
+/** `outcome`: 'unknown' means core never saw or never answered the request (safe to retry);
+ *  'rejected' means core answered with an error (definitive). */
+export class HostCallError extends Error {
+  constructor(
+    message: string,
+    readonly outcome: 'unknown' | 'rejected',
+  ) {
+    super(message);
+  }
+}
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -68,10 +77,10 @@ export class HostClient {
     timeoutMs = DEFAULT_CALL_TIMEOUT_MS,
   ): Promise<HostResult<M>> {
     if (!this.socket || !this.connected) {
-      return Promise.reject(new HostCallError(`not connected to core (method "${method}")`));
+      return Promise.reject(new HostCallError(`not connected to core (method "${method}")`, 'unknown'));
     }
     if (this.pending.size >= MAX_OUTSTANDING_CALLS) {
-      return Promise.reject(new HostCallError(`too many outstanding core calls (>= ${MAX_OUTSTANDING_CALLS})`));
+      return Promise.reject(new HostCallError(`too many outstanding core calls (>= ${MAX_OUTSTANDING_CALLS})`, 'unknown'));
     }
 
     const i = this.nextId++;
@@ -81,7 +90,7 @@ export class HostClient {
     return new Promise<HostResult<M>>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(i);
-        reject(new HostCallError(`"${method}" timed out after ${timeoutMs}ms`));
+        reject(new HostCallError(`"${method}" timed out after ${timeoutMs}ms`, 'unknown'));
       }, timeoutMs);
       this.pending.set(i, {
         resolve: resolve as (v: unknown) => void,
@@ -121,20 +130,21 @@ export class HostClient {
       if (!pending) continue; // already timed out, or an id we never sent
       this.pending.delete(res.i);
       clearTimeout(pending.timer);
-      if (res.e) pending.reject(new HostCallError(`${res.e.c}: ${res.e.m}`));
+      if (res.e) pending.reject(new HostCallError(`${res.e.c}: ${res.e.m}`, 'rejected'));
       else pending.resolve(res.r);
     }
   }
 
-  /** A protocol violation or socket loss fails every outstanding call rather than
-   *  wedging the client — the caller gets a rejection, not a hang. */
+  /** Fails every outstanding call rather than wedging the client. Core may have processed
+   *  any of these before the connection dropped, so 'unknown', not 'rejected'. */
   private onFatal(err: Error): void {
     if (this.connected) log.error(err.message);
     this.connected = false;
     this.socket?.destroy();
+    const rejection = new HostCallError(err.message, 'unknown');
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
-      pending.reject(err);
+      pending.reject(rejection);
       this.pending.delete(id);
     }
   }

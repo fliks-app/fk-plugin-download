@@ -3,6 +3,7 @@ import type { DownloadClientDriver, ClientTorrent } from '../download-clients/co
 import type { DownloadClientsRepository, IndexersRepository, DownloadHistoryRepository, StalledChecksRepository, BlocklistRepository } from '../db/repositories';
 import type { DownloadHistoryRow, DownloadClientRow } from '../db/rows';
 import type { HostCaller } from './types';
+import { HostCallError } from '../host-client';
 import { TorrentHistoryMatcher, normaliseTorrentName, outranksForTorrent } from './torrent-name-matcher';
 import { identifyOrphans, resolveSeasonEpisodeIds } from './orphan-matcher';
 import { buildGrabHistoryRow } from './grab-history';
@@ -119,17 +120,31 @@ export class DownloadCompletionPoller {
 
       const client = torrentClient.get(torrent._clientId);
       log.info(`Import: torrent "${torrent.name}" -> history #${history.id} (mediaId=${history.mediaId}, status=${history.status})`);
+      if (!client) {
+        // A disabled client is a reversible config state, not a bad release — never blocklist for it.
+        const message = 'download client for this torrent is no longer enabled';
+        log.warn(`Import: "${history.sourceTitle}" — ${message}; will retry`);
+        await this.deps.historyRepo.updateStatusByIds([history.id], 'grabbed', message);
+        continue;
+      }
       try {
         await this.deps.historyRepo.markImporting(history.id);
-        if (!client) throw new Error('download client for this torrent is no longer enabled');
         await this.processOne(history, torrent, client);
         imported++;
       } catch (e) {
         const message = (e as Error).message;
+        if (e instanceof HostCallError && e.outcome === 'unknown') {
+          // Core may have already done the work (e.g. a `library.ingest` timeout) — the next
+          // pass retries via the same idempotency key rather than blocklisting a good release.
+          log.warn(`Import: "${history.sourceTitle}" — core did not confirm (${message}); will retry`);
+          await this.deps.historyRepo.updateStatusByIds([history.id], 'grabbed', message);
+          continue;
+        }
+        // An error from core reports core's own state (a full disk, a missing root), never a
+        // verdict on the release — the blocklist is left to the branches that inspect the files.
         log.error(`Import: FAILED for "${history.sourceTitle}": ${message}`);
         await this.deps.historyRepo.markFailed(history.id, message);
         await this.publishFailed(history, message);
-        await this.autoBlocklist(history, `Auto-blocklist: import failed — ${message}`);
       }
     }
     if (imported > 0) log.info(`Import: processed ${imported}/${completedTorrents.length} completed torrent(s)`);
@@ -258,7 +273,11 @@ export class DownloadCompletionPoller {
       log.warn(`Import: ${expired.length} grabbed/importing entries lost their torrent for > ${ORPHAN_GRACE_MS / 60_000}min — marked failed`);
     }
 
-    if (changed) await this.deps.host.call('events.publish', [{ type: 'acquisition.queue.changed' }]);
+    if (changed) {
+      await this.deps.host
+        .call('events.publish', [{ type: 'acquisition.queue.changed' }])
+        .catch((e: Error) => log.warn(`Import: queue-changed publish failed: ${e.message}`));
+    }
   }
 
   /**
@@ -279,14 +298,17 @@ export class DownloadCompletionPoller {
     for (const t of downloading) {
       const history = await this.deps.historyMatcher.matchAndHeal(t, rows);
       if (!history?.mediaId) continue;
-      await this.deps.host.call('progress.set', {
-        mediaId: history.mediaId,
-        ref: t.hash,
-        progress: t.progress,
-        bytesPerSecond: t.dlspeed,
-        etaSeconds: t.eta > 0 && t.eta < 8_640_000 ? t.eta : undefined,
-        state: torrentProgressState(t),
-      });
+      // A progress tick is cosmetic; the import hand-off runs after this and must not be lost with it.
+      await this.deps.host
+        .call('progress.set', {
+          mediaId: history.mediaId,
+          ref: t.hash,
+          progress: t.progress,
+          bytesPerSecond: t.dlspeed,
+          etaSeconds: t.eta > 0 && t.eta < 8_640_000 ? t.eta : undefined,
+          state: torrentProgressState(t),
+        })
+        .catch((e: Error) => log.warn(`Import: progress publish failed: ${e.message}`));
     }
   }
 
@@ -302,7 +324,14 @@ export class DownloadCompletionPoller {
    * against core source (out of scope, read-only).
    */
   private async processOne(history: DownloadHistoryRow, torrent: Torrent, client: DownloadClientRow): Promise<void> {
-    const files = await this.deps.driver.getTorrentFiles(client, torrent.hash);
+    const { ok, files } = await this.deps.driver.getTorrentFilesResult(client, torrent.hash);
+    if (!ok) {
+      // Could not ask the client, not "no files" — never blocklist/delete on this, only retry.
+      const message = `could not list files for "${torrent.name}"`;
+      log.warn(`Import[${history.sourceTitle}]: ${message}; will retry`);
+      await this.deps.historyRepo.updateStatusByIds([history.id], 'grabbed', message);
+      return;
+    }
     const videoFiles = files
       .filter((f) => f.progress >= 1 && VIDEO_EXTS.has(path.extname(f.name).toLowerCase()))
       .map((f) => path.join(torrent.save_path ?? '', f.name));
@@ -345,6 +374,7 @@ export class DownloadCompletionPoller {
     if (!result.imported.length && result.alreadyPresent.length) {
       log.info(`Import[${history.sourceTitle}]: already in the library — completing the row`);
       await this.deps.historyRepo.completeImport(history.id);
+      await this.publishImported(history, result);
       return;
     }
 
@@ -364,17 +394,26 @@ export class DownloadCompletionPoller {
     // the orphan-match best-effort lookup) is left as-is — flagged gap.
     await this.deps.historyRepo.completeImport(history.id);
     log.info(`Import[${history.sourceTitle}]: completed successfully (${result.imported.length} file(s))`);
+    await this.publishImported(history, result);
+  }
 
-    await this.deps.host.call('events.publish', [
-      {
-        type: 'acquisition.imported',
-        mediaId: history.mediaId,
-        seasonNumber: result.seasonNumber,
-        episodeNumber: result.episodeNumber,
-        quality: history.quality,
-        sourceTitle: history.sourceTitle,
-      },
-    ]);
+  /** Notify-only, same swallow as {@link publishFailed} — the row is already `completed`. */
+  private async publishImported(history: DownloadHistoryRow, result: { seasonNumber?: number; episodeNumber?: number }): Promise<void> {
+    if (history.mediaId == null) return; // AcquisitionEvent.acquisition.imported requires a mediaId
+    try {
+      await this.deps.host.call('events.publish', [
+        {
+          type: 'acquisition.imported',
+          mediaId: history.mediaId,
+          seasonNumber: result.seasonNumber,
+          episodeNumber: result.episodeNumber,
+          quality: history.quality,
+          sourceTitle: history.sourceTitle,
+        },
+      ]);
+    } catch (e) {
+      log.warn(`Import[${history.sourceTitle}]: failed to publish acquisition.imported: ${(e as Error).message}`);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -427,9 +466,12 @@ export class DownloadCompletionPoller {
         }
 
         await this.deps.stalledChecksRepo.deleteByHash(t.hash);
-        await this.deps.host.call('events.publish', [{ type: 'acquisition.queue.changed' }]);
+        // Blocklist + markFailed before the notify: a failed publish must not skip recording that.
         await this.autoBlocklist(history, 'Auto-blocklist: stalled torrent');
         await this.deps.historyRepo.markFailed(history.id, 'Stalled — removed by stalled-download cleanup');
+        await this.deps.host.call('events.publish', [{ type: 'acquisition.queue.changed' }]).catch((e: Error) =>
+          log.warn(`StalledCleanup: failed to publish acquisition.queue.changed: ${e.message}`),
+        );
 
         const shouldRestart = stallConfig.autoRestart && (history.grabSource === 'auto' || stallConfig.includeManualGrabs);
         if (shouldRestart && history.mediaId != null) mediaToResearch.add(history.mediaId);
@@ -532,11 +574,17 @@ export class DownloadCompletionPoller {
 
   // ---------------------------------------------------------------------------
 
+  /** Notify-only: the failure was already recorded locally, so a failed publish must
+   *  never abort the caller's remaining cleanup or read as a fresh, unresolved failure. */
   private async publishFailed(history: DownloadHistoryRow, reason: string): Promise<void> {
     if (history.mediaId == null) return; // AcquisitionEvent.acquisition.failed requires a mediaId
-    await this.deps.host.call('events.publish', [
-      { type: 'acquisition.failed', mediaId: history.mediaId, title: history.sourceTitle, reason },
-    ]);
+    try {
+      await this.deps.host.call('events.publish', [
+        { type: 'acquisition.failed', mediaId: history.mediaId, title: history.sourceTitle, reason },
+      ]);
+    } catch (e) {
+      log.warn(`Import[${history.sourceTitle}]: failed to publish acquisition.failed: ${(e as Error).message}`);
+    }
   }
 
   /**

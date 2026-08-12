@@ -109,15 +109,33 @@ export class DownloadHistoryRepository {
     return rows;
   }
 
-  /** Newest first, one page at a time: the table is append-only and outlives every torrent in it,
-   *  so a history view can never read it whole. */
-  async listPage(limit: number, offset: number): Promise<{ rows: DownloadHistoryRow[]; total: number }> {
+  /** Newest first, one page at a time — the table is append-only and outlives every torrent in it.
+   *  Page and count share the same WHERE, so a filtered page never disagrees with an unfiltered total. */
+  async listPage(
+    limit: number,
+    offset: number,
+    filter?: { q?: string; status?: DownloadHistoryStatus },
+  ): Promise<{ rows: DownloadHistoryRow[]; total: number }> {
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    if (filter?.q) {
+      params.push(filter.q);
+      // strpos, not ILIKE: a `%` or `_` typed into the search box must match itself, not act as a wildcard.
+      conditions.push(`strpos(lower("sourceTitle"), lower($${params.length})) > 0`);
+    }
+    if (filter?.status) {
+      params.push(filter.status);
+      conditions.push(`"status" = $${params.length}`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
     const [page, count] = await Promise.all([
       this.pool.query<DownloadHistoryRow>(
-        `SELECT ${COLUMNS} FROM "download_history" ORDER BY "createdAt" DESC, "id" DESC LIMIT $1 OFFSET $2`,
-        [limit, offset],
+        `SELECT ${COLUMNS} FROM "download_history" ${where}
+          ORDER BY "createdAt" DESC, "id" DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset],
       ),
-      this.pool.query<{ count: string }>(`SELECT COUNT(*)::text AS "count" FROM "download_history"`),
+      this.pool.query<{ count: string }>(`SELECT COUNT(*)::text AS "count" FROM "download_history" ${where}`, params),
     ]);
     return { rows: page.rows, total: Number(count.rows[0]?.count ?? 0) };
   }

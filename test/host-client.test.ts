@@ -98,7 +98,11 @@ test('rejects with the core error code/message on an error reply', async () => {
   await waitUntil(() => core.received.length >= 1);
   core.replyError(core.received[0]!.i, 'ERR_SCOPE', 'not permitted');
 
-  await assert.rejects(call, /ERR_SCOPE: not permitted/);
+  await assert.rejects(call, (err: Error) => {
+    assert.ok(err instanceof HostCallError);
+    assert.equal(err.outcome, 'rejected', 'core answered — definitive, not retryable');
+    return true;
+  });
   await core.stop();
 });
 
@@ -114,6 +118,7 @@ test('a call times out and rejects rather than hanging, without affecting other 
   await assert.rejects(slow, (err: Error) => {
     assert.ok(err instanceof HostCallError);
     assert.match(err.message, /timed out after 100ms/);
+    assert.equal(err.outcome, 'unknown', 'core may still finish the work after the deadline');
     return true;
   });
   assert.deepEqual(await fast, [2]);
@@ -130,8 +135,13 @@ test('a protocol violation from core fails every outstanding call rather than we
 
   core.sendRaw('not json\n');
 
-  await assert.rejects(p1);
-  await assert.rejects(p2);
+  const isUnknown = (err: Error): boolean => {
+    assert.ok(err instanceof HostCallError);
+    assert.equal(err.outcome, 'unknown');
+    return true;
+  };
+  await assert.rejects(p1, isUnknown);
+  await assert.rejects(p2, isUnknown);
   await waitUntil(() => !client.isConnected);
   await core.stop();
 });
@@ -144,13 +154,21 @@ test('a lost connection fails every outstanding call', async () => {
   await waitUntil(() => core.received.length >= 1);
   core.closeConnection();
 
-  await assert.rejects(call);
+  await assert.rejects(call, (err: Error) => {
+    assert.ok(err instanceof HostCallError);
+    assert.equal(err.outcome, 'unknown', 'core may have processed the call before the socket dropped');
+    return true;
+  });
   await core.stop();
 });
 
 test('rejects immediately when not connected, rather than queuing', async () => {
   const client = new HostClient('/nonexistent/sock/path/for/test');
-  await assert.rejects(client.call('media.exists', { mediaIds: [1] }), HostCallError);
+  await assert.rejects(client.call('media.exists', { mediaIds: [1] }), (err: Error) => {
+    assert.ok(err instanceof HostCallError);
+    assert.equal(err.outcome, 'unknown');
+    return true;
+  });
 });
 
 test('bounds outstanding calls: the (n+1)th rejects rather than growing the map without limit', async () => {
@@ -161,7 +179,12 @@ test('bounds outstanding calls: the (n+1)th rejects rather than growing the map 
   for (let i = 0; i < MAX_OUTSTANDING_CALLS; i++) {
     calls.push(client.call('media.exists', { mediaIds: [i] }, 5000));
   }
-  await assert.rejects(client.call('media.exists', { mediaIds: [999] }), /too many outstanding/);
+  await assert.rejects(client.call('media.exists', { mediaIds: [999] }), (err: Error) => {
+    assert.match(err.message, /too many outstanding/);
+    assert.ok(err instanceof HostCallError);
+    assert.equal(err.outcome, 'unknown');
+    return true;
+  });
 
   await waitUntil(() => core.received.length >= MAX_OUTSTANDING_CALLS);
   for (const req of core.received) core.reply(req.i, []);

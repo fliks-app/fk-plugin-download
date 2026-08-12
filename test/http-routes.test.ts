@@ -16,7 +16,7 @@ import {
 import { IndexerNotFoundError } from '../src/indexers/types';
 import { DownloadClientNotFoundError } from '../src/download-clients/types';
 import type { DownloadClientDriver } from '../src/download-clients/contract';
-import type { DownloadClientRow, DownloadHistoryRow } from '../src/db/rows';
+import type { DownloadClientRow, DownloadHistoryRow, DownloadHistoryStatus } from '../src/db/rows';
 import { CONFIG_PAGES } from '../scripts/manifest-template';
 
 function historyRow(over: Partial<DownloadHistoryRow> = {}): DownloadHistoryRow {
@@ -388,7 +388,7 @@ describe('route table — GET /queue', () => {
           },
         ],
       }),
-      getTorrentFiles: async () => [],
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
       addTorrentUrl: async () => 'x',
       deleteTorrent: async () => {},
     };
@@ -426,7 +426,7 @@ describe('route table — GET /queue', () => {
       testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
       getTorrents: async () => [],
       getTorrentsResult: async () => ({ ok: false, torrents: [] }),
-      getTorrentFiles: async () => [],
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
       addTorrentUrl: async () => 'x',
       deleteTorrent: async () => {},
     };
@@ -690,5 +690,57 @@ describe('route table — download history', () => {
 
     // An unbounded pageSize would read the whole append-only table into memory.
     assert.deepEqual(seen, [{ limit: 100, offset: 200 }]);
+  });
+
+  test('q and a recognised status reach the repository, q trimmed', async () => {
+    const seen: ({ q?: string; status?: DownloadHistoryStatus } | undefined)[] = [];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [],
+        listPage: async (_limit: number, _offset: number, filter?: { q?: string; status?: DownloadHistoryStatus }) => {
+          seen.push(filter);
+          return { rows: [], total: 0 };
+        },
+      },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/history')!;
+    await resolved.handler(req({ path: '/history', query: { q: '  some.title  ', status: 'failed' } }), resolved.params);
+    assert.deepEqual(seen, [{ q: 'some.title', status: 'failed' }]);
+  });
+
+  test('a blank q and an unrecognised status are both dropped before reaching the repository', async () => {
+    const seen: ({ q?: string; status?: DownloadHistoryStatus } | undefined)[] = [];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [],
+        listPage: async (_limit: number, _offset: number, filter?: { q?: string; status?: DownloadHistoryStatus }) => {
+          seen.push(filter);
+          return { rows: [], total: 0 };
+        },
+      },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/history')!;
+    // "deleted" is not a member of DownloadHistoryStatus — never interpolated, never applied.
+    await resolved.handler(req({ path: '/history', query: { q: '   ', status: 'deleted' } }), resolved.params);
+    assert.deepEqual(seen, [{}], 'an unrecognised status must be dropped, not forwarded to the repository');
+  });
+
+  test('no q/status in the request forwards no filter keys at all', async () => {
+    const seen: ({ q?: string; status?: DownloadHistoryStatus } | undefined)[] = [];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [],
+        listPage: async (_limit: number, _offset: number, filter?: { q?: string; status?: DownloadHistoryStatus }) => {
+          seen.push(filter);
+          return { rows: [], total: 0 };
+        },
+      },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/history')!;
+    await resolved.handler(req({ path: '/history' }), resolved.params);
+    assert.deepEqual(seen, [{}]);
   });
 });
