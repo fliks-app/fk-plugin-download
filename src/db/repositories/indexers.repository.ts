@@ -2,7 +2,7 @@ import type { Pool } from 'pg';
 import type { IndexerRow } from '../rows';
 
 const COLUMNS = `"id", "name", "implementation", "settings", "enableRss", "enableSearch",
-  "priority", "enabled", "capsSearchFallback", "capsMovieSearch", "capsTvSearch",
+  "priority", "enabled", "capsSearchFallback", "capsMovieSearch", "capsTvSearch", "capsProbedAt",
   "requestDelay", "createdAt", "updatedAt"`;
 
 export interface NewIndexer {
@@ -122,7 +122,8 @@ export class IndexersRepository {
     caps: { capsMovieSearch: boolean; capsTvSearch: boolean; capsSearchFallback: boolean },
   ): Promise<void> {
     await this.pool.query(
-      `UPDATE "indexers" SET "capsMovieSearch" = $2, "capsTvSearch" = $3, "capsSearchFallback" = $4 WHERE "id" = $1`,
+      `UPDATE "indexers" SET "capsMovieSearch" = $2, "capsTvSearch" = $3, "capsSearchFallback" = $4,
+              "capsProbedAt" = NOW() WHERE "id" = $1`,
       [id, caps.capsMovieSearch, caps.capsTvSearch, caps.capsSearchFallback],
     );
   }

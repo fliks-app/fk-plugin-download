@@ -40,7 +40,7 @@ async function fetchText(url: string, opts: FetchOptions): Promise<{ status: num
 
 export interface TorznabClientDeps {
   stats: IndexerStatsRecorder;
-  repo: Pick<IndexerRepository, 'update'>;
+  repo: Pick<IndexerRepository, 'update' | 'refreshCaps' | 'markSearchFallback'>;
   throttle: IndexerThrottle;
 }
 
@@ -89,26 +89,53 @@ export class TorznabClient {
     if (!target) return;
     const { baseUrl, apiKey } = target;
 
-    let capsMovieSearch = false;
-    let capsTvSearch = false;
-
+    let res: Awaited<ReturnType<typeof fetchText>>;
     try {
-      const res = await this.deps.throttle.run(indexer, () =>
-        fetchText(`${baseUrl}?t=caps&apikey=${encodeURIComponent(apiKey)}`, { timeoutMs: 10_000 }),
+      res = await this.deps.throttle.run(indexer, () =>
+        fetchText(`${baseUrl}?t=caps&apikey=${encodeURIComponent(apiKey)}`, {
+          timeoutMs: 10_000,
+          // Without this a 429 or a 5xx reads as a valid answer, and the probe records
+          // "supports neither" from a body the tracker never sent.
+          validateStatus: (status) => status >= 200 && status < 400,
+        }),
       );
-      capsMovieSearch = /<movie-search\s[^>]*available="yes"/i.test(res.body);
-      capsTvSearch = /<tv-search\s[^>]*available="yes"/i.test(res.body);
-      log.info(`[${indexer.name}] caps refreshed — movieSearch=${capsMovieSearch}, tvSearch=${capsTvSearch}`);
     } catch (e) {
       this.maybeHandleRateLimit(indexer, e);
       this.deps.throttle.notifyFailure(indexer, (e as Error).message);
+      // Nothing is written: a transient failure must not read back as "supports neither",
+      // which is what pinned an indexer to text-only search until someone edited it.
       log.warn(`[${indexer.name}] caps fetch failed: ${(e as Error).message}`);
+      return;
     }
 
-    await this.deps.repo.update(indexer.id, { capsMovieSearch, capsTvSearch, capsSearchFallback: false });
+    const torznabError = this.torznabError(res.body);
+    if (torznabError) {
+      this.deps.throttle.notifyFailure(indexer, torznabError);
+      log.warn(`[${indexer.name}] caps refused: ${torznabError}`);
+      return;
+    }
+
+    const capsMovieSearch = /<movie-search\s[^>]*available="yes"/i.test(res.body);
+    const capsTvSearch = /<tv-search\s[^>]*available="yes"/i.test(res.body);
+    log.info(`[${indexer.name}] caps refreshed — movieSearch=${capsMovieSearch}, tvSearch=${capsTvSearch}`);
+
+    await this.deps.repo.refreshCaps(indexer.id, { capsMovieSearch, capsTvSearch, capsSearchFallback: false });
     indexer.capsMovieSearch = capsMovieSearch;
     indexer.capsTvSearch = capsTvSearch;
     indexer.capsSearchFallback = false;
+    indexer.capsProbedAt = new Date().toISOString();
+  }
+
+  /**
+   * Probes on first use: an indexer whose only probe failed would otherwise stay on
+   * text-only search for good, since nothing else ever asks again. False means the probe
+   * left it cooling down — searching now would just sleep out the cooldown.
+   */
+  private async ensureCapsProbed(indexer: IndexerRow): Promise<boolean> {
+    if (indexer.capsProbedAt) return true;
+    if (this.deps.throttle.cooldownRemainingMs(indexer.id) > 0) return true;
+    await this.refreshCaps(indexer);
+    return this.deps.throttle.cooldownRemainingMs(indexer.id) === 0;
   }
 
   /** The endpoint for this indexer, independent of enabled/enableRss/enableSearch —
@@ -142,6 +169,13 @@ export class TorznabClient {
     return this.resolveEndpoint(indexer);
   }
 
+  /** A Torznab error arrives as a 200 with an `<error>` element — an invalid key looks
+   *  exactly like a successful empty response otherwise. */
+  private torznabError(body: string): string | null {
+    if (!/<error\s+code=/i.test(body)) return null;
+    return body.match(/description="([^"]*)"/i)?.[1]?.trim() || 'Torznab error';
+  }
+
   /** Executes a Torznab search URL. Returns results and the Torznab error message, if any. */
   private async execSearch(
     url: string,
@@ -154,8 +188,9 @@ export class TorznabClient {
       const res = await this.deps.throttle.run(indexer, () =>
         fetchText(url, { timeoutMs: 90_000, validateStatus: (s) => s >= 200 && s < 400 }),
       );
-      if (/<error\s+code=/i.test(res.body)) {
-        const msg = res.body.match(/description="([^"]*)"/i)?.[1]?.trim() || 'Torznab error';
+      const torznabError = this.torznabError(res.body);
+      if (torznabError) {
+        const msg = torznabError;
         void this.deps.stats.record({
           indexerId: indexer.id,
           queryType,
@@ -202,7 +237,9 @@ export class TorznabClient {
     const { results, torznabError } = await this.execSearch(fallbackUrl, queryType, indexer);
     if (torznabError) return []; // indexer unavailable, don't save
     log.info(`[${indexer.name}] t=search fallback succeeded — saving capsSearchFallback=true`);
-    void this.deps.repo.update(indexer.id, { capsSearchFallback: true });
+    void this.deps.repo.markSearchFallback(indexer.id).catch((e: unknown) => {
+      log.warn(`[${indexer.name}] could not persist the search fallback: ${String(e)}`);
+    });
     indexer.capsSearchFallback = true; // in-memory, so later calls in the same batch see it
     return results;
   }
@@ -281,6 +318,7 @@ export class TorznabClient {
     if (!target) return [];
     const { baseUrl, apiKey } = target;
 
+    if (!(await this.ensureCapsProbed(indexer))) return [];
     const useTvSearch = indexer.capsTvSearch && !indexer.capsSearchFallback;
     // Text-mode search needs the season tag baked into `q` so the indexer's own
     // result cap doesn't bury packs for popular shows below the cutoff.
@@ -321,6 +359,7 @@ export class TorznabClient {
     if (!target) return [];
     const { baseUrl, apiKey } = target;
 
+    if (!(await this.ensureCapsProbed(indexer))) return [];
     const useTvSearch = indexer.capsTvSearch && !indexer.capsSearchFallback;
     // See searchSeasonPack: appending the season tag to a plain-text `q` keeps
     // popular series from filling the indexer's result cap with loud 1080p hits.
@@ -360,6 +399,7 @@ export class TorznabClient {
     if (!target) return [];
     const { baseUrl, apiKey } = target;
 
+    if (!(await this.ensureCapsProbed(indexer))) return [];
     const useMovieSearch =
       indexer.capsMovieSearch && !indexer.capsSearchFallback && !!(externalIds?.imdbId || externalIds?.tmdbId);
 

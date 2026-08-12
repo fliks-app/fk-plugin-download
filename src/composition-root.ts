@@ -39,6 +39,8 @@ function toIndexerRepository(repo: IndexersRepository): IndexerRepository {
       if (!existing) throw new IndexerNotFoundError(`Indexer #${id} not found`);
       return repo.update(id, { ...existing, ...patch });
     },
+    refreshCaps: (id, caps) => repo.refreshCaps(id, caps),
+    markSearchFallback: (id) => repo.markSearchFallback(id),
     remove: (id) => repo.remove(id),
   };
 }

@@ -19,6 +19,7 @@ const indexer = (over: Partial<IndexerRow> = {}): IndexerRow =>
     capsMovieSearch: false,
     capsTvSearch: false,
     capsSearchFallback: false,
+    capsProbedAt: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...over,
@@ -47,18 +48,22 @@ function makeClient() {
   const statRows: Omit<IndexerStatRow, 'id' | 'queryDate'>[] = [];
   const updates: { id: number; patch: Partial<IndexerRow> }[] = [];
   const stats: IndexerStatsRecorder = { record: async (s) => void statRows.push(s) };
-  const repo: Pick<IndexerRepository, 'update'> = {
+  const capsWrites: { id: number; caps: Record<string, boolean> }[] = [];
+  const fallbackMarks: number[] = [];
+  const repo: Pick<IndexerRepository, 'update' | 'refreshCaps' | 'markSearchFallback'> = {
     update: async (id, patch) => {
       updates.push({ id, patch });
       return { ...indexer(), ...patch, id } as IndexerRow;
     },
+    refreshCaps: async (id, caps) => void capsWrites.push({ id, caps }),
+    markSearchFallback: async (id) => void fallbackMarks.push(id),
   };
   const throttle = new IndexerThrottle();
   const client = new TorznabClient({ stats, repo, throttle });
-  return { client, statRows, updates, throttle };
+  return { client, statRows, updates, capsWrites, fallbackMarks, throttle };
 }
 
-test('searchMovie resolves baseUrl/apiKey from settings and builds a plain t=search URL when caps are unknown', async () => {
+test('searchMovie probes caps first when they are unknown, then searches with what it learned', async () => {
   const { client } = makeClient();
   const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
   try {
@@ -67,10 +72,12 @@ test('searchMovie resolves baseUrl/apiKey from settings and builds a plain t=sea
       'Some Movie',
     );
     assert.deepEqual(results, []);
-    assert.equal(stub.calls.length, 1);
-    assert.ok(stub.calls[0]?.startsWith('https://tracker.tld/api?'));
-    assert.ok(stub.calls[0]?.includes('apikey=probe-key'));
-    assert.ok(stub.calls[0]?.includes('t=search'));
+    // An unprobed indexer costs one `t=caps` call before its first search, once.
+    assert.equal(stub.calls.length, 2);
+    assert.ok(stub.calls[0]?.includes('t=caps'));
+    assert.ok(stub.calls[1]?.startsWith('https://tracker.tld/api?'));
+    assert.ok(stub.calls[1]?.includes('apikey=probe-key'));
+    assert.ok(stub.calls[1]?.includes('t=search'));
   } finally {
     stub.restore();
   }
@@ -106,7 +113,7 @@ test('rssSearch skips when enableRss is false, even though enabled and enableSea
 });
 
 test('refreshCaps has no enabled/enableSearch gate — still refreshes a disabled indexer', async () => {
-  const { client, updates } = makeClient();
+  const { client, capsWrites } = makeClient();
   const stub = stubFetch(() => ({
     status: 200,
     body: '<caps><searching><movie-search available="yes"/><tv-search available="no"/></searching></caps>',
@@ -115,9 +122,9 @@ test('refreshCaps has no enabled/enableSearch gate — still refreshes a disable
     const ix = indexer({ enabled: false, enableSearch: false, settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
     await client.refreshCaps(ix);
     assert.equal(stub.calls.length, 1);
-    assert.equal(updates.length, 1);
-    assert.equal(updates[0]?.patch.capsMovieSearch, true);
-    assert.equal(updates[0]?.patch.capsTvSearch, false);
+    assert.equal(capsWrites.length, 1);
+    assert.equal(capsWrites[0]?.caps.capsMovieSearch, true);
+    assert.equal(capsWrites[0]?.caps.capsTvSearch, false);
     assert.equal(ix.capsMovieSearch, true, 'mutates the passed row in place so later calls in the same batch see it');
   } finally {
     stub.restore();
@@ -133,7 +140,7 @@ test('filterReadyIndexers drops only the indexer currently in cooldown', () => {
   assert.deepEqual(ready.map((i) => i.id), [1]);
 });
 
-test('a 429 with Retry-After during execSearch feeds the throttle, and the retry is honoured on the next call', async () => {
+test('a 429 with Retry-After feeds the throttle, and the caller is not made to sleep it out', async () => {
   const { client, throttle } = makeClient();
   let call = 0;
   const stub = stubFetch(() => {
@@ -220,5 +227,75 @@ test('testConnection: a network failure reports network_error with the underlyin
     assert.deepEqual(result, { ok: false, messageKey: 'download.indexers.test.network_error', detail: 'ECONNREFUSED' });
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+test('a caps document that is a Torznab error is a failure, not "supports neither"', async () => {
+  const { client, capsWrites, throttle } = makeClient();
+  const stub = stubFetch(() => ({
+    status: 200,
+    body: '<?xml version="1.0"?><error code="100" description="Invalid API Key" />',
+  }));
+  try {
+    const ix = indexer({ settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'wrong' } });
+    await client.refreshCaps(ix);
+    // Recording it would pin the indexer to text-only search behind a key its owner can fix.
+    assert.equal(capsWrites.length, 0);
+    assert.equal(ix.capsProbedAt, null);
+    assert.ok(throttle.cooldownRemainingMs(ix.id) > 0, 'a refused probe backs off like any other failure');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a 5xx caps response is a failure too — nothing is recorded', async () => {
+  const { client, capsWrites } = makeClient();
+  const stub = stubFetch(() => ({ status: 503, body: '' }));
+  try {
+    const ix = indexer({ settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
+    await client.refreshCaps(ix);
+    assert.equal(capsWrites.length, 0);
+    assert.equal(ix.capsProbedAt, null);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('VERDICT: a probed indexer is never probed twice — the stamp is what stops it', async () => {
+  const { client } = makeClient();
+  const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
+  try {
+    const ix = indexer({ capsProbedAt: '2026-01-01T00:00:00.000Z', settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
+    await client.searchMovie(ix, 'Some Movie');
+    assert.equal(stub.calls.length, 1, 'one search, no caps call');
+    assert.ok(!stub.calls[0]?.includes('t=caps'));
+  } finally {
+    stub.restore();
+  }
+});
+
+test('VERDICT: the search fallback is persisted through its own statement — `update` writes no caps column', async () => {
+  const { client, fallbackMarks, updates } = makeClient();
+  let call = 0;
+  const stub = stubFetch(() => {
+    call++;
+    // caps, then the typed search the tracker refuses, then the plain one it answers.
+    if (call === 1) return { status: 200, body: '<caps><searching><movie-search available="yes"/></searching></caps>' };
+    if (call === 2) return { status: 200, body: '<error code="201" description="query not supported" />' };
+    return { status: 200, body: emptyTorznabBody };
+  });
+  try {
+    const ix = indexer({ settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
+    await client.searchMovie(ix, 'Some Movie', { imdbId: 'tt1', tmdbId: 1 });
+
+    assert.deepEqual(fallbackMarks, [ix.id], 'one dedicated write');
+    assert.equal(ix.capsSearchFallback, true, 'and the in-memory row, so the same batch skips the typed attempt');
+    assert.equal(
+      updates.some((u) => 'capsSearchFallback' in u.patch),
+      false,
+      'never through update(), whose statement silently drops every caps column',
+    );
+  } finally {
+    stub.restore();
   }
 });

@@ -41,6 +41,13 @@ export interface IndexerRepository {
   findOne(id: number): Promise<IndexerRow | null>;
   insert(row: Omit<IndexerRow, 'id' | 'createdAt' | 'updatedAt'>): Promise<IndexerRow>;
   update(id: number, patch: Partial<IndexerRow>): Promise<IndexerRow>;
+  /** `update` writes no caps column, so the fallback needs its own statement. */
+  markSearchFallback(id: number): Promise<void>;
+  /** Stamps `capsProbedAt`, so only a probe that actually answered is recorded. */
+  refreshCaps(
+    id: number,
+    caps: { capsMovieSearch: boolean; capsTvSearch: boolean; capsSearchFallback: boolean },
+  ): Promise<void>;
   remove(id: number): Promise<void>;
 }
 

@@ -23,6 +23,14 @@ function makeService() {
       rows.set(id, saved);
       return saved;
     },
+    markSearchFallback: async (id) => {
+      const existing = rows.get(id);
+      if (existing) rows.set(id, { ...existing, capsSearchFallback: true });
+    },
+    refreshCaps: async (id, caps) => {
+      const existing = rows.get(id);
+      if (existing) rows.set(id, { ...existing, ...caps, capsProbedAt: 'now' });
+    },
     remove: async (id) => void rows.delete(id),
   };
   const refreshCapsCalls: IndexerRow[] = [];
@@ -83,6 +91,7 @@ test('refuses an unregistered implementation on update, naming it', async () => 
     capsMovieSearch: false,
     capsTvSearch: false,
     capsSearchFallback: false,
+    capsProbedAt: null,
   });
   await assert.rejects(
     () => service.update(created.id, { implementation: 'fliks.missing-plugin.tracker' }),
@@ -104,6 +113,7 @@ test('update() keeps the stored apiKey when the incoming settings omit it', asyn
     capsMovieSearch: false,
     capsTvSearch: false,
     capsSearchFallback: false,
+    capsProbedAt: null,
   });
   await service.update(created.id, { settings: { baseUrl: 'https://y.tld' } });
   const stored = await repo.findOne(created.id);

@@ -20,6 +20,8 @@ export interface IndexerRow {
   priority: number;
   enabled: boolean;
   capsSearchFallback: boolean;
+  /** Null until a probe succeeds: two false flags alone cannot say "never asked". */
+  capsProbedAt: IsoTimestamp | null;
   capsMovieSearch: boolean;
   capsTvSearch: boolean;
   requestDelay: number;
