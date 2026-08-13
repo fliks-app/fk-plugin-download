@@ -15,11 +15,13 @@ export const DEFAULT_CALL_TIMEOUT_MS = 10_000;
 export const MAX_OUTSTANDING_CALLS = 256;
 
 /** `outcome`: 'unknown' means core never saw or never answered the request (safe to retry);
- *  'rejected' means core answered with an error (definitive). */
+ *  'rejected' means core answered with an error (definitive). `code` is core's `Res.e.c` verbatim
+ *  when there is one — absent for every 'unknown' outcome, since core never got to answer. */
 export class HostCallError extends Error {
   constructor(
     message: string,
     readonly outcome: 'unknown' | 'rejected',
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -130,7 +132,7 @@ export class HostClient {
       if (!pending) continue; // already timed out, or an id we never sent
       this.pending.delete(res.i);
       clearTimeout(pending.timer);
-      if (res.e) pending.reject(new HostCallError(`${res.e.c}: ${res.e.m}`, 'rejected'));
+      if (res.e) pending.reject(new HostCallError(`${res.e.c}: ${res.e.m}`, 'rejected', res.e.c));
       else pending.resolve(res.r);
     }
   }

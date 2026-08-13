@@ -4,6 +4,7 @@ import * as path from 'path';
 import { attachDispatcher } from './dispatcher';
 import { HostClient } from './host-client';
 import { type PluginHttpRequest } from './seams/http-routes';
+import type { PluginApi } from './plugin-methods';
 import { log } from './log';
 import { createPluginPool } from './db/pool';
 import { migrateUp } from './db/migrate';
@@ -64,12 +65,16 @@ function loadManifest(): unknown {
   return JSON.parse(raw);
 }
 
+// `hello` and `health` are annotated off the restated contract, so a mirror that drifts from
+// core's `plugin-methods.ts` stops compiling here instead of failing at a handshake.
+const hello: PluginApi['hello'] = async () => {
+  const db = await dbInit;
+  if (!db.ok) throw new Error(`database not ready: ${db.reason}`);
+  return { manifest: loadManifest(), token };
+};
+
 const requestHandlers: Record<string, (payload: unknown) => Promise<unknown>> = {
-  hello: async () => {
-    const db = await dbInit;
-    if (!db.ok) throw new Error(`database not ready: ${db.reason}`);
-    return { manifest: loadManifest(), token };
-  },
+  hello: (payload) => hello(payload as Parameters<PluginApi['hello']>[0]),
 
   health: async () => {
     return { ok: true, detail: `core=${host?.isConnected ? 'connected' : 'disconnected'}` };

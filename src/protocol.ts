@@ -83,3 +83,37 @@ export function isReq(f: Frame): f is Req {
 export function isNote(f: Frame): f is Note {
   return typeof (f as Note).m === 'string' && !('i' in f);
 }
+
+/**
+ * Environment core sets on every spawn (see `supervisor/spawn-plan.ts`) — the only way in
+ * for a `process` plugin, since core never passes `...process.env`. Every value here is a
+ * plain string; only `FLIKS_API_VERSION` has a typed counterpart ({@link PLUGIN_API_VERSION}).
+ */
+export interface PluginSpawnEnv {
+  /** Random per spawn, known only to core and this child. Echo it back as `hello`'s `token` —
+   *  proof the responder is the process core spawned, not an impostor on the socket. */
+  FLIKS_PLUGIN_TOKEN: string;
+  /** Unix socket this plugin dials to make its `PluginHostApi` calls. */
+  FLIKS_CORE_SOCK: string;
+  /** Unix socket this plugin listens on for core's `PluginApi` calls
+   *  (`hello`, `health`, `http`, `job`, `event`, `config`, `shutdown`). */
+  FLIKS_PLUGIN_SOCK: string;
+  /** This plugin's own Postgres connection string; `''` when its manifest declared no schema. */
+  FLIKS_DB_URL: string;
+  /** This manifest's `id`, verbatim. */
+  FLIKS_PLUGIN_ID: string;
+  /** {@link PLUGIN_API_VERSION}, stringified — compared for exact equality, never a range. */
+  FLIKS_API_VERSION: string;
+  /** `${dir}/data` — the child's cwd, and the one path its sandbox may write to. */
+  HOME: string;
+  PATH: string;
+  NODE_ENV: string;
+  TZ: string;
+}
+
+/**
+ * Every `plugin.<id>.<key>` admin setting also arrives re-keyed as an env var: strip the
+ * `plugin.<id>.` prefix, upper-case what remains, replace every character outside
+ * `[A-Z0-9_]` with `_`, and prepend `FLIKS_CFG_` (see `reKeyConfig` in `supervisor/spawn-plan.ts`).
+ * Not a fixed set — read whichever `FLIKS_CFG_*` names your own manifest's settings resolve to.
+ */

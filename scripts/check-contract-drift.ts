@@ -123,6 +123,30 @@ function diff(label: string, ours: Set<string>, theirs: Set<string>): boolean {
   return false;
 }
 
+/** Comment-stripped, whitespace-collapsed body of one interface: catches nested fields that
+ *  `interfaceFields` cannot see, at the cost of also reporting a reformat. */
+function normalisedBody(source: string, name: string): string {
+  const start = source.indexOf(`export interface ${name} {`);
+  if (start === -1) return '';
+  return source
+    .slice(start, source.indexOf('\n}', start))
+    .replace(/\/\*\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function diffBody(label: string, ours: string, theirs: string): boolean {
+  if (ours === theirs) {
+    console.log(`OK: ${label} — restated body matches`);
+    return true;
+  }
+  console.error(`${label}: restatement drifted from core`);
+  console.error(`  core: ${theirs}`);
+  console.error(`  here: ${ours}`);
+  return false;
+}
+
 function main(): void {
   const fliksRepo = process.env.FLIKS_REPO ?? path.join(__dirname, '..', '..', 'fliks');
   const coreHostMethods = path.join(fliksRepo, 'backend/src/common/plugin-contract/host-methods.ts');
@@ -151,6 +175,22 @@ function main(): void {
     if (theirVariants.size === 0) continue;
     ok = diffUnion(union, unionVariantFields(ourSrc, union), theirVariants) && ok;
   }
+  // The handshake and the spawn environment: restated by hand here, and until now diffed by nothing.
+  for (const [file, shapes] of [
+    ['plugin-methods.ts', ['PluginApi']],
+    ['protocol.ts', ['PluginSpawnEnv']],
+  ] as const) {
+    const corePath = path.join(fliksRepo, 'backend/src/common/plugin-contract', file);
+    if (!fs.existsSync(corePath)) continue;
+    const coreFile = fs.readFileSync(corePath, 'utf8');
+    const ourFile = fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8');
+    for (const shape of shapes) {
+      const theirs = normalisedBody(coreFile, shape);
+      if (!theirs) continue;
+      ok = diffBody(shape, normalisedBody(ourFile, shape), theirs) && ok;
+    }
+  }
+
   process.exit(ok ? 0 : 1);
 }
 

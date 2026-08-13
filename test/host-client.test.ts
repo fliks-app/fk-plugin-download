@@ -101,6 +101,39 @@ test('rejects with the core error code/message on an error reply', async () => {
   await assert.rejects(call, (err: Error) => {
     assert.ok(err instanceof HostCallError);
     assert.equal(err.outcome, 'rejected', 'core answered — definitive, not retryable');
+    assert.equal((err as HostCallError).code, 'ERR_SCOPE');
+    return true;
+  });
+  await core.stop();
+});
+
+test('carries a core code the client has never seen without throwing', async () => {
+  const core = await CoreStub.start();
+  const client = await connectedClient(core);
+
+  const call = client.call('media.exists', { mediaIds: [1] });
+  await waitUntil(() => core.received.length >= 1);
+  core.replyError(core.received[0]!.i, 'ERR_TOTALLY_NEW', 'from a future core release');
+
+  await assert.rejects(call, (err: Error) => {
+    assert.ok(err instanceof HostCallError);
+    assert.equal(err.outcome, 'rejected');
+    assert.equal((err as HostCallError).code, 'ERR_TOTALLY_NEW');
+    assert.match(err.message, /ERR_TOTALLY_NEW: from a future core release/);
+    return true;
+  });
+  await core.stop();
+});
+
+test('leaves code unset for an unknown outcome — core never answered', async () => {
+  const core = await CoreStub.start();
+  const client = await connectedClient(core);
+
+  const call = client.call('media.exists', { mediaIds: [1] }, 100);
+  await assert.rejects(call, (err: Error) => {
+    assert.ok(err instanceof HostCallError);
+    assert.equal(err.outcome, 'unknown');
+    assert.equal((err as HostCallError).code, undefined);
     return true;
   });
   await core.stop();
