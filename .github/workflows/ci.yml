@@ -41,6 +41,17 @@ jobs:
           for t in episodes seasons users; do
             psql "$FK_TEST_PG_DSN" -c "CREATE TABLE IF NOT EXISTS public.\"$t\" (id serial PRIMARY KEY);"
           done
+      # The manifest's `fliks` range is checked against the core release this plugin targets.
+      # Failing to resolve it fails the job: a green run on a guessed version publishes an archive
+      # that a real core refuses.
+      - name: Resolve the core version to check the manifest against
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(gh release view --repo fliks-app/fliks --json tagName -q .tagName | sed 's/^v//')
+          [ -n "$v" ] || { echo "::error::could not resolve the latest fliks release"; exit 1; }
+          echo "FLIKS_CORE_VERSION=$v" >> "$GITHUB_ENV"
+          echo "checking the manifest against fliks $v"
       - run: npm test
       - run: npm run build
       - run: node --check dist/plugin.js
