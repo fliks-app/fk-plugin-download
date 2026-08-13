@@ -33,15 +33,19 @@ function satisfiesRange(version: string, range: string): boolean {
     });
 }
 
-/** Prefer the sibling Fliks checkout's real version when present; otherwise
- *  fall back to the value read from it at authoring time. */
+/** The core version this manifest's `fliks` range is checked against. `FLIKS_CORE_VERSION` is for
+ *  CI, which has no sibling checkout; without either, the check cannot run and must not pass. */
 function currentFliksVersion(): string {
+  const override = process.env.FLIKS_CORE_VERSION?.trim();
+  if (override) return override;
   const siblingPkg = path.join(ROOT, '..', 'fliks', 'backend', 'package.json');
   if (fs.existsSync(siblingPkg)) {
     const pkg = JSON.parse(fs.readFileSync(siblingPkg, 'utf8')) as { version: string };
     return pkg.version;
   }
-  return '2.0.1';
+  throw new Error(
+    'no Fliks version to check against: set FLIKS_CORE_VERSION or place a sibling fliks checkout',
+  );
 }
 
 test('build emits a manifest whose files hashes match the real bundle bytes', () => {
