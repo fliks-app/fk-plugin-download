@@ -31,6 +31,14 @@ import type {
 } from '../db/repositories';
 import type { DownloadHistoryRow, DownloadHistoryStatus, GrabSource } from '../db/rows';
 import {  ROUTES } from '../../scripts/manifest-template';
+
+/** Core's `media.resolve` refuses more than this many ids, and the queue resolves one per row.
+ *  A page bigger than it cannot be labelled, so it is clamped rather than answered half-built. */
+const MAX_PAGE_SIZE = 100;
+
+function readPageSize(raw: unknown): number {
+  return Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(Number(raw)) || 25));
+}
 import { log } from '../log';
 
 export interface PluginHttpRequest {
@@ -318,7 +326,7 @@ async function handleTestDownloadClientConnection(deps: RouteDeps, req: PluginHt
 
 async function handleListBlocklist(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
   const page = Math.max(1, Math.trunc(Number(req.query['page'])) || 1);
-  const pageSize = Math.max(1, Math.trunc(Number(req.query['pageSize'])) || 25);
+  const pageSize = readPageSize(req.query['pageSize']);
   const { items, total } = await deps.blocklist.list(pageSize, (page - 1) * pageSize);
   return jsonResponse(200, { data: items, total, page, pageSize });
 }
@@ -442,7 +450,7 @@ interface HistoryItemDto {
  *  An unrecognised `status` is dropped, never forwarded to the repository. */
 async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
   const page = Math.max(1, Math.trunc(Number(req.query['page'])) || 1);
-  const pageSize = Math.min(100, Math.max(1, Math.trunc(Number(req.query['pageSize'])) || 25));
+  const pageSize = readPageSize(req.query['pageSize']);
   const q = typeof req.query['q'] === 'string' ? req.query['q'].trim() : '';
   const status = HISTORY_STATUSES.includes(req.query['status'] as DownloadHistoryStatus)
     ? (req.query['status'] as DownloadHistoryStatus)
@@ -477,7 +485,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
  *  would render as an empty queue instead of an unreachable one. */
 async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
   const page = Math.max(1, Math.trunc(Number(req.query['page'])) || 1);
-  const pageSize = Math.max(1, Math.trunc(Number(req.query['pageSize'])) || 25);
+  const pageSize = readPageSize(req.query['pageSize']);
 
   const [rows, { byClientId, anyUnreachable }] = await Promise.all([
     deps.downloadHistory.findByStatuses(QUEUE_STATUSES),

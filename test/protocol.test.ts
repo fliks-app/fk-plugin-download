@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FrameReader, ProtocolViolationError, encodeFrame, parseFrame, isNote, isReq } from '../src/protocol';
+import {
+  FrameReader,
+  FrameTooLargeError,
+  MAX_FRAME_BYTES,
+  ProtocolViolationError,
+  encodeFrame,
+  parseFrame,
+  isNote,
+  isReq,
+} from '../src/protocol';
 
 test('FrameReader splits multiple frames arriving in one chunk', () => {
   const reader = new FrameReader();
@@ -35,4 +44,22 @@ test('isReq/isNote discriminate correctly', () => {
   assert.equal(isReq({ m: 'event', p: {} }), false);
   assert.equal(isNote({ m: 'event', p: {} }), true);
   assert.equal(isNote({ i: 1, m: 'hello' }), false);
+});
+
+const ENCODE_OVERHEAD = Buffer.byteLength(JSON.stringify({ i: 1, m: 'x', p: '' }), 'utf8');
+
+test('encodeFrame accepts a frame exactly at the ceiling', () => {
+  const payload = 'a'.repeat(MAX_FRAME_BYTES - ENCODE_OVERHEAD);
+  assert.equal(encodeFrame({ i: 1, m: 'x', p: payload }).length, MAX_FRAME_BYTES + 1);
+});
+
+test('encodeFrame refuses one byte over rather than breaching the reader at the other end', () => {
+  const payload = 'a'.repeat(MAX_FRAME_BYTES - ENCODE_OVERHEAD + 1);
+  assert.throws(() => encodeFrame({ i: 1, m: 'x', p: payload }), FrameTooLargeError);
+});
+
+test('encodeFrame measures bytes, so a multibyte payload cannot slip past a length check', () => {
+  const payload = '\u{1D11E}'.repeat(Math.ceil((MAX_FRAME_BYTES - ENCODE_OVERHEAD) / 4) + 1);
+  assert.ok(payload.length < MAX_FRAME_BYTES, 'fewer characters than the byte limit');
+  assert.throws(() => encodeFrame({ i: 1, m: 'x', p: payload }), FrameTooLargeError);
 });

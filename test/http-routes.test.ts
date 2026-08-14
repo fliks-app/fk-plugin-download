@@ -488,6 +488,18 @@ describe('route table — GET /queue', () => {
     assert.deepEqual(body.data.map((i) => i.id), [1], 'newest (id 3, 2) on page 1; id 1 is the lone item on page 2');
   });
 
+  test('pagination: a pageSize past the resolvable ceiling is clamped, not answered half-labelled', async () => {
+    const rows = Array.from({ length: 120 }, (_, i) => historyRow({ id: i + 1 }));
+    const deps = fakeDeps({ downloadHistory: { findByStatuses: async () => rows, listPage: async () => ({ rows, total: rows.length }) } });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue', query: { page: '1', pageSize: '500' } }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; pageSize: number };
+    // 100 is core's media.resolve bound: one id per row, and it refuses more than that.
+    assert.equal(body.pageSize, 100);
+    assert.equal(body.data.length, 100);
+  });
+
   test('a row with a resolvable media gets both fields; one whose media is missing gets neither', async () => {
     const deps = fakeDeps({
       downloadHistory: {

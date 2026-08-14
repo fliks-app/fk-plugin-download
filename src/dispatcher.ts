@@ -1,5 +1,5 @@
 import type { Socket } from 'net';
-import { FrameReader, encodeFrame, isNote, isReq, parseFrame, type Note } from './protocol';
+import { FrameReader, FrameTooLargeError, encodeFrame, isNote, isReq, parseFrame, type Note } from './protocol';
 import { log } from './log';
 
 export type RequestHandler = (payload: unknown) => Promise<unknown>;
@@ -44,7 +44,11 @@ export function attachDispatcher(
         }
         handler(frame.p)
           .then((r) => socket.write(encodeFrame({ i: frame.i, r })))
-          .catch((err: Error) => socket.write(encodeFrame({ i: frame.i, e: { c: 'ERR', m: err.message } })));
+          .catch((err: Error) => {
+            const c = err instanceof FrameTooLargeError ? 'ERR_RESULT_TOO_LARGE' : 'ERR';
+            // Bounded: the reason for refusing an oversize frame must not itself be one.
+            socket.write(encodeFrame({ i: frame.i, e: { c, m: err.message.slice(0, 4096) } }));
+          });
       } else if (isNote(frame)) {
         const noteFrame = frame as Note;
         noteHandlers[noteFrame.m]?.(noteFrame.p);

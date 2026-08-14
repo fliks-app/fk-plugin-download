@@ -32,8 +32,22 @@ export class ProtocolViolationError extends Error {
   }
 }
 
+/** Raised when a frame we are about to send would breach MAX_FRAME_BYTES — our fault, not core's. */
+export class FrameTooLargeError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'FrameTooLargeError';
+  }
+}
+
+/** Refuses past MAX_FRAME_BYTES rather than breaching core's reader, which would be fatal there. */
 export function encodeFrame(frame: Frame): Buffer {
-  return Buffer.from(JSON.stringify(frame) + '\n', 'utf8');
+  const json = JSON.stringify(frame);
+  const size = Buffer.byteLength(json, 'utf8');
+  if (size > MAX_FRAME_BYTES) {
+    throw new FrameTooLargeError(`frame of ${size} bytes exceeds the ${MAX_FRAME_BYTES} byte limit`);
+  }
+  return Buffer.from(json + '\n', 'utf8');
 }
 
 /** Buffers raw bytes into lines; any line (complete or still growing) past
