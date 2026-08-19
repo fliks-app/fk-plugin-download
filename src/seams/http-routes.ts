@@ -160,7 +160,11 @@ function readTestIndexerConnectionInput(body: unknown): TestIndexerConnectionInp
   const b = (body ?? {}) as Partial<TestIndexerConnectionInput>;
   if (typeof b.implementation !== 'string') return null;
   const settings = typeof b.settings === 'object' && b.settings !== null ? b.settings : {};
-  return { implementation: b.implementation, settings: settings as Record<string, unknown> };
+  return {
+    implementation: b.implementation,
+    settings: settings as Record<string, unknown>,
+    ...(Number.isInteger(b.id) ? { id: b.id as number } : {}),
+  };
 }
 
 function readCreateDownloadClientInput(body: unknown): CreateDownloadClientInput | 'name' | 'implementation' {
@@ -192,7 +196,11 @@ function readTestDownloadClientInput(body: unknown): TestDownloadClientInput | n
   const b = (body ?? {}) as Partial<TestDownloadClientInput>;
   if (typeof b.implementation !== 'string') return null;
   const settings = typeof b.settings === 'object' && b.settings !== null ? b.settings : {};
-  return { implementation: b.implementation, settings: settings as Record<string, unknown> };
+  return {
+    implementation: b.implementation,
+    settings: settings as Record<string, unknown>,
+    ...(Number.isInteger(b.id) ? { id: b.id as number } : {}),
+  };
 }
 
 async function handleSearchReleases(deps: RouteDeps, params: Record<string, string>, req: PluginHttpRequest): Promise<PluginHttpResponse> {

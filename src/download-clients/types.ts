@@ -66,6 +66,8 @@ export interface UpdateDownloadClientInput {
 export interface TestDownloadClientInput {
   implementation: string;
   settings: Record<string, unknown>;
+  /** The row being edited, absent on a new draft. A blank password resolves against it. */
+  id?: number;
 }
 
 /** A queue torrent slim enough for stall annotation — hash/progress/state
