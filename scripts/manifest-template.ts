@@ -3,11 +3,10 @@
  * `files` (sha256 of the built bundle + logo) are filled in by
  * `scripts/build.ts` — this template is not the manifest itself.
  *
- * `fliks` was derived by reading `backend/package.json`'s `version` in the
- * Fliks repo at authoring time ("2.0.1") and picking the loosest range with
- * a mandatory upper bound that still covers it: the whole 2.x line, cut off
- * before an unknown-shape 3.0. `test/manifest.test.ts` re-checks this range
- * against a sibling checkout's real version when one is present.
+ * `fliks` covers the whole 3.x line, cut off before an unknown-shape 4.0 — the upper bound
+ * is mandatory, both here and in the catalog's CI. Plugins are a 3.0 feature; the 2.x range
+ * this carried before only ever served development. `test/manifest.test.ts` re-checks the
+ * range against a sibling checkout's real version when one is present.
  */
 export const PLUGIN_ID = 'fliks.download';
 
@@ -802,7 +801,7 @@ export const MANIFEST_TEMPLATE = {
   id: PLUGIN_ID,
   pluginApi: 0,
   name: 'Download',
-  fliks: '>=2.0.0 <3.0.0',
+  fliks: '>=3.0.0 <4.0.0',
   author: 'Fliks',
   description: 'Indexer search, download-client management and the acquisition grab pipeline for Fliks.',
   license: 'AGPL-3.0-or-later',
