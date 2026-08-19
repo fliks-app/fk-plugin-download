@@ -10,6 +10,7 @@ import { createPluginPool } from './db/pool';
 import { migrateUp } from './db/migrate';
 import { createRepositories, type Repositories } from './db/repositories';
 import { createAppGraph, type AppGraph } from './composition-root';
+import { createAcquisitionRequestedHandler } from './grab/on-acquisition-requested';
 
 const token = process.env.FLIKS_PLUGIN_TOKEN ?? '';
 const pluginSockPath = process.env.FLIKS_PLUGIN_SOCK;
@@ -26,6 +27,10 @@ export let repositories: Repositories | null = null;
 /** The composition root's output — built once, right after `repositories`, from the same
  *  guard. `job`/`http` handlers below must check for null exactly like `repositories`. */
 export let appGraph: AppGraph | null = null;
+
+/** Built with `appGraph` — it holds the in-flight set that keeps a burst of approvals from
+ *  queueing duplicate searches, so it must outlive a single note. */
+let onAcquisitionRequested: ((name: string, payload: unknown) => void) | null = null;
 
 type DbInit = { ok: true } | { ok: false; reason: string };
 
@@ -45,6 +50,11 @@ async function initDb(): Promise<DbInit> {
     await migrateUp(pool);
     repositories = createRepositories(pool);
     appGraph = createAppGraph(repositories, host);
+    const graph = appGraph;
+    onAcquisitionRequested = createAcquisitionRequestedHandler({
+      host,
+      searchMissing: (mediaIds) => graph.grabPipeline.searchMissing(mediaIds),
+    });
     // Re-arms rows a previous run left `importing` — nothing is actually in flight
     // right after a fresh process start.
     await appGraph.completionPoller.init();
@@ -110,7 +120,11 @@ const requestHandlers: Record<string, (payload: unknown) => Promise<unknown>> = 
 const noteHandlers: Record<string, (payload: unknown) => void> = {
   event: (payload) => {
     const p = payload as { name: string; payload: unknown };
-    log.info(`event "${p.name}" received (no subscriber registered yet)`);
+    if (!onAcquisitionRequested) {
+      log.info(`event "${p.name}" received before the plugin was ready — ignored`);
+      return;
+    }
+    onAcquisitionRequested(p.name, p.payload);
   },
 
   config: (payload) => {
