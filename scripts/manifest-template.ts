@@ -406,7 +406,7 @@ export const CONFIG_PAGES = [
     paged: true,
     pageSize: 25,
     columns: [
-      { key: 'title', labelKey: 'download.config.queue.columns.title' },
+      { key: 'title', labelKey: 'download.config.queue.columns.title', truncate: true },
       {
         key: 'state',
         labelKey: 'download.config.queue.columns.state',
@@ -427,9 +427,14 @@ export const CONFIG_PAGES = [
           importing: 'primary' as const,
         },
       },
+      { key: 'size', labelKey: 'download.config.queue.columns.size', format: 'bytes' as const },
       { key: 'progress', labelKey: 'download.config.queue.columns.progress', format: 'percent' as const },
-      { key: 'bytesPerSecond', labelKey: 'download.config.queue.columns.speed', format: 'bytes' as const },
+      { key: 'bytesPerSecond', labelKey: 'download.config.queue.columns.speed', format: 'speed' as const },
     ],
+    // Rows enter and leave on `queue.updated`; the percentages and speeds between two such
+    // events answer to nothing, so those are the only reason this page polls at all.
+    refreshOn: ['queue.updated'],
+    refreshMs: 10_000,
     // Reads mediaId/mediaType straight off each row — core's own resolver renders no
     // button when either is null, so an unresolved row is simply inert, not broken.
     rowActions: [
@@ -648,6 +653,7 @@ export const I18N = {
     'download.config.queue.columns.state': 'State',
     'download.config.queue.columns.progress': 'Progress',
     'download.config.queue.columns.speed': 'Speed',
+    'download.config.queue.columns.size': 'Size',
     'download.config.queue.actions.open_media': 'Open',
   },
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
@@ -787,6 +793,7 @@ export const I18N = {
     'download.config.queue.columns.state': 'État',
     'download.config.queue.columns.progress': 'Progression',
     'download.config.queue.columns.speed': 'Vitesse',
+    'download.config.queue.columns.size': 'Taille',
     'download.config.queue.actions.open_media': 'Ouvrir',
   },
 };

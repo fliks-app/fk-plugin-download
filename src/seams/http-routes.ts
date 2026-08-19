@@ -360,8 +360,12 @@ export interface QueueItemDto {
   title: string;
   quality: string;
   state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
+  /** Percent, 0-100 — the table renders it verbatim. Clients report a 0-1 fraction, which
+   *  rounded to 0% for everything short of a finished download. */
   progress: number | null;
   bytesPerSecond: number | null;
+  /** Total bytes of the torrent, null while no client row backs this one yet. */
+  size: number | null;
   /** False when this row's own client could not be queried — `progress`/`bytesPerSecond`
    *  are then unknown, not zero. */
   clientReachable: boolean;
@@ -408,7 +412,7 @@ async function indexClientTorrents(
 function toQueueItem(row: DownloadHistoryRow, byClientId: Map<number, ClientTorrentIndex>): QueueItemDto {
   const base = { id: row.id, title: row.sourceTitle, quality: row.quality, mediaId: row.mediaId, mediaType: null as MediaKind | null };
   if (row.status === 'importing') {
-    return { ...base, state: 'importing', progress: 1, bytesPerSecond: null, clientReachable: true };
+    return { ...base, state: 'importing', progress: 100, bytesPerSecond: null, size: null, clientReachable: true };
   }
   const index = row.downloadClientId != null ? byClientId.get(row.downloadClientId) : undefined;
   const torrent = index && row.torrentHash ? index.byHash.get(row.torrentHash.toLowerCase()) : undefined;
@@ -416,12 +420,20 @@ function toQueueItem(row: DownloadHistoryRow, byClientId: Map<number, ClientTorr
     return {
       ...base,
       state: torrentProgressState(torrent),
-      progress: torrent.progress,
+      progress: torrent.progress * 100,
       bytesPerSecond: torrent.dlspeed,
+      size: torrent.size,
       clientReachable: true,
     };
   }
-  return { ...base, state: 'queued', progress: null, bytesPerSecond: null, clientReachable: index?.ok ?? false };
+  return {
+    ...base,
+    state: 'queued',
+    progress: null,
+    bytesPerSecond: null,
+    size: null,
+    clientReachable: index?.ok ?? false,
+  };
 }
 
 /** `media.resolve` throws above 100 ids — bounding to the ids already on the rendered
