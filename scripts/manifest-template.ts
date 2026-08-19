@@ -278,6 +278,7 @@ export const CONFIG_PAGES = [
   {
     id: 'general',
     labelKey: 'download.config.general.title',
+    subtitleKey: 'download.config.general.subtitle',
     icon: 'download',
     fields: [
       {
@@ -322,6 +323,7 @@ export const CONFIG_PAGES = [
     id: 'indexers',
     kind: 'providers' as const,
     labelKey: 'download.config.indexers.title',
+    subtitleKey: 'download.config.indexers.subtitle',
     icon: 'search',
     list: '/indexers',
     implementations: '/indexers/implementations',
@@ -376,6 +378,7 @@ export const CONFIG_PAGES = [
     id: 'download-clients',
     kind: 'providers' as const,
     labelKey: 'download.config.download_clients.title',
+    subtitleKey: 'download.config.download_clients.subtitle',
     icon: 'server',
     list: '/download-clients',
     implementations: '/download-clients/implementations',
@@ -397,13 +400,33 @@ export const CONFIG_PAGES = [
     id: 'queue',
     kind: 'table' as const,
     labelKey: 'download.config.queue.title',
+    subtitleKey: 'download.config.queue.subtitle',
     icon: 'download',
     list: '/queue',
     paged: true,
     pageSize: 25,
     columns: [
       { key: 'title', labelKey: 'download.config.queue.columns.title' },
-      { key: 'state', labelKey: 'download.config.queue.columns.state' },
+      {
+        key: 'state',
+        labelKey: 'download.config.queue.columns.state',
+        // `handleQueue` answers one of five closed values; without these the cell printed the
+        // raw enum, in English, whatever the UI language.
+        labelKeys: {
+          queued: 'download.config.queue.states.queued',
+          active: 'download.config.queue.states.active',
+          stalled: 'download.config.queue.states.stalled',
+          paused: 'download.config.queue.states.paused',
+          importing: 'download.config.queue.states.importing',
+        },
+        badges: {
+          queued: 'neutral' as const,
+          active: 'info' as const,
+          stalled: 'warning' as const,
+          paused: 'ghost' as const,
+          importing: 'primary' as const,
+        },
+      },
       { key: 'progress', labelKey: 'download.config.queue.columns.progress', format: 'percent' as const },
       { key: 'bytesPerSecond', labelKey: 'download.config.queue.columns.speed', format: 'bytes' as const },
     ],
@@ -419,6 +442,7 @@ export const CONFIG_PAGES = [
     id: 'history',
     kind: 'table' as const,
     labelKey: 'download.config.history.title',
+    subtitleKey: 'download.config.history.subtitle',
     icon: 'history',
     list: '/history',
     paged: true,
@@ -442,9 +466,10 @@ export const CONFIG_PAGES = [
     columns: [
       { key: 'date', labelKey: 'download.config.history.columns.date', format: 'date' as const },
       { key: 'title', labelKey: 'download.config.history.columns.title' },
-      { key: 'quality', labelKey: 'download.config.history.columns.quality' },
-      { key: 'source', labelKey: 'download.config.history.columns.source' },
-      { key: 'grabSource', labelKey: 'download.config.history.columns.grab_source' },
+      // A quality name is one token and every value is worth badging, hence the `*` tone.
+      { key: 'quality', labelKey: 'download.config.history.columns.quality', badges: { '*': 'ghost' as const } },
+      { key: 'source', labelKey: 'download.config.history.columns.source', nowrap: true },
+      { key: 'grabSource', labelKey: 'download.config.history.columns.grab_source', nowrap: true },
       {
         key: 'status',
         labelKey: 'download.config.history.columns.status',
@@ -454,6 +479,13 @@ export const CONFIG_PAGES = [
           completed: 'download.config.history.filters.status_completed',
           failed: 'download.config.history.filters.status_failed',
           warning: 'download.config.history.filters.status_warning',
+        },
+        badges: {
+          grabbed: 'info' as const,
+          importing: 'primary' as const,
+          completed: 'success' as const,
+          failed: 'error' as const,
+          warning: 'warning' as const,
         },
       },
       { key: 'statusMessage', labelKey: 'download.config.history.columns.detail' },
@@ -466,6 +498,16 @@ export const CONFIG_PAGES = [
 
 export const I18N = {
   en: {
+    'download.config.general.subtitle': 'How this plugin grabs and imports what you ask for.',
+    'download.config.indexers.subtitle': 'Torznab trackers searched when you look for a release.',
+    'download.config.download_clients.subtitle': 'Where a grabbed release is handed off to be downloaded.',
+    'download.config.queue.subtitle': 'What is downloading right now, across every client.',
+    'download.config.history.subtitle': 'Every grab, and how it ended.',
+    'download.config.queue.states.queued': 'Queued',
+    'download.config.queue.states.active': 'Downloading',
+    'download.config.queue.states.stalled': 'Stalled',
+    'download.config.queue.states.paused': 'Paused',
+    'download.config.queue.states.importing': 'Importing',
     'download.config.history.title': 'Download history',
     'download.config.history.columns.date': 'Date',
     'download.config.history.columns.title': 'Release',
@@ -605,6 +647,16 @@ export const I18N = {
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
   // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
   fr: {
+    'download.config.general.subtitle': 'Comment ce plugin récupère et importe ce que vous demandez.',
+    'download.config.indexers.subtitle': 'Les trackers Torznab interrogés lors d\'une recherche de release.',
+    'download.config.download_clients.subtitle': 'Où une release récupérée est confiée pour téléchargement.',
+    'download.config.queue.subtitle': 'Ce qui est en cours de téléchargement, tous clients confondus.',
+    'download.config.history.subtitle': 'Chaque récupération, et comment elle s\'est terminée.',
+    'download.config.queue.states.queued': 'En file',
+    'download.config.queue.states.active': 'Téléchargement',
+    'download.config.queue.states.stalled': 'Bloqué',
+    'download.config.queue.states.paused': 'En pause',
+    'download.config.queue.states.importing': 'Import',
     'download.config.history.title': 'Historique des téléchargements',
     'download.config.history.columns.date': 'Date',
     'download.config.history.columns.title': 'Release',

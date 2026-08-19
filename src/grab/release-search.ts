@@ -28,6 +28,27 @@ export interface ExternalIds {
 }
 
 /**
+ * Ceiling on one indexer's contribution to a fan-out. A single tracker left hanging used to
+ * hold the whole search — up to 90s per query, twice that through the `t=search` fallback —
+ * past core's own deadline for the route, which threw away every indexer that had already
+ * answered. Above this the slow one is dropped from this round instead.
+ */
+const INDEXER_BUDGET_MS = 120_000;
+
+/** Resolves with what the indexer returned, or with nothing once its budget lapses. The
+ *  dropped work keeps running to its own fetch timeout; only its result is no longer waited on. */
+function withinBudget<T>(work: Promise<T[]>, name: string): Promise<T[]> {
+  let timer: NodeJS.Timeout | undefined;
+  const lapsed = new Promise<T[]>((resolve) => {
+    timer = setTimeout(() => {
+      log.warn(`[${name}] still searching after ${INDEXER_BUDGET_MS}ms — dropped from this round`);
+      resolve([]);
+    }, INDEXER_BUDGET_MS);
+  });
+  return Promise.race([work, lapsed]).finally(() => clearTimeout(timer));
+}
+
+/**
  * Original result-set filtering (`parseSeasonEpisode`-based: drop releases
  * that clearly belong to a different episode/season, keep season packs and
  * unparseable titles for the scorer to judge) is not re-implemented here: it
@@ -41,8 +62,11 @@ async function fanOut<T>(
   ready: IndexerRow[],
   run: (ix: IndexerRow) => Promise<T[]>,
 ): Promise<T[]> {
-  const batches = await Promise.allSettled(ready.map(run));
-  return batches.flatMap((b) => (b.status === 'fulfilled' ? b.value : []));
+  // The catch is what `allSettled` used to do; the budget is what it could not.
+  const batches = await Promise.all(
+    ready.map((ix) => withinBudget(run(ix).catch(() => [] as T[]), ix.name)),
+  );
+  return batches.flat();
 }
 
 export async function searchMovieAcrossIndexers(
