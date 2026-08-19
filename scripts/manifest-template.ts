@@ -465,10 +465,16 @@ export const CONFIG_PAGES = [
     ],
     columns: [
       { key: 'date', labelKey: 'download.config.history.columns.date', format: 'date' as const },
-      { key: 'title', labelKey: 'download.config.history.columns.title' },
-      // A quality name is one token and every value is worth badging, hence the `*` tone.
-      { key: 'quality', labelKey: 'download.config.history.columns.quality', badges: { '*': 'ghost' as const } },
-      { key: 'source', labelKey: 'download.config.history.columns.source', nowrap: true },
+      {
+        key: 'title',
+        labelKey: 'download.config.history.columns.title',
+        // Quality and tracker belong with the release's name; as columns of their own they
+        // spent the width the title needed. Every quality value is worth badging: `*`.
+        subValues: [
+          { key: 'quality', badges: { '*': 'ghost' as const } },
+          { key: 'source', badges: { '*': 'neutral' as const } },
+        ],
+      },
       { key: 'grabSource', labelKey: 'download.config.history.columns.grab_source', nowrap: true },
       {
         key: 'status',
@@ -487,8 +493,10 @@ export const CONFIG_PAGES = [
           failed: 'error' as const,
           warning: 'warning' as const,
         },
+        // The reason a grab failed reads in a dialog; as a column it stretched every row.
+        detailField: 'statusMessage',
+        detailTitleKey: 'download.config.history.detail_title',
       },
-      { key: 'statusMessage', labelKey: 'download.config.history.columns.detail' },
     ],
     rowActions: [
       { kind: 'action' as const, labelKey: 'download.config.queue.actions.open_media', actionId: 'table.open-media' },
@@ -509,13 +517,11 @@ export const I18N = {
     'download.config.queue.states.paused': 'Paused',
     'download.config.queue.states.importing': 'Importing',
     'download.config.history.title': 'Download history',
+    'download.config.history.detail_title': 'What happened',
     'download.config.history.columns.date': 'Date',
     'download.config.history.columns.title': 'Release',
-    'download.config.history.columns.quality': 'Quality',
-    'download.config.history.columns.source': 'Tracker',
     'download.config.history.columns.grab_source': 'Grabbed',
     'download.config.history.columns.status': 'Status',
-    'download.config.history.columns.detail': 'Detail',
     'download.config.history.filters.search_placeholder': 'Search releases',
     'download.config.history.filters.status_label': 'Status',
     'download.config.history.filters.status_all': 'All statuses',
@@ -658,13 +664,11 @@ export const I18N = {
     'download.config.queue.states.paused': 'En pause',
     'download.config.queue.states.importing': 'Import',
     'download.config.history.title': 'Historique des téléchargements',
+    'download.config.history.detail_title': 'Ce qui s\'est passé',
     'download.config.history.columns.date': 'Date',
     'download.config.history.columns.title': 'Release',
-    'download.config.history.columns.quality': 'Qualité',
-    'download.config.history.columns.source': 'Tracker',
     'download.config.history.columns.grab_source': 'Récupéré',
     'download.config.history.columns.status': 'Statut',
-    'download.config.history.columns.detail': 'Détail',
     'download.config.history.filters.search_placeholder': 'Rechercher des releases',
     'download.config.history.filters.status_label': 'Statut',
     'download.config.history.filters.status_all': 'Tous les statuts',

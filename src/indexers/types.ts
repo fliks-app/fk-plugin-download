@@ -103,6 +103,8 @@ export interface TestIndexerConnectionInput {
   /** `"torznab"` is the only value resolved — settings.baseUrl/apiKey are used. */
   implementation: string;
   settings: Record<string, unknown>;
+  /** The row being edited, absent on a new draft. A blank apiKey resolves against it. */
+  id?: number;
 }
 
 export class IndexerNotFoundError extends Error {}

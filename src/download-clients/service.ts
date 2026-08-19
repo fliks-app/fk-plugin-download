@@ -50,7 +50,23 @@ export class DownloadClientsService {
       const messageKey: DownloadClientTestMessageKey = 'download.download_clients.test.unsupported_implementation';
       return { ok: false, messageKey, detail: input.implementation };
     }
-    return driver.testConnection(input.settings);
+    return driver.testConnection(await this.withStoredSecret(input));
+  }
+
+  /** A blank password on a saved row means "use the stored one", the same rule `update` applies.
+   *  The client never receives the real value on read, so demanding it here would make testing a
+   *  saved client impossible without retyping it. An unknown id tests what was submitted. */
+  private async withStoredSecret(input: TestDownloadClientInput): Promise<Record<string, unknown>> {
+    const settings = { ...(input.settings ?? {}) };
+    if (settings[SECRET_SETTING_KEY] || input.id === undefined) return settings;
+    try {
+      const existing = await this.findOne(input.id);
+      const stored = (existing.settings as Record<string, unknown>)?.[SECRET_SETTING_KEY];
+      if (stored) settings[SECRET_SETTING_KEY] = stored;
+    } catch {
+      /* unknown id — test what was submitted */
+    }
+    return settings;
   }
 
   async create(input: CreateDownloadClientInput): Promise<DownloadClientRow> {

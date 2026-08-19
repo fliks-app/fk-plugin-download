@@ -46,8 +46,22 @@ export class IndexerService {
       };
     }
     const baseUrl = String(input.settings?.baseUrl ?? '').trim();
-    const apiKey = String(input.settings?.apiKey ?? '').trim();
+    const apiKey = await this.apiKeyForTest(input);
     return this.deps.torznab.testConnection(baseUrl, apiKey);
+  }
+
+  /** A blank key on a saved row means "use the stored one". The client never receives the real
+   *  value on read, so demanding it here would make testing a saved indexer impossible without
+   *  retyping it. An unknown id tests what was submitted rather than failing. */
+  private async apiKeyForTest(input: TestIndexerConnectionInput): Promise<string> {
+    const submitted = String(input.settings?.apiKey ?? '').trim();
+    if (submitted || input.id === undefined) return submitted;
+    try {
+      const existing = await this.findOne(input.id);
+      return String((existing.settings as Record<string, unknown>)?.apiKey ?? '').trim();
+    } catch {
+      return submitted;
+    }
   }
 
   private sanitizeSettings(settings: Record<string, unknown> | undefined): Record<string, unknown> {

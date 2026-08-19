@@ -126,6 +126,47 @@ test('findOne throws IndexerNotFoundError, naming the id, for a missing row', as
   await assert.rejects(() => service.findOne(999), (err: unknown) => err instanceof IndexerNotFoundError && /#999/.test((err as Error).message));
 });
 
+test('VERDICT: testConnection on a saved row uses the stored apiKey when none is submitted', async () => {
+  const { service, repo, torznab } = makeService();
+  const seen: { baseUrl: string; apiKey: string }[] = [];
+  torznab.testConnection = (async (baseUrl: string, apiKey: string) => {
+    seen.push({ baseUrl, apiKey });
+    return { ok: true, messageKey: 'download.indexers.test.ok' as const };
+  }) as typeof torznab.testConnection;
+  const created = await repo.insert({
+    name: 'X',
+    implementation: 'torznab',
+    settings: { baseUrl: 'https://x.tld', apiKey: 'stored-key' },
+    enableRss: true,
+    enableSearch: true,
+    priority: 25,
+    requestDelay: 2,
+    enabled: true,
+    capsMovieSearch: false,
+    capsTvSearch: false,
+    capsSearchFallback: false,
+    capsProbedAt: null,
+  });
+
+  // The client never receives the key on read, so testing an edit submits none.
+  await service.testConnection({ implementation: 'torznab', settings: { baseUrl: 'https://x.tld' }, id: created.id });
+  assert.equal(seen[0]?.apiKey, 'stored-key');
+
+  // A submitted key still wins — that is how a rotated key gets tested before it is saved.
+  await service.testConnection({
+    implementation: 'torznab',
+    settings: { baseUrl: 'https://x.tld', apiKey: 'typed-key' },
+    id: created.id,
+  });
+  assert.equal(seen[1]?.apiKey, 'typed-key');
+
+  // A new draft has no row to fall back on, and an unknown id must not throw.
+  await service.testConnection({ implementation: 'torznab', settings: { baseUrl: 'https://x.tld' } });
+  assert.equal(seen[2]?.apiKey, '');
+  await service.testConnection({ implementation: 'torznab', settings: { baseUrl: 'https://x.tld' }, id: 4242 });
+  assert.equal(seen[3]?.apiKey, '');
+});
+
 test('testConnection reports unknown_implementation, naming it, without calling the torznab client', async () => {
   const { service, torznab } = makeService();
   let called = false;
