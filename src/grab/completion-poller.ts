@@ -194,9 +194,10 @@ export class DownloadCompletionPoller {
       const match = matches.get(torrent.name);
       if (!match || match.mediaId == null) {
         stillUnidentified.add(hash);
-        const message = `Auto-match: "${torrent.name}" — releases.match found no media for it`;
-        if (this.unidentifiedHashes.has(hash)) log.info(message);
-        else log.info(message);
+        // Reported on a previous tick already — saying it again every minute buries the rest of the log.
+        if (!this.unidentifiedHashes.has(hash)) {
+          log.info(`Auto-match: "${torrent.name}" — releases.match found no media for it`);
+        }
         continue;
       }
 
@@ -422,8 +423,7 @@ export class DownloadCompletionPoller {
 
   /**
    * Ported from `cleanStalledTorrents`. Gated by {@link getStallConfig} —
-   * `samples` unset (every fresh install, and every install today: no
-   * manifest config field exists for it yet) returns before touching any
+   * `samples` unset (every fresh install) returns before touching any
    * client. Every `getTorrentsResult` call below is gated on `ok`: an
    * unreachable client must never be treated as "holds nothing", which is
    * exactly the destructive-path risk this job carries (it deletes torrents
