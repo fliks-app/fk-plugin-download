@@ -21,9 +21,14 @@ describe('getStallConfig', () => {
     assert.equal(await getStallConfig(host), null);
   });
 
-  test('returns a config once samples is validly set, defaulting interval to 60m', async () => {
+  test('returns a config once samples is validly set, defaulting interval to 60m and autoRestart to the manifest default', async () => {
     const host = new FakeHost().on('config.get', () => ({ stall_samples: '3' }));
-    assert.deepEqual(await getStallConfig(host), { samples: 3, intervalMinutes: 60, autoRestart: false, includeManualGrabs: false });
+    assert.deepEqual(await getStallConfig(host), { samples: 3, intervalMinutes: 60, autoRestart: true, includeManualGrabs: false });
+  });
+
+  test('an explicitly disabled autoRestart is honoured', async () => {
+    const host = new FakeHost().on('config.get', () => ({ stall_samples: '3', stall_auto_restart: 'false' }));
+    assert.equal((await getStallConfig(host))?.autoRestart, false);
   });
 
   test('honours an explicit interval/autoRestart/includeManualGrabs', async () => {

@@ -159,15 +159,18 @@ export class DownloadCompletionPoller {
   private async autoMatchOrphanTorrents(allTorrents: readonly Torrent[]): Promise<void> {
     if (!allTorrents.length) return;
 
-    const allHistory = await this.deps.historyRepo.findAll();
+    // Bounded to the hashes in front of us: `download_history` is append-only and this runs
+    // every minute, so reading it whole was the cost of the job on a mature install.
+    const rowsForHashes = await this.deps.historyRepo.findByTorrentHashes(
+      allTorrents.map((t) => t.hash).filter((h): h is string => !!h),
+    );
     const rowByHash = new Map<string, DownloadHistoryRow>();
-    for (const h of allHistory) {
+    for (const h of rowsForHashes) {
       if (!h.torrentHash) continue;
       const key = h.torrentHash.toLowerCase();
       const kept = rowByHash.get(key);
       if (!kept || outranksForTorrent(h, kept)) rowByHash.set(key, h);
     }
-    const linkedTitles = new Set(allHistory.filter((h) => h.mediaId && h.sourceTitle).map((h) => normaliseTorrentName(h.sourceTitle)));
 
     const candidates = allTorrents.filter((t) => {
       if (!t.hash) return false;
@@ -181,6 +184,8 @@ export class DownloadCompletionPoller {
       return;
     }
 
+    // Only reached with something new in the client — the steady state never pays for it.
+    const linkedTitles = new Set((await this.deps.historyRepo.listLinkedSourceTitles()).map(normaliseTorrentName));
     const toIdentify = candidates.filter((t) => !linkedTitles.has(normaliseTorrentName(t.name)));
     if (!toIdentify.length) return;
 
@@ -194,9 +199,10 @@ export class DownloadCompletionPoller {
       const match = matches.get(torrent.name);
       if (!match || match.mediaId == null) {
         stillUnidentified.add(hash);
-        const message = `Auto-match: "${torrent.name}" — releases.match found no media for it`;
-        if (this.unidentifiedHashes.has(hash)) log.info(message);
-        else log.info(message);
+        // Reported on a previous tick already — saying it again every minute buries the rest of the log.
+        if (!this.unidentifiedHashes.has(hash)) {
+          log.info(`Auto-match: "${torrent.name}" — releases.match found no media for it`);
+        }
         continue;
       }
 
@@ -422,8 +428,7 @@ export class DownloadCompletionPoller {
 
   /**
    * Ported from `cleanStalledTorrents`. Gated by {@link getStallConfig} —
-   * `samples` unset (every fresh install, and every install today: no
-   * manifest config field exists for it yet) returns before touching any
+   * `samples` unset (every fresh install) returns before touching any
    * client. Every `getTorrentsResult` call below is gated on `ok`: an
    * unreachable client must never be treated as "holds nothing", which is
    * exactly the destructive-path risk this job carries (it deletes torrents

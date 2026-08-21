@@ -7,12 +7,6 @@ import type { HostCaller } from './types';
  * `src/host-methods.ts` namespace `plugin.<id>.*` server-side (see `config.set`'s
  * "Prefix applied server-side" note), so this port passes the bare names and
  * lets core apply the `plugin.fliks.download.` prefix — symmetric with `config.set`.
- *
- * No manifest config field exists yet for any of these four keys (only
- * `requestsAutoGrabOnApproval` is wired in `scripts/manifest-template.ts`, which
- * this module may not edit), so `stall_samples` reads back empty on every
- * install today — the early return below is therefore permanently taken until
- * that manifest gap is closed. See the port report for the flag.
  */
 export const STALL_SAMPLES_KEY = 'stall_samples';
 export const STALL_INTERVAL_MINUTES_KEY = 'stall_interval_minutes';
@@ -40,7 +34,8 @@ export async function getStallConfig(host: HostCaller): Promise<StallConfig | nu
   return {
     samples,
     intervalMinutes: Number.isFinite(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : 60,
-    autoRestart: values[STALL_AUTO_RESTART_KEY] === 'true',
+    // Absent means unsaved, not off: the manifest field defaults this toggle to on.
+    autoRestart: values[STALL_AUTO_RESTART_KEY] !== 'false',
     includeManualGrabs: values[STALL_INCLUDE_MANUAL_GRABS_KEY] === 'true',
   };
 }

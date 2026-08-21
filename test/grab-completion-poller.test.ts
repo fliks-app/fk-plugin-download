@@ -246,6 +246,34 @@ describe('DownloadCompletionPoller.cleanStalled — adversarial table', () => {
 
     assert.deepEqual(h.searchMissingCalls, [[77]]);
   });
+
+  test('autoRestart explicitly off -> removal happens, no re-search', async () => {
+    const h = buildPoller();
+    h.host.on('config.get', () => ({ stall_samples: '2', stall_auto_restart: 'false' }));
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.stalledChecksRepo.rows.push({ id: 1, torrentHash: 'stuck', downloadedBytes: 1000, checkedAt: HOUR_AGO });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'stuck', downloaded: 1000, progress: 0.3, state: 'downloading' })] });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'stuck', status: 'grabbed', mediaId: 77, grabSource: 'auto' }));
+
+    await h.poller.cleanStalled();
+
+    assert.equal(h.driver.deleted.length, 1);
+    assert.deepEqual(h.searchMissingCalls, []);
+  });
+
+  test('a manual grab is still removed, but only re-searched when includeManualGrabs is on', async () => {
+    const h = buildPoller();
+    h.host.on('config.get', () => ({ stall_samples: '2', stall_auto_restart: 'true' }));
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.stalledChecksRepo.rows.push({ id: 1, torrentHash: 'stuck', downloadedBytes: 1000, checkedAt: HOUR_AGO });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'stuck', downloaded: 1000, progress: 0.3, state: 'downloading' })] });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'stuck', status: 'grabbed', mediaId: 77, grabSource: 'manual' }));
+
+    await h.poller.cleanStalled();
+
+    assert.equal(h.driver.deleted.length, 1);
+    assert.deepEqual(h.searchMissingCalls, []);
+  });
 });
 
 describe('DownloadCompletionPoller.cleanSeeded — adversarial table', () => {
@@ -532,5 +560,61 @@ describe('DownloadCompletionPoller.init', () => {
 
     assert.equal(h.historyRepo.rows[0]?.status, 'grabbed');
     assert.equal(h.historyRepo.rows[1]?.status, 'grabbed');
+  });
+});
+
+describe('DownloadCompletionPoller auto-match — what it reads, and what it must not re-identify', () => {
+  function withTorrent(h: ReturnType<typeof buildPoller>, torrent: Parameters<typeof makeTorrent>[0]) {
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent(torrent)] });
+  }
+
+  test('a torrent already bound to a media is never sent to releases.match', async () => {
+    const h = buildPoller();
+    withTorrent(h, { hash: 'aabb', name: 'Some.Release.1080p', progress: 0.5, state: 'downloading' });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'aabb', status: 'grabbed', mediaId: 5 }));
+
+    await h.poller.poll();
+
+    assert.equal(h.host.calls.some((c) => c.method === 'releases.match'), false);
+    assert.equal(h.historyRepo.insertCalls.length, 0);
+  });
+
+  test('an unrecorded torrent whose name matches a linked row is not re-inserted as a duplicate', async () => {
+    const h = buildPoller();
+    // Same release, different separators and case — what normaliseTorrentName exists to absorb.
+    withTorrent(h, { hash: 'ccdd', name: 'Some_Release.1080P', progress: 0.5, state: 'downloading' });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'other', status: 'grabbed', mediaId: 5, sourceTitle: 'Some.Release.1080p' }));
+
+    await h.poller.poll();
+
+    assert.equal(h.host.calls.some((c) => c.method === 'releases.match'), false);
+    assert.equal(h.historyRepo.insertCalls.length, 0);
+  });
+
+  test('an unrecorded torrent nothing accounts for is identified and recorded', async () => {
+    const h = buildPoller();
+    withTorrent(h, { hash: 'eeff', name: 'Unknown.Release.2160p', progress: 0.5, state: 'downloading' });
+    h.host.on('releases.match', () => [{ id: '0', mediaId: 42, isFullSeason: false }]);
+
+    await h.poller.poll();
+
+    assert.equal(h.historyRepo.insertCalls.length, 1);
+    assert.equal(h.historyRepo.insertCalls[0]?.mediaId, 42);
+    assert.equal(h.historyRepo.insertCalls[0]?.torrentHash, 'eeff');
+  });
+
+  test('a row for a hash no client reports is never read — the query is bounded to what is in front of us', async () => {
+    const h = buildPoller();
+    withTorrent(h, { hash: 'eeff', name: 'Unknown.Release.2160p', progress: 0.5, state: 'downloading' });
+    // A linked row for an unrelated hash: it must still shield its own title, but its row
+    // is not what decides whether 'eeff' is a candidate.
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'zzzz', status: 'completed', mediaId: 7, sourceTitle: 'Old.Release.720p' }));
+    h.host.on('releases.match', () => [{ id: '0', mediaId: 42, isFullSeason: false }]);
+
+    await h.poller.poll();
+
+    assert.equal(h.historyRepo.insertCalls.length, 1);
+    assert.equal(h.historyRepo.insertCalls[0]?.mediaId, 42);
   });
 });

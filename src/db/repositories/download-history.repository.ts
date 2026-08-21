@@ -99,6 +99,26 @@ export class DownloadHistoryRepository {
     return rows;
   }
 
+  /** Every row claiming one of these hashes — several can, so the caller still ranks them.
+   *  Served by `idx_download_history_torrent_hash_lower`. */
+  async findByTorrentHashes(hashes: string[]): Promise<DownloadHistoryRow[]> {
+    if (!hashes.length) return [];
+    const { rows } = await this.pool.query<DownloadHistoryRow>(
+      `SELECT ${COLUMNS} FROM "download_history" WHERE LOWER("torrentHash") = ANY($1::text[])`,
+      [hashes.map((h) => h.toLowerCase())],
+    );
+    return rows;
+  }
+
+  /** Titles of rows already bound to a media — all the auto-matcher compares against, and the
+   *  only column it reads. `sourceTitle` is `NOT NULL`, so `<> ''` is the whole emptiness test. */
+  async listLinkedSourceTitles(): Promise<string[]> {
+    const { rows } = await this.pool.query<{ sourceTitle: string }>(
+      `SELECT DISTINCT "sourceTitle" FROM "download_history" WHERE "mediaId" IS NOT NULL AND "sourceTitle" <> ''`,
+    );
+    return rows.map((r) => r.sourceTitle);
+  }
+
   /** `completion.service.ts:330,340,444,959`, `download-clients.service.ts:398` — every
    *  "rows in status X or Y or Z" read collapses to one status-list filter. */
   async findByStatuses(statuses: DownloadHistoryStatus[]): Promise<DownloadHistoryRow[]> {
