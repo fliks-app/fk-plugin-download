@@ -98,6 +98,13 @@ export class FakeHistoryRepo {
   async findAll(): Promise<DownloadHistoryRow[]> {
     return [...this.rows];
   }
+  async findByTorrentHashes(hashes: string[]): Promise<DownloadHistoryRow[]> {
+    const set = new Set(hashes.map((h) => h.toLowerCase()));
+    return this.rows.filter((r) => r.torrentHash && set.has(r.torrentHash.toLowerCase()));
+  }
+  async listLinkedSourceTitles(): Promise<string[]> {
+    return this.rows.filter((r) => r.mediaId != null && r.sourceTitle).map((r) => r.sourceTitle);
+  }
   async findByStatuses(statuses: string[]): Promise<DownloadHistoryRow[]> {
     return this.rows.filter((r) => statuses.includes(r.status));
   }

@@ -159,15 +159,18 @@ export class DownloadCompletionPoller {
   private async autoMatchOrphanTorrents(allTorrents: readonly Torrent[]): Promise<void> {
     if (!allTorrents.length) return;
 
-    const allHistory = await this.deps.historyRepo.findAll();
+    // Bounded to the hashes in front of us: `download_history` is append-only and this runs
+    // every minute, so reading it whole was the cost of the job on a mature install.
+    const rowsForHashes = await this.deps.historyRepo.findByTorrentHashes(
+      allTorrents.map((t) => t.hash).filter((h): h is string => !!h),
+    );
     const rowByHash = new Map<string, DownloadHistoryRow>();
-    for (const h of allHistory) {
+    for (const h of rowsForHashes) {
       if (!h.torrentHash) continue;
       const key = h.torrentHash.toLowerCase();
       const kept = rowByHash.get(key);
       if (!kept || outranksForTorrent(h, kept)) rowByHash.set(key, h);
     }
-    const linkedTitles = new Set(allHistory.filter((h) => h.mediaId && h.sourceTitle).map((h) => normaliseTorrentName(h.sourceTitle)));
 
     const candidates = allTorrents.filter((t) => {
       if (!t.hash) return false;
@@ -181,6 +184,8 @@ export class DownloadCompletionPoller {
       return;
     }
 
+    // Only reached with something new in the client — the steady state never pays for it.
+    const linkedTitles = new Set((await this.deps.historyRepo.listLinkedSourceTitles()).map(normaliseTorrentName));
     const toIdentify = candidates.filter((t) => !linkedTitles.has(normaliseTorrentName(t.name)));
     if (!toIdentify.length) return;
 
