@@ -246,6 +246,34 @@ describe('DownloadCompletionPoller.cleanStalled — adversarial table', () => {
 
     assert.deepEqual(h.searchMissingCalls, [[77]]);
   });
+
+  test('autoRestart explicitly off -> removal happens, no re-search', async () => {
+    const h = buildPoller();
+    h.host.on('config.get', () => ({ stall_samples: '2', stall_auto_restart: 'false' }));
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.stalledChecksRepo.rows.push({ id: 1, torrentHash: 'stuck', downloadedBytes: 1000, checkedAt: HOUR_AGO });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'stuck', downloaded: 1000, progress: 0.3, state: 'downloading' })] });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'stuck', status: 'grabbed', mediaId: 77, grabSource: 'auto' }));
+
+    await h.poller.cleanStalled();
+
+    assert.equal(h.driver.deleted.length, 1);
+    assert.deepEqual(h.searchMissingCalls, []);
+  });
+
+  test('a manual grab is still removed, but only re-searched when includeManualGrabs is on', async () => {
+    const h = buildPoller();
+    h.host.on('config.get', () => ({ stall_samples: '2', stall_auto_restart: 'true' }));
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.stalledChecksRepo.rows.push({ id: 1, torrentHash: 'stuck', downloadedBytes: 1000, checkedAt: HOUR_AGO });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'stuck', downloaded: 1000, progress: 0.3, state: 'downloading' })] });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'stuck', status: 'grabbed', mediaId: 77, grabSource: 'manual' }));
+
+    await h.poller.cleanStalled();
+
+    assert.equal(h.driver.deleted.length, 1);
+    assert.deepEqual(h.searchMissingCalls, []);
+  });
 });
 
 describe('DownloadCompletionPoller.cleanSeeded — adversarial table', () => {

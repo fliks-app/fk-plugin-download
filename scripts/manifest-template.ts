@@ -555,9 +555,9 @@ export const I18N = {
     'download.config.stall.auto_restart_hint':
       'Look for another release once a stalled download has been removed.',
     'download.config.stall.include_manual_grabs':
-      'Include downloads you started yourself',
+      'Search again for downloads you started yourself too',
     'download.config.stall.include_manual_grabs_hint':
-      'By default only downloads the scheduler grabbed are cleaned up.',
+      'A stalled download is removed either way \u2014 this only decides whether a replacement is searched for.',
     'download.config.general.title': 'General',
     'download.config.general.auto_grab_on_approval': 'Auto-grab on request approval',
     'download.config.general.auto_grab_on_approval_hint':
@@ -703,9 +703,9 @@ export const I18N = {
     'download.config.stall.auto_restart_hint':
       'Cherche une autre release une fois le téléchargement bloqué supprimé.',
     'download.config.stall.include_manual_grabs':
-      'Inclure les téléchargements que vous avez lancés vous-même',
+      'Relancer aussi une recherche pour les téléchargements lancés manuellement',
     'download.config.stall.include_manual_grabs_hint':
-      'Par défaut, seuls les téléchargements lancés par la planification sont nettoyés.',
+      'Un téléchargement bloqué est supprimé dans tous les cas \u2014 ceci décide seulement si une autre release est cherchée.',
     'download.config.general.title': 'Général',
     'download.config.general.auto_grab_on_approval': 'Télécharger automatiquement après l’approbation d’une demande',
     'download.config.general.auto_grab_on_approval_hint':
