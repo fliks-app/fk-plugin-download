@@ -76,7 +76,21 @@ export function normaliseTorrentName(raw: string): string {
  *     cross-match them.
  */
 export class TorrentHistoryMatcher {
+  /** Normalising candidate titles is this matcher's whole cost, and every
+   *  caller walks the same row array once per torrent. Keyed by row, so a
+   *  fresh query's rows drop out on their own. */
+  private readonly normalisedTitles = new WeakMap<DownloadHistoryRow, string>();
+
   constructor(private readonly repo: Pick<DownloadHistoryRepository, 'updateTorrentHash'>) {}
+
+  private titleOf(h: DownloadHistoryRow): string {
+    let title = this.normalisedTitles.get(h);
+    if (title === undefined) {
+      title = normaliseTorrentName(h.sourceTitle ?? '');
+      this.normalisedTitles.set(h, title);
+    }
+    return title;
+  }
 
   findMatch(torrent: MatchableTorrent, histories: DownloadHistoryRow[]): HistoryMatch | null {
     const hash = torrent.hash?.toLowerCase() ?? null;
@@ -87,12 +101,11 @@ export class TorrentHistoryMatcher {
       if (byHash) return { history: byHash, matchedBy: 'hash' };
     }
 
-    const byName = pickAuthoritative(histories.filter((h) => normaliseTorrentName(h.sourceTitle ?? '') === name));
+    const byName = pickAuthoritative(histories.filter((h) => this.titleOf(h) === name));
     if (byName) return { history: byName, matchedBy: 'exact-name' };
 
     const prefix = histories.filter((h) => {
-      if (!h.sourceTitle) return false;
-      const s = normaliseTorrentName(h.sourceTitle);
+      const s = this.titleOf(h);
       if (!s) return false;
       return name.startsWith(s) || s.startsWith(name);
     });
