@@ -121,6 +121,72 @@ test('update() keeps the stored apiKey when the incoming settings omit it', asyn
   assert.equal(stored?.settings.baseUrl, 'https://y.tld');
 });
 
+test('a redacted row reports whether an apiKey is stored, so the editor can mask it', async () => {
+  const { service, repo } = makeService();
+  await repo.insert({
+    name: 'X',
+    implementation: 'torznab',
+    settings: { baseUrl: 'https://x.tld', apiKey: 'original-key' },
+    enableRss: true,
+    enableSearch: true,
+    priority: 25,
+    requestDelay: 2,
+    enabled: true,
+    capsMovieSearch: false,
+    capsTvSearch: false,
+    capsSearchFallback: false,
+    capsProbedAt: null,
+  });
+  const [withKey] = await service.findAll();
+  assert.deepEqual(withKey?.settings.secretsSet, ['apiKey']);
+
+  await service.update(withKey!.id, { settings: { baseUrl: 'https://x.tld', apiKey: null } });
+  const [cleared] = await service.findAll();
+  assert.deepEqual(cleared?.settings.secretsSet, []);
+});
+
+test('update() erases the stored apiKey when the incoming settings send an explicit null', async () => {
+  const { service, repo } = makeService();
+  const created = await repo.insert({
+    name: 'X',
+    implementation: 'torznab',
+    settings: { baseUrl: 'https://x.tld', apiKey: 'original-key' },
+    enableRss: true,
+    enableSearch: true,
+    priority: 25,
+    requestDelay: 2,
+    enabled: true,
+    capsMovieSearch: false,
+    capsTvSearch: false,
+    capsSearchFallback: false,
+    capsProbedAt: null,
+  });
+  await service.update(created.id, { settings: { baseUrl: 'https://x.tld', apiKey: null } });
+  const stored = await repo.findOne(created.id);
+  assert.deepEqual(stored?.settings, { baseUrl: 'https://x.tld' });
+});
+
+test('update() never persists the read-only marker a client echoes back', async () => {
+  const { service, repo } = makeService();
+  const created = await repo.insert({
+    name: 'X',
+    implementation: 'torznab',
+    settings: { baseUrl: 'https://x.tld', apiKey: 'original-key' },
+    enableRss: true,
+    enableSearch: true,
+    priority: 25,
+    requestDelay: 2,
+    enabled: true,
+    capsMovieSearch: false,
+    capsTvSearch: false,
+    capsSearchFallback: false,
+    capsProbedAt: null,
+  });
+  await service.update(created.id, { settings: { baseUrl: 'https://x.tld', secretsSet: ['apiKey'] } });
+  const stored = await repo.findOne(created.id);
+  assert.deepEqual(stored?.settings, { baseUrl: 'https://x.tld', apiKey: 'original-key' });
+});
+
 test('findOne throws IndexerNotFoundError, naming the id, for a missing row', async () => {
   const { service } = makeService();
   await assert.rejects(() => service.findOne(999), (err: unknown) => err instanceof IndexerNotFoundError && /#999/.test((err as Error).message));
@@ -160,11 +226,19 @@ test('VERDICT: testConnection on a saved row uses the stored apiKey when none is
   });
   assert.equal(seen[1]?.apiKey, 'typed-key');
 
+  // A pending erase tests without a key: that is the row about to be saved.
+  await service.testConnection({
+    implementation: 'torznab',
+    settings: { baseUrl: 'https://x.tld', apiKey: null },
+    id: created.id,
+  });
+  assert.equal(seen[2]?.apiKey, '');
+
   // A new draft has no row to fall back on, and an unknown id must not throw.
   await service.testConnection({ implementation: 'torznab', settings: { baseUrl: 'https://x.tld' } });
-  assert.equal(seen[2]?.apiKey, '');
-  await service.testConnection({ implementation: 'torznab', settings: { baseUrl: 'https://x.tld' }, id: 4242 });
   assert.equal(seen[3]?.apiKey, '');
+  await service.testConnection({ implementation: 'torznab', settings: { baseUrl: 'https://x.tld' }, id: 4242 });
+  assert.equal(seen[4]?.apiKey, '');
 });
 
 test('testConnection reports unknown_implementation, naming it, without calling the torznab client', async () => {
