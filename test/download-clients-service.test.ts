@@ -99,7 +99,7 @@ function makeService(overDeps: Record<string, unknown> = {}) {
 test('create() redacts the password from its own return value', async () => {
   const { service } = makeService();
   const result = await service.create({ name: 'X', implementation: 'qbittorrent', settings: { host: 'h', password: 'secret' } });
-  assert.deepEqual(result.settings, { host: 'h' });
+  assert.deepEqual(result.settings, { host: 'h', secretsSet: ['password'] });
 });
 
 test('findAll() redacts the password from every row', async () => {
@@ -107,7 +107,10 @@ test('findAll() redacts the password from every row', async () => {
   await repo.insert({ name: 'A', implementation: 'qbittorrent', settings: { host: 'a', password: 'p1' }, enabled: true, priority: 1 });
   await repo.insert({ name: 'B', implementation: 'qbittorrent', settings: { host: 'b', password: 'p2' }, enabled: true, priority: 2 });
   const rows = await service.findAll();
-  assert.deepEqual(rows.map((r) => r.settings), [{ host: 'a' }, { host: 'b' }]);
+  assert.deepEqual(rows.map((r) => r.settings), [
+    { host: 'a', secretsSet: ['password'] },
+    { host: 'b', secretsSet: ['password'] },
+  ]);
 });
 
 test('findOne() does NOT redact — the HTTP boundary is responsible for that, same as IndexerService', async () => {
@@ -121,9 +124,33 @@ test('update() keeps the stored password when the incoming settings omit it', as
   const { service, repo } = makeService();
   const saved = await repo.insert({ name: 'X', implementation: 'qbittorrent', settings: { host: 'h', password: 'stored' }, enabled: true, priority: 1 });
   const result = await service.update(saved.id, { settings: { host: 'h2' } });
-  assert.deepEqual(result.settings, { host: 'h2' });
+  assert.deepEqual(result.settings, { host: 'h2', secretsSet: ['password'] });
   const stored = await repo.findById(saved.id);
   assert.deepEqual(stored?.settings, { host: 'h2', password: 'stored' });
+});
+
+test('a redacted row reports no set secret once there is nothing stored', async () => {
+  const { service, repo } = makeService();
+  await repo.insert({ name: 'A', implementation: 'qbittorrent', settings: { host: 'a' }, enabled: true, priority: 1 });
+  const rows = await service.findAll();
+  assert.deepEqual(rows[0]?.settings, { host: 'a', secretsSet: [] });
+});
+
+test('update() erases the stored password when the incoming settings send an explicit null', async () => {
+  const { service, repo } = makeService();
+  const saved = await repo.insert({ name: 'X', implementation: 'qbittorrent', settings: { host: 'h', password: 'stored' }, enabled: true, priority: 1 });
+  const result = await service.update(saved.id, { settings: { host: 'h', password: null } });
+  const stored = await repo.findById(saved.id);
+  assert.deepEqual(stored?.settings, { host: 'h' });
+  assert.deepEqual(result.settings, { host: 'h', secretsSet: [] });
+});
+
+test('update() never persists the read-only marker a client echoes back', async () => {
+  const { service, repo } = makeService();
+  const saved = await repo.insert({ name: 'X', implementation: 'qbittorrent', settings: { host: 'h', password: 'stored' }, enabled: true, priority: 1 });
+  await service.update(saved.id, { settings: { host: 'h', secretsSet: ['password'] } });
+  const stored = await repo.findById(saved.id);
+  assert.deepEqual(stored?.settings, { host: 'h', password: 'stored' });
 });
 
 test('update() overwrites the stored password when the incoming settings send a non-empty one', async () => {

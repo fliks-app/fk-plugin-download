@@ -10,14 +10,16 @@ import {
   type TestIndexerConnectionInput,
   type UpdateIndexerInput,
 } from './types';
+import { mergeSecretSettings, redactSecretSettings } from '../secret-settings';
 import type { IndexerThrottle } from './throttle';
 import type { TorznabClient } from './torznab';
 
-/** Strips the stored API key so it never reaches an HTTP response. */
+/** The one credential an indexer's `settings` carries. */
+const SECRET_SETTING_KEYS = ['apiKey'] as const;
+
+/** Strips the stored API key so it never reaches an HTTP response, and reports that it is set. */
 export function redactApiKey(ix: IndexerRow): IndexerRow {
-  const settings = { ...(ix.settings ?? {}) };
-  delete settings.apiKey;
-  return { ...ix, settings };
+  return { ...ix, settings: redactSecretSettings(ix.settings, SECRET_SETTING_KEYS) };
 }
 
 export interface IndexerServiceDeps {
@@ -52,8 +54,10 @@ export class IndexerService {
 
   /** A blank key on a saved row means "use the stored one". The client never receives the real
    *  value on read, so demanding it here would make testing a saved indexer impossible without
-   *  retyping it. An unknown id tests what was submitted rather than failing. */
+   *  retyping it. An unknown id tests what was submitted rather than failing. A `null` is a
+   *  pending erase: it tests without a key, which is the row being saved. */
   private async apiKeyForTest(input: TestIndexerConnectionInput): Promise<string> {
+    if (input.settings?.apiKey === null) return '';
     const submitted = String(input.settings?.apiKey ?? '').trim();
     if (submitted || input.id === undefined) return submitted;
     try {
@@ -77,7 +81,7 @@ export class IndexerService {
     const saved = await this.deps.repo.insert({
       name: input.name,
       implementation: input.implementation,
-      settings: this.sanitizeSettings(input.settings),
+      settings: mergeSecretSettings(undefined, this.sanitizeSettings(input.settings), SECRET_SETTING_KEYS),
       enableRss: input.enableRss ?? true,
       enableSearch: input.enableSearch ?? true,
       priority: input.priority ?? 25,
@@ -151,10 +155,7 @@ export class IndexerService {
     if (input.requestDelay !== undefined) patch.requestDelay = input.requestDelay;
     if (input.enabled !== undefined) patch.enabled = input.enabled;
     if (input.settings !== undefined) {
-      // Blank/absent apiKey keeps the stored one — the client never sends the real value back on read.
-      const incoming = this.sanitizeSettings(input.settings);
-      const existingApiKey = (existing.settings as Record<string, unknown>)?.apiKey;
-      patch.settings = { ...incoming, apiKey: incoming.apiKey || existingApiKey };
+      patch.settings = mergeSecretSettings(existing.settings, this.sanitizeSettings(input.settings), SECRET_SETTING_KEYS);
     }
 
     const saved = await this.deps.repo.update(id, patch);

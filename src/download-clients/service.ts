@@ -13,12 +13,12 @@ import {
   type TestDownloadClientInput,
   type UpdateDownloadClientInput,
 } from './types';
+import { mergeSecretSettings, redactSecretSettings } from '../secret-settings';
 import type { ClientTestResult } from './contract';
 
-/** The one credential every implementation's `settings` carries today. Not a
- *  generic per-field schema (there is exactly one implementation) — mirrors
- *  `IndexerService`'s own one-line `redactApiKey`. */
+/** The one credential every implementation's `settings` carries today. */
 const SECRET_SETTING_KEY = 'password';
+const SECRET_SETTING_KEYS = [SECRET_SETTING_KEY] as const;
 
 export class DownloadClientsService {
   constructor(private readonly deps: DownloadClientsServiceDeps) {}
@@ -37,11 +37,9 @@ export class DownloadClientsService {
     return driver;
   }
 
-  /** Strips the stored credential so it never reaches an HTTP response. */
+  /** Strips the stored credential so it never reaches an HTTP response, and reports that it is set. */
   redact(client: DownloadClientRow): DownloadClientRow {
-    const settings = { ...(client.settings ?? {}) };
-    delete settings[SECRET_SETTING_KEY];
-    return { ...client, settings };
+    return { ...client, settings: redactSecretSettings(client.settings, SECRET_SETTING_KEYS) };
   }
 
   async testConnection(input: TestDownloadClientInput): Promise<ClientTestResult> {
@@ -55,9 +53,14 @@ export class DownloadClientsService {
 
   /** A blank password on a saved row means "use the stored one", the same rule `update` applies.
    *  The client never receives the real value on read, so demanding it here would make testing a
-   *  saved client impossible without retyping it. An unknown id tests what was submitted. */
+   *  saved client impossible without retyping it. An unknown id tests what was submitted. A `null`
+   *  is a pending erase: it tests without a password, which is the row being saved. */
   private async withStoredSecret(input: TestDownloadClientInput): Promise<Record<string, unknown>> {
     const settings = { ...(input.settings ?? {}) };
+    if (settings[SECRET_SETTING_KEY] === null) {
+      delete settings[SECRET_SETTING_KEY];
+      return settings;
+    }
     if (settings[SECRET_SETTING_KEY] || input.id === undefined) return settings;
     try {
       const existing = await this.findOne(input.id);
@@ -74,7 +77,7 @@ export class DownloadClientsService {
     const saved = await this.deps.repo.insert({
       name: input.name,
       implementation: input.implementation,
-      settings: input.settings ?? {},
+      settings: mergeSecretSettings(undefined, input.settings ?? {}, SECRET_SETTING_KEYS),
       enabled: input.enabled ?? true,
       priority: input.priority ?? 1,
     });
@@ -101,10 +104,7 @@ export class DownloadClientsService {
 
     let settings = existing.settings;
     if (input.settings !== undefined) {
-      // Blank/absent password keeps the stored one — the client never sends the real value back on read.
-      const incoming = { ...input.settings };
-      const existingSecret = (existing.settings as Record<string, unknown>)?.[SECRET_SETTING_KEY];
-      settings = { ...incoming, [SECRET_SETTING_KEY]: incoming[SECRET_SETTING_KEY] || existingSecret };
+      settings = mergeSecretSettings(existing.settings, input.settings, SECRET_SETTING_KEYS);
     }
 
     const saved = await this.deps.repo.update(id, {
