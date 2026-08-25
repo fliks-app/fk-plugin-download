@@ -299,3 +299,56 @@ test('VERDICT: the search fallback is persisted through its own statement — `u
     stub.restore();
   }
 });
+
+/**
+ * `fetch` collapses every transport failure into `TypeError: fetch failed` and hides the
+ * reason on `cause`. Logging the bare message is what made a real report unactionable:
+ * DNS, refused and reset all read identically, and the timeout was indistinguishable
+ * from a connection error.
+ */
+test('VERDICT: a transport failure reports the cause, not the bare "fetch failed"', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw Object.assign(new TypeError('fetch failed'), {
+      cause: Object.assign(new Error('getaddrinfo ENOTFOUND jackett.lan'), { code: 'ENOTFOUND' }),
+    });
+  }) as typeof fetch;
+  try {
+    const { client } = makeClient();
+    const result = await client.testConnection('https://tracker.example', 'k');
+    assert.equal(result.ok, false);
+    assert.match(String(result.detail), /getaddrinfo ENOTFOUND jackett\.lan/);
+    assert.match(String(result.detail), /ENOTFOUND/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('an aborted request is reported as this client’s own timeout, not a transport error', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+  }) as typeof fetch;
+  try {
+    const { client } = makeClient();
+    const result = await client.testConnection('https://tracker.example', 'k');
+    assert.equal(result.ok, false);
+    assert.match(String(result.detail), /timed out after \d+ms/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('a cause-less error keeps its own message rather than becoming "undefined"', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error('ECONNREFUSED');
+  }) as typeof fetch;
+  try {
+    const { client } = makeClient();
+    const result = await client.testConnection('https://tracker.example', 'k');
+    assert.deepEqual(result, { ok: false, messageKey: 'download.indexers.test.network_error', detail: 'ECONNREFUSED' });
+  } finally {
+    globalThis.fetch = original;
+  }
+});

@@ -23,6 +23,21 @@ interface FetchOptions {
   validateStatus?: (status: number) => boolean;
 }
 
+/**
+ * `fetch` reports every transport failure as the same `TypeError: fetch failed`, with the
+ * real reason hidden on `cause` — so a DNS miss, a refused port and a reset socket all
+ * reach the logs and the indexer's error column as one useless string. An abort is worth
+ * naming too: it is this client's own timeout, not the far end's answer.
+ */
+function describeFetchError(e: unknown, timeoutMs: number): string {
+  const err = e as { name?: string; message?: string; cause?: { message?: string; code?: string } };
+  if (err?.name === 'AbortError' || err?.name === 'TimeoutError') return `timed out after ${timeoutMs}ms`;
+  const cause = err?.cause;
+  if (!cause?.message) return err?.message ?? String(e);
+  const code = cause.code && !cause.message.includes(cause.code) ? ` (${cause.code})` : '';
+  return `${err.message ?? 'request failed'}: ${cause.message}${code}`;
+}
+
 async function fetchText(url: string, opts: FetchOptions): Promise<{ status: number; body: string; headers: Headers }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
@@ -33,6 +48,10 @@ async function fetchText(url: string, opts: FetchOptions): Promise<{ status: num
       throw new TorznabHttpError(res.status, res.headers.get('retry-after'));
     }
     return { status: res.status, body, headers: res.headers };
+  } catch (e) {
+    // The status error carries its own meaning, and `maybeHandleRateLimit` matches on its type.
+    if (e instanceof TorznabHttpError) throw e;
+    throw new Error(describeFetchError(e, opts.timeoutMs), { cause: e });
   } finally {
     clearTimeout(timer);
   }
