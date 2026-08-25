@@ -54,6 +54,30 @@ describe('searchMovieAcrossIndexers', () => {
     }
   });
 
+  // The budget is not just "some ceiling": it has to clear a reverse proxy's default 60s read
+  // timeout, or the 504 discards every indexer that had already answered. Ticking exactly the
+  // budget is what pins that — at the old 120s this resolves to nothing.
+  test('VERDICT: the fan-out gives up well inside a reverse proxy timeout', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const pending = searchMovieAcrossIndexers(
+        driver(),
+        [row(1, 'fast'), row(2, 'hung')],
+        'Some Title 2024',
+        {},
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      mock.timers.tick(30_000);
+      const releases = await pending;
+      assert.deepEqual(
+        releases.map((r) => r.title),
+        ['fast-1'],
+      );
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
   test('a rejecting indexer costs nothing but its own results', async () => {
     const releases = await searchMovieAcrossIndexers(
       driver(),
