@@ -208,3 +208,48 @@ describe('grabRelease — auto-pick', () => {
     assert.equal(historyRepo.insertCalls.length, 1, 'the history row must be recorded regardless of the publish outcome');
   });
 });
+
+describe('grabRelease — season scope picks a pack or fans out per episode', () => {
+  const SEASON = { id: 10, number: 4, episodeCount: 2 };
+
+  const seasonTarget = () =>
+    target({ kind: 'series', title: 'Show', searchTitle: 'Show', expectedTitles: ['Show'], season: SEASON });
+  const episodeTarget = (n: number) =>
+    target({ kind: 'series', title: 'Show', searchTitle: 'Show', expectedTitles: ['Show'], season: SEASON, episode: { id: 100 + n, number: n, endNumber: null, airDate: '2026-01-01' } });
+
+  const scoredRow = (id: string, isFullSeason: boolean) => ({ id, qualityId: 5, qualityName: 'WEBDL-1080p', rank: 30, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageAllowed: true, isFullSeason, sizeDeviation: 0, videoCodec: null, rejections: [] });
+
+  function seasonDeps(isFullSeason: boolean, releases = [{ title: 'Show.S04.1080p', downloadUrl: 'u', indexerId: 1 }]) {
+    const built = buildDeps({ target: seasonTarget(), releases, scored: [scoredRow('0', isFullSeason)] });
+    built.host.on('media.acquisitionContext', (p: unknown) => {
+      const { episodeId } = p as { episodeId?: number };
+      return episodeId == null ? seasonTarget() : episodeTarget(episodeId - 100);
+    });
+    built.host.on('acquisition.candidates', () => ({ items: [episodeTarget(1), episodeTarget(2)], cursor: null }));
+    return built;
+  }
+
+  test('grabs the pack alone when the best release is a full season', async () => {
+    const { deps, driver, host } = seasonDeps(true);
+    const result = await grabRelease(deps, 1, SEASON.id);
+    assert.equal(driver.added.length, 1);
+    assert.equal(result.torrentHashes, undefined);
+    assert.ok(!host.calls.some((c) => c.method === 'acquisition.candidates'));
+  });
+
+  test('grabs every wanted episode when no pack outranks the loose releases', async () => {
+    const { deps, driver } = seasonDeps(false);
+    const result = await grabRelease(deps, 1, SEASON.id);
+    assert.equal(driver.added.length, 2);
+    assert.equal(result.torrentHashes?.length, 2);
+  });
+
+  test('fans out even when the season search itself returned nothing', async () => {
+    const { deps, host } = seasonDeps(false, []);
+    await assert.rejects(
+      () => grabRelease(deps, 1, SEASON.id),
+      (e: unknown) => e instanceof GrabError && e.messageKey === 'download.grab.errors.no_eligible_release',
+    );
+    assert.ok(host.calls.some((c) => c.method === 'acquisition.candidates'));
+  });
+});

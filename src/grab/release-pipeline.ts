@@ -207,7 +207,7 @@ export async function grabRelease(
   seasonId?: number,
   episodeId?: number,
   manual?: ManualGrabInput,
-): Promise<{ torrentHash: string }> {
+): Promise<{ torrentHash: string; torrentHashes?: string[] }> {
   const target = await loadTarget(deps, mediaId, seasonId, episodeId);
   const clients = await deps.clientsRepo.listEnabled();
   const client = pickClient(deps, clients);
@@ -244,6 +244,13 @@ export async function grabRelease(
   log.info(`Grab #${mediaId} "${target.title}" — auto-pick`);
   const scored = await searchScored(deps, target);
   const pick = pickRelease(scored, target.want);
+
+  // Season scope with no pack at the top: core's sort already ranks quality
+  // above pack-ness, so loose episodes winning means they beat every pack.
+  if (target.season && !target.episode && !pick?.isFullSeason) {
+    return grabSeasonEpisodes(deps, target, pick ? 'loose episodes outrank every pack' : 'no eligible season release');
+  }
+
   if (!pick) throw new GrabError('download.grab.errors.no_eligible_release');
   return grabAndRecord(execDeps(deps), {
     ...grabCommon,
@@ -253,4 +260,57 @@ export async function grabRelease(
     indexerId: pick.indexerId,
     grabSource: 'auto',
   });
+}
+
+/** Every episode of `target`'s season core still lists as needing a grab,
+ *  in airing order. */
+async function seasonEpisodeTargets(
+  deps: Pick<ReleasePipelineDeps, 'host'>,
+  target: AcquisitionTarget,
+): Promise<AcquisitionTarget[]> {
+  const availableOn = new Date().toISOString().slice(0, 10);
+  const out: AcquisitionTarget[] = [];
+  let cursor: string | null | undefined;
+  do {
+    const page = await deps.host.call('acquisition.candidates', {
+      mediaIds: [target.mediaId],
+      availableOn,
+      limit: 200,
+      cursor: cursor ?? undefined,
+    });
+    for (const it of page.items) {
+      if (it.episode && it.season?.id === target.season?.id && it.want && it.want.decision !== 'skip') out.push(it);
+    }
+    cursor = page.cursor;
+  } while (cursor);
+  return out.sort((a, b) => a.episode!.number - b.episode!.number);
+}
+
+/**
+ * The per-episode half of a season grab: no pack was worth taking, so each
+ * still-wanted episode runs its own search/score/pick. One episode with no
+ * eligible release must not sink the rest, so failures are logged and
+ * skipped; only an all-empty run is an error.
+ */
+async function grabSeasonEpisodes(
+  deps: ReleasePipelineDeps,
+  target: AcquisitionTarget,
+  why: string,
+): Promise<{ torrentHash: string; torrentHashes: string[] }> {
+  const seasonLabel = `S${String(target.season?.number ?? 0).padStart(2, '0')}`;
+  const episodes = await seasonEpisodeTargets(deps, target);
+  log.info(`Grab #${target.mediaId} "${target.title}" ${seasonLabel} — ${why}, grabbing ${episodes.length} episode(s) individually`);
+
+  const torrentHashes: string[] = [];
+  for (const ep of episodes) {
+    const epLabel = `${seasonLabel}E${String(ep.episode!.number).padStart(2, '0')}`;
+    try {
+      const { torrentHash } = await grabRelease(deps, target.mediaId, target.season!.id, ep.episode!.id);
+      torrentHashes.push(torrentHash);
+    } catch (err) {
+      log.warn(`Grab #${target.mediaId} "${target.title}" ${epLabel} skipped — ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (!torrentHashes.length) throw new GrabError('download.grab.errors.no_eligible_release');
+  return { torrentHash: torrentHashes[0]!, torrentHashes };
 }
