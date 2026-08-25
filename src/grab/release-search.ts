@@ -28,12 +28,13 @@ export interface ExternalIds {
 }
 
 /**
- * Ceiling on one indexer's contribution to a fan-out. A single tracker left hanging used to
- * hold the whole search — up to 90s per query, twice that through the `t=search` fallback —
- * past core's own deadline for the route, which threw away every indexer that had already
- * answered. Above this the slow one is dropped from this round instead.
+ * Ceiling on one indexer's contribution to a fan-out, and so on the whole fan-out — they
+ * run concurrently, so the slowest one sets the wall clock. Sized for the reverse proxy in
+ * front of Fliks rather than for core's 180s plugin-call deadline: nginx and friends default
+ * to a 60s read timeout, and a 504 there discards every indexer that had already answered.
+ * Above this the slow one is dropped and the rest are returned.
  */
-const INDEXER_BUDGET_MS = 120_000;
+const INDEXER_BUDGET_MS = 30_000;
 
 /** Resolves with what the indexer returned, or with nothing once its budget lapses. The
  *  dropped work keeps running to its own fetch timeout; only its result is no longer waited on. */
