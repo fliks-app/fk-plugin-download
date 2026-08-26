@@ -7,7 +7,7 @@ import { HostCallError } from '../host-client';
 import { TorrentHistoryMatcher, normaliseTorrentName, outranksForTorrent } from './torrent-name-matcher';
 import { identifyOrphans, resolveSeasonEpisodeIds } from './orphan-matcher';
 import { buildGrabHistoryRow } from './grab-history';
-import { getStallConfig } from './stall-config';
+import { getStallConfig, type StallConfig } from './stall-config';
 import { countStalledStrikes, STALL_ELIGIBLE_STATES } from '../download-clients/stalled-progress';
 import { torrentProgressState } from './progress-state';
 import { log } from '../log';
@@ -296,12 +296,23 @@ export class DownloadCompletionPoller {
    * granularity — flagged in the port report, not guessed at.
    */
   private async emitDownloadProgress(allTorrents: readonly Torrent[]): Promise<void> {
-    const downloading = allTorrents.filter((t) => t.progress < 1);
-    if (!downloading.length) return;
     const rows = await this.deps.historyRepo.findByStatuses(['grabbed', 'importing']);
     if (!rows.length) return;
 
-    for (const t of downloading) {
+    // A torrent at 100% used to be filtered out before it could be reported, so the flip to
+    // `importing` was never pushed — a view driven by these events kept showing the download
+    // until something else made it refetch. Its hash earns it one more tick.
+    const importingHashes = new Set(
+      rows
+        .filter((r) => r.status === 'importing' && r.torrentHash)
+        .map((r) => r.torrentHash!.toLowerCase()),
+    );
+    const reportable = allTorrents.filter(
+      (t) => t.progress < 1 || importingHashes.has(t.hash.toLowerCase()),
+    );
+    if (!reportable.length) return;
+
+    for (const t of reportable) {
       const history = await this.deps.historyMatcher.matchAndHeal(t, rows);
       if (!history?.mediaId) continue;
       // A progress tick is cosmetic; the import hand-off runs after this and must not be lost with it.
@@ -312,7 +323,9 @@ export class DownloadCompletionPoller {
           progress: t.progress,
           bytesPerSecond: t.dlspeed,
           etaSeconds: t.eta > 0 && t.eta < 8_640_000 ? t.eta : undefined,
-          state: torrentProgressState(t),
+          // The row is authoritative once it says importing: the client reports a finished
+          // torrent as seeding, which this mapping reads as `active`.
+          state: history.status === 'importing' ? 'importing' : torrentProgressState(t),
         })
         .catch((e: Error) => log.warn(`Import: progress publish failed: ${e.message}`));
     }
@@ -435,10 +448,11 @@ export class DownloadCompletionPoller {
    * and their files).
    */
   async cleanStalled(): Promise<void> {
-    await this.pruneOldStalledChecks();
-
     const stallConfig = await getStallConfig(this.deps.host);
     if (!stallConfig) return;
+
+    // After the config, not before: the horizon has to cover the window the config asks for.
+    await this.pruneOldStalledChecks(stallConfig);
 
     const clients = await this.deps.clientsRepo.listEnabled();
     const qbitClients = clients.filter((c) => this.deps.driver.supports(c));
@@ -503,10 +517,16 @@ export class DownloadCompletionPoller {
     return countStalledStrikes(recent) >= config.samples;
   }
 
-  /** Deletes stalled-check rows older than 24h. Assumes every profile's
-   *  detection window (`(samples - 1) x interval`) stays under 24h. */
-  private async pruneOldStalledChecks(): Promise<void> {
-    const cutoff = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+  /**
+   * Drops stalled-check rows the configured window can no longer reach. A fixed 24h horizon
+   * assumed a detection window under a day and enforced nothing: at one snapshot per interval,
+   * only `1440 / interval` rows survived, so `evaluateStalled`'s `recent.length >= samples` could
+   * never be met for a longer profile — 3 samples every 12h, or anything hourly past 24 samples,
+   * left cleanup permanently inert with no log, reading as "not stalled long enough yet".
+   */
+  private async pruneOldStalledChecks(config: StallConfig): Promise<void> {
+    const windowMs = (config.samples + 1) * config.intervalMinutes * 60_000;
+    const cutoff = new Date(Date.now() - Math.max(24 * 60 * 60_000, windowMs)).toISOString();
     await this.deps.stalledChecksRepo.pruneOlderThan(cutoff);
   }
 

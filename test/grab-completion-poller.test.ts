@@ -618,3 +618,61 @@ describe('DownloadCompletionPoller auto-match — what it reads, and what it mus
     assert.equal(h.historyRepo.insertCalls[0]?.mediaId, 42);
   });
 });
+
+/**
+ * The queue view is driven by these events. A torrent at 100% was filtered out before it could
+ * be reported, so the flip to `importing` was never pushed and the view kept showing a download
+ * that had finished — until an unrelated refetch caught up, minutes later.
+ */
+describe('DownloadCompletionPoller.poll — reporting the importing state', () => {
+  function progressCalls(host: { calls: { method: string; payload: unknown }[] }): { state: string; progress: number; ref: string }[] {
+    return host.calls
+      .filter((c) => c.method === 'progress.set')
+      .map((c) => c.payload as { state: string; progress: number; ref: string });
+  }
+
+  test('VERDICT: a finished torrent whose row is importing still gets a tick', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    // Seeding at 100%: the client's own vocabulary says nothing about importing.
+    const done = makeTorrent({ hash: 'abc', progress: 1, state: 'uploading' });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [done] });
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'importing', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+
+    await h.poller.poll();
+
+    const ticks = progressCalls(h.host);
+    assert.ok(ticks.some((t) => t.ref === 'abc' && t.state === 'importing'));
+  });
+
+  test('a finished torrent whose row is not importing stays unreported', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    const done = makeTorrent({ hash: 'abc', progress: 1, state: 'uploading' });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [done] });
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'completed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+
+    await h.poller.poll();
+
+    // Otherwise every seeding torrent would tick forever.
+    assert.equal(progressCalls(h.host).some((t) => t.ref === 'abc'), false);
+  });
+
+  test('a download still in flight is reported from the client state, as before', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    const running = makeTorrent({ hash: 'abc', progress: 0.4, state: 'stalledDL' });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [running] });
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+
+    await h.poller.poll();
+
+    assert.ok(progressCalls(h.host).some((t) => t.ref === 'abc' && t.state === 'stalled'));
+  });
+});

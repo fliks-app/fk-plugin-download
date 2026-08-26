@@ -298,11 +298,15 @@ export const CONFIG_PAGES = [
       },
       // No default: an unset sample count means no cleanup, and this path deletes
       // torrents along with their files.
+      // Bounded, unlike before: the two multiply into the detection window, and an unbounded pair
+      // could ask for one longer than the retention that feeds it.
       {
         key: 'stall_samples',
         type: 'number' as const,
         labelKey: 'download.config.stall.samples',
         hint: 'download.config.stall.samples_hint',
+        min: 2,
+        max: 100,
       },
       {
         key: 'stall_interval_minutes',
@@ -310,6 +314,8 @@ export const CONFIG_PAGES = [
         labelKey: 'download.config.stall.interval_minutes',
         hint: 'download.config.stall.interval_minutes_hint',
         default: 60,
+        min: 5,
+        max: 1440,
       },
       {
         key: 'stall_auto_restart',
@@ -428,7 +434,7 @@ export const CONFIG_PAGES = [
           active: 'download.config.queue.states.active',
           stalled: 'download.config.queue.states.stalled',
           paused: 'download.config.queue.states.paused',
-          importing: 'download.config.queue.states.importing',
+          importing: 'download.status.importing',
         },
         badges: {
           queued: 'neutral' as const,
@@ -472,7 +478,7 @@ export const CONFIG_PAGES = [
         options: [
           { value: '', labelKey: 'download.config.history.filters.status_all' },
           { value: 'grabbed', labelKey: 'download.config.history.filters.status_grabbed' },
-          { value: 'importing', labelKey: 'download.config.history.filters.status_importing' },
+          { value: 'importing', labelKey: 'download.status.importing' },
           { value: 'completed', labelKey: 'download.config.history.filters.status_completed' },
           { value: 'failed', labelKey: 'download.config.history.filters.status_failed' },
           { value: 'warning', labelKey: 'download.config.history.filters.status_warning' },
@@ -497,7 +503,7 @@ export const CONFIG_PAGES = [
         labelKey: 'download.config.history.columns.status',
         labelKeys: {
           grabbed: 'download.config.history.filters.status_grabbed',
-          importing: 'download.config.history.filters.status_importing',
+          importing: 'download.status.importing',
           completed: 'download.config.history.filters.status_completed',
           failed: 'download.config.history.filters.status_failed',
           warning: 'download.config.history.filters.status_warning',
@@ -531,7 +537,7 @@ export const I18N = {
     'download.config.queue.states.active': 'Downloading',
     'download.config.queue.states.stalled': 'Stalled',
     'download.config.queue.states.paused': 'Paused',
-    'download.config.queue.states.importing': 'Importing',
+    'download.status.importing': 'Importing',
     'download.config.history.title': 'Download history',
     'download.config.history.detail_title': 'Reason',
     'download.config.history.columns.date': 'Date',
@@ -542,7 +548,6 @@ export const I18N = {
     'download.config.history.filters.status_label': 'Status',
     'download.config.history.filters.status_all': 'All statuses',
     'download.config.history.filters.status_grabbed': 'Grabbed',
-    'download.config.history.filters.status_importing': 'Importing',
     'download.config.history.filters.status_completed': 'Completed',
     'download.config.history.filters.status_failed': 'Failed',
     'download.config.history.filters.status_warning': 'Warning',
@@ -559,7 +564,7 @@ export const I18N = {
     'download.media.search_releases': 'Search releases',
     'download.config.general.search_budget_seconds': 'Seconds allowed for a release search',
     'download.config.general.search_budget_seconds_hint':
-      'Indexers slower than this are dropped from the round and the results already returned are kept. Raise it for slow trackers; a reverse proxy in front of Fliks usually cuts the response at 60s.',
+      'Indexers slower than this are dropped from the round and the results already returned are kept. Raise it for slow trackers.',
     'download.config.stall.samples': 'Stalled-download checks before cleanup',
     'download.config.stall.samples_hint':
       'Leave empty to never clean up stalled downloads. Removing one deletes the torrent and its files.',
@@ -684,7 +689,7 @@ export const I18N = {
     'download.config.queue.states.active': 'Téléchargement',
     'download.config.queue.states.stalled': 'Bloqué',
     'download.config.queue.states.paused': 'En pause',
-    'download.config.queue.states.importing': 'Import',
+    'download.status.importing': 'Import en cours',
     'download.config.history.title': 'Historique des téléchargements',
     'download.config.history.detail_title': 'Raison',
     'download.config.history.columns.date': 'Date',
@@ -695,7 +700,6 @@ export const I18N = {
     'download.config.history.filters.status_label': 'Statut',
     'download.config.history.filters.status_all': 'Tous les statuts',
     'download.config.history.filters.status_grabbed': 'Récupéré',
-    'download.config.history.filters.status_importing': 'Import en cours',
     'download.config.history.filters.status_completed': 'Terminé',
     'download.config.history.filters.status_failed': 'Échoué',
     'download.config.history.filters.status_warning': 'Avertissement',
@@ -712,7 +716,7 @@ export const I18N = {
     'download.media.search_releases': 'Rechercher des releases',
     'download.config.general.search_budget_seconds': 'Secondes accordées à une recherche de release',
     'download.config.general.search_budget_seconds_hint':
-      'Les indexeurs plus lents sont écartés du tour et les résultats déjà reçus sont conservés. À augmenter pour des trackers lents ; un reverse proxy devant Fliks coupe généralement la réponse à 60s.',
+      'Les indexeurs plus lents sont écartés du tour et les résultats déjà reçus sont conservés. À augmenter pour des trackers lents.',
     'download.config.stall.samples': 'Vérifications avant nettoyage d’un téléchargement bloqué',
     'download.config.stall.samples_hint':
       'Laissez vide pour ne jamais nettoyer les téléchargements bloqués. Supprimer un torrent efface aussi ses fichiers.',
