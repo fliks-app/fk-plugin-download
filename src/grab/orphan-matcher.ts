@@ -55,7 +55,7 @@ export async function resolveSeasonEpisodeIds(
 ): Promise<{ seasonId: number | null; episodeId: number | null }> {
   if (seasonNumber == null) return { seasonId: null, episodeId: null };
   const today = new Date().toISOString().slice(0, 10);
-  const { items } = await host.call('acquisition.candidates', { mediaIds: [mediaId], availableOn: today, limit: 100 });
+  const { items } = await host.call('acquisition.candidates', { mediaIds: [mediaId], availableOn: today, limit: 500 });
   const bySeason = items.filter((it) => it.season?.number === seasonNumber);
 
   if (episodeNumber != null) {

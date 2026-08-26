@@ -298,11 +298,15 @@ export const CONFIG_PAGES = [
       },
       // No default: an unset sample count means no cleanup, and this path deletes
       // torrents along with their files.
+      // Bounded, unlike before: the two multiply into the detection window, and an unbounded pair
+      // could ask for one longer than the retention that feeds it.
       {
         key: 'stall_samples',
         type: 'number' as const,
         labelKey: 'download.config.stall.samples',
         hint: 'download.config.stall.samples_hint',
+        min: 2,
+        max: 100,
       },
       {
         key: 'stall_interval_minutes',
@@ -310,6 +314,8 @@ export const CONFIG_PAGES = [
         labelKey: 'download.config.stall.interval_minutes',
         hint: 'download.config.stall.interval_minutes_hint',
         default: 60,
+        min: 5,
+        max: 1440,
       },
       {
         key: 'stall_auto_restart',

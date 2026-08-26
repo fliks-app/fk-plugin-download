@@ -7,7 +7,7 @@ import { HostCallError } from '../host-client';
 import { TorrentHistoryMatcher, normaliseTorrentName, outranksForTorrent } from './torrent-name-matcher';
 import { identifyOrphans, resolveSeasonEpisodeIds } from './orphan-matcher';
 import { buildGrabHistoryRow } from './grab-history';
-import { getStallConfig } from './stall-config';
+import { getStallConfig, type StallConfig } from './stall-config';
 import { countStalledStrikes, STALL_ELIGIBLE_STATES } from '../download-clients/stalled-progress';
 import { torrentProgressState } from './progress-state';
 import { log } from '../log';
@@ -448,10 +448,11 @@ export class DownloadCompletionPoller {
    * and their files).
    */
   async cleanStalled(): Promise<void> {
-    await this.pruneOldStalledChecks();
-
     const stallConfig = await getStallConfig(this.deps.host);
     if (!stallConfig) return;
+
+    // After the config, not before: the horizon has to cover the window the config asks for.
+    await this.pruneOldStalledChecks(stallConfig);
 
     const clients = await this.deps.clientsRepo.listEnabled();
     const qbitClients = clients.filter((c) => this.deps.driver.supports(c));
@@ -516,10 +517,16 @@ export class DownloadCompletionPoller {
     return countStalledStrikes(recent) >= config.samples;
   }
 
-  /** Deletes stalled-check rows older than 24h. Assumes every profile's
-   *  detection window (`(samples - 1) x interval`) stays under 24h. */
-  private async pruneOldStalledChecks(): Promise<void> {
-    const cutoff = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+  /**
+   * Drops stalled-check rows the configured window can no longer reach. A fixed 24h horizon
+   * assumed a detection window under a day and enforced nothing: at one snapshot per interval,
+   * only `1440 / interval` rows survived, so `evaluateStalled`'s `recent.length >= samples` could
+   * never be met for a longer profile — 3 samples every 12h, or anything hourly past 24 samples,
+   * left cleanup permanently inert with no log, reading as "not stalled long enough yet".
+   */
+  private async pruneOldStalledChecks(config: StallConfig): Promise<void> {
+    const windowMs = (config.samples + 1) * config.intervalMinutes * 60_000;
+    const cutoff = new Date(Date.now() - Math.max(24 * 60 * 60_000, windowMs)).toISOString();
     await this.deps.stalledChecksRepo.pruneOlderThan(cutoff);
   }
 

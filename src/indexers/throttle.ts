@@ -45,7 +45,12 @@ export class IndexerThrottle {
   private async runOne<T>(indexer: IndexerRow, fn: () => Promise<T>): Promise<T> {
     const delayMs = Math.max(0, indexer.requestDelay ?? 2) * 1000;
     const earliest = this.nextAllowedAt.get(indexer.id) ?? 0;
-    const wait = earliest - Date.now();
+    // Only routine spacing is slept out here. A penalty window is the caller's to respect —
+    // `filterReadyIndexers` drops a cooling indexer before it ever reaches the queue — and
+    // sleeping one out instead parked this call for up to the full 6h backoff, uninterruptibly:
+    // `clearCooldown` frees every later request but cannot wake a sleeper already in `setTimeout`,
+    // and the per-indexer chain serialises everything behind it.
+    const wait = Math.min(earliest - Date.now(), delayMs);
     if (wait > 0) await sleep(wait);
     try {
       const result = await fn();

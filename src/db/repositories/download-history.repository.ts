@@ -42,10 +42,14 @@ export class DownloadHistoryRepository {
     return Number(rows[0]?.count ?? 0);
   }
 
-  /** `acquisition-scheduler.service.ts:257,544` — "is a grab already pending for this media". */
+  /** `acquisition-scheduler.service.ts:257,544` — "is a grab already pending for this media".
+   *  `importing` counts as pending here and below: `markImporting` runs before `library.ingest`,
+   *  which copies the release, so a row sits in that status for minutes with its download very
+   *  much still accounted for. Matching only `grabbed` stopped a pack blocking its own episodes
+   *  for exactly that window. */
   async findPendingGrabForMedia(mediaId: number): Promise<DownloadHistoryRow | null> {
     const { rows } = await this.pool.query<DownloadHistoryRow>(
-      `SELECT ${COLUMNS} FROM "download_history" WHERE "mediaId" = $1 AND "status" = 'grabbed' LIMIT 1`,
+      `SELECT ${COLUMNS} FROM "download_history" WHERE "mediaId" = $1 AND "status" IN ('grabbed', 'importing') LIMIT 1`,
       [mediaId],
     );
     return rows[0] ?? null;
@@ -56,7 +60,7 @@ export class DownloadHistoryRepository {
   async findPendingEpisodeGrab(mediaId: number, sourceTitlePattern: string): Promise<DownloadHistoryRow | null> {
     const { rows } = await this.pool.query<DownloadHistoryRow>(
       `SELECT ${COLUMNS} FROM "download_history"
-        WHERE "mediaId" = $1 AND "status" = 'grabbed' AND "sourceTitle" ILIKE $2
+        WHERE "mediaId" = $1 AND "status" IN ('grabbed', 'importing') AND "sourceTitle" ILIKE $2
         LIMIT 1`,
       [mediaId, sourceTitlePattern],
     );
@@ -67,7 +71,7 @@ export class DownloadHistoryRepository {
   async findPendingSeasonPackGrab(mediaId: number, seasonId: number): Promise<DownloadHistoryRow | null> {
     const { rows } = await this.pool.query<DownloadHistoryRow>(
       `SELECT ${COLUMNS} FROM "download_history"
-        WHERE "mediaId" = $1 AND "status" = 'grabbed' AND "seasonId" = $2 AND "episodeId" IS NULL
+        WHERE "mediaId" = $1 AND "status" IN ('grabbed', 'importing') AND "seasonId" = $2 AND "episodeId" IS NULL
         LIMIT 1`,
       [mediaId, seasonId],
     );
@@ -87,7 +91,7 @@ export class DownloadHistoryRepository {
    *  recent season-pack grab client-side. */
   async findRecentGrabbedForMedia(mediaId: number, since: IsoTimestamp): Promise<DownloadHistoryRow[]> {
     const { rows } = await this.pool.query<DownloadHistoryRow>(
-      `SELECT ${COLUMNS} FROM "download_history" WHERE "mediaId" = $1 AND "status" = 'grabbed' AND "createdAt" >= $2`,
+      `SELECT ${COLUMNS} FROM "download_history" WHERE "mediaId" = $1 AND "status" IN ('grabbed', 'importing') AND "createdAt" >= $2`,
       [mediaId, since],
     );
     return rows;

@@ -113,13 +113,20 @@ export async function rssSync(deps: SchedulerDeps): Promise<void> {
       const m = matched.get(release.title);
       if (!m || m.mediaId == null) continue;
 
+      // The contract's own ceiling, not 100: a series with more open candidates than one page had
+      // its highest seasons — the ones a feed actually carries — silently off the end of it.
       const page = await deps.host.call('acquisition.candidates', {
         mediaIds: [m.mediaId],
         availableOn: new Date().toISOString().slice(0, 10),
-        limit: 100,
+        limit: 500,
       });
       const target = page.items.find((it) => (m.seasonNumber == null ? !it.season : it.season?.number === m.seasonNumber) && (m.episodeNumber == null ? !it.episode : it.episode?.number === m.episodeNumber));
-      if (!target || !target.want || target.want.decision === 'skip') continue;
+      if (!target || !target.want || target.want.decision === 'skip') {
+        if (!target && page.cursor) {
+          log.warn(`RssSync: "${release.title}" matched #${m.mediaId} but its candidate was past the first page — skipped`);
+        }
+        continue;
+      }
 
       await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t), () => pendingCheck(deps.historyRepo, target));
     }
