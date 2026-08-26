@@ -296,12 +296,23 @@ export class DownloadCompletionPoller {
    * granularity — flagged in the port report, not guessed at.
    */
   private async emitDownloadProgress(allTorrents: readonly Torrent[]): Promise<void> {
-    const downloading = allTorrents.filter((t) => t.progress < 1);
-    if (!downloading.length) return;
     const rows = await this.deps.historyRepo.findByStatuses(['grabbed', 'importing']);
     if (!rows.length) return;
 
-    for (const t of downloading) {
+    // A torrent at 100% used to be filtered out before it could be reported, so the flip to
+    // `importing` was never pushed — a view driven by these events kept showing the download
+    // until something else made it refetch. Its hash earns it one more tick.
+    const importingHashes = new Set(
+      rows
+        .filter((r) => r.status === 'importing' && r.torrentHash)
+        .map((r) => r.torrentHash!.toLowerCase()),
+    );
+    const reportable = allTorrents.filter(
+      (t) => t.progress < 1 || importingHashes.has(t.hash.toLowerCase()),
+    );
+    if (!reportable.length) return;
+
+    for (const t of reportable) {
       const history = await this.deps.historyMatcher.matchAndHeal(t, rows);
       if (!history?.mediaId) continue;
       // A progress tick is cosmetic; the import hand-off runs after this and must not be lost with it.
@@ -312,7 +323,9 @@ export class DownloadCompletionPoller {
           progress: t.progress,
           bytesPerSecond: t.dlspeed,
           etaSeconds: t.eta > 0 && t.eta < 8_640_000 ? t.eta : undefined,
-          state: torrentProgressState(t),
+          // The row is authoritative once it says importing: the client reports a finished
+          // torrent as seeding, which this mapping reads as `active`.
+          state: history.status === 'importing' ? 'importing' : torrentProgressState(t),
         })
         .catch((e: Error) => log.warn(`Import: progress publish failed: ${e.message}`));
     }
