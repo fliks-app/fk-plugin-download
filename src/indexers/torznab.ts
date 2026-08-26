@@ -2,6 +2,7 @@ import type { IndexerRow } from '../db/rows';
 import type { IndexerConnectionTestResult, IndexerRelease, IndexerRepository, IndexerStatsRecorder } from './types';
 import { buildTorznabQuery, describeTorznabQuery, parseTorznabItems } from './torznab-parse';
 import { IndexerThrottle } from './throttle';
+import { searchFetchTimeoutMs } from '../search-budget';
 import { log } from '../log';
 
 const USER_AGENT = 'Fliks/1.0';
@@ -16,14 +17,6 @@ export class TorznabHttpError extends Error {
     super(`HTTP ${status}`);
   }
 }
-
-/**
- * Ceiling on one search request. Has to stay under `INDEXER_BUDGET_MS` in
- * `grab/release-search.ts`, which is itself sized for the reverse proxy in front of
- * Fliks: a browser gets a 504 long before a patient tracker answers, so waiting longer
- * only leaks a socket nobody is still listening to.
- */
-const SEARCH_TIMEOUT_MS = 25_000;
 
 interface FetchOptions {
   timeoutMs: number;
@@ -213,7 +206,7 @@ export class TorznabClient {
     const start = Date.now();
     try {
       const res = await this.deps.throttle.run(indexer, () =>
-        fetchText(url, { timeoutMs: SEARCH_TIMEOUT_MS, validateStatus: (s) => s >= 200 && s < 400 }),
+        fetchText(url, { timeoutMs: searchFetchTimeoutMs(), validateStatus: (s) => s >= 200 && s < 400 }),
       );
       const torznabError = this.torznabError(res.body);
       if (torznabError) {

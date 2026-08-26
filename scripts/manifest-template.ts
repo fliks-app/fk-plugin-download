@@ -287,6 +287,15 @@ export const CONFIG_PAGES = [
         hint: 'download.config.general.auto_grab_on_approval_hint',
         default: true,
       },
+      {
+        key: 'search_budget_seconds',
+        type: 'number' as const,
+        labelKey: 'download.config.general.search_budget_seconds',
+        hint: 'download.config.general.search_budget_seconds_hint',
+        default: 30,
+        min: 5,
+        max: 120,
+      },
       // No default: an unset sample count means no cleanup, and this path deletes
       // torrents along with their files.
       {
@@ -545,6 +554,9 @@ export const I18N = {
     'download.season.grab_best': 'Download the season',
     'download.media.grab_best': 'Grab the best release',
     'download.media.search_releases': 'Search releases',
+    'download.config.general.search_budget_seconds': 'Seconds allowed for a release search',
+    'download.config.general.search_budget_seconds_hint':
+      'Indexers slower than this are dropped from the round and the results already returned are kept. Raise it for slow trackers; a reverse proxy in front of Fliks usually cuts the response at 60s.',
     'download.config.stall.samples': 'Stalled-download checks before cleanup',
     'download.config.stall.samples_hint':
       'Leave empty to never clean up stalled downloads. Removing one deletes the torrent and its files.',
@@ -693,6 +705,9 @@ export const I18N = {
     'download.season.grab_best': 'Télécharger la saison',
     'download.media.grab_best': 'Récupérer la meilleure release',
     'download.media.search_releases': 'Rechercher des releases',
+    'download.config.general.search_budget_seconds': 'Secondes accordées à une recherche de release',
+    'download.config.general.search_budget_seconds_hint':
+      'Les indexeurs plus lents sont écartés du tour et les résultats déjà reçus sont conservés. À augmenter pour des trackers lents ; un reverse proxy devant Fliks coupe généralement la réponse à 60s.',
     'download.config.stall.samples': 'Vérifications avant nettoyage d’un téléchargement bloqué',
     'download.config.stall.samples_hint':
       'Laissez vide pour ne jamais nettoyer les téléchargements bloqués. Supprimer un torrent efface aussi ses fichiers.',

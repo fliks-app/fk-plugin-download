@@ -1,7 +1,7 @@
 import type { IndexerDriver } from '../seams/indexers';
 import type { DownloadClientDriver } from '../download-clients/contract';
 import type { IndexersRepository, DownloadClientsRepository, DownloadHistoryRepository, BlocklistRepository } from '../db/repositories';
-import type { DownloadClientRow } from '../db/rows';
+import type { DownloadClientRow, IndexerRow } from '../db/rows';
 import type { IndexerRelease } from '../indexers/types';
 import type { HostCaller } from './types';
 import type { HostResult } from '../host-client';
@@ -9,9 +9,17 @@ import {
   buildScoreRequest,
   joinScored,
   pickRelease,
+  toWireRelease,
   type RankedRelease,
 } from './release-scoring';
-import { searchMovieAcrossIndexers, searchSeasonPackAcrossIndexers, searchSeriesAcrossIndexers } from './release-search';
+import {
+  searchMovieAcrossIndexers,
+  searchSeasonPackAcrossIndexers,
+  searchSeriesAcrossIndexers,
+  type FanOutHooks,
+} from './release-search';
+import { createSearchStreamer, type StreamTarget } from './search-stream';
+import { refreshSearchBudget } from '../search-budget';
 import { grabAndRecord, type GrabExecutorDeps } from './grab-executor';
 import { log } from '../log';
 
@@ -100,31 +108,70 @@ function searchQuery(target: AcquisitionTarget, customQuery?: string): string {
  * used exactly as scored — no client-side re-sort — since the response is
  * already sorted by relevance.
  */
-export async function searchScored(deps: ReleasePipelineDeps, target: AcquisitionTarget, customQuery?: string): Promise<RankedRelease[]> {
+export async function searchScored(
+  deps: ReleasePipelineDeps,
+  target: AcquisitionTarget,
+  customQuery?: string,
+  stream?: StreamTarget,
+): Promise<RankedRelease[]> {
   const indexers = await deps.indexersRepo.listEnabled();
   if (!indexers.length) return [];
+
+  await refreshSearchBudget(deps.host);
 
   const externalIds = { imdbId: target.imdbId, tmdbId: target.tmdbId, tvdbId: target.tvdbId };
   const query = searchQuery(target, customQuery);
   const context = target.title;
 
+  const rank = (releases: IndexerRelease[]) => rankReleases(deps, target, indexers, releases);
+
+  let hooks: FanOutHooks | undefined;
+  if (stream) {
+    const seen: IndexerRelease[] = [];
+    const streamer = createSearchStreamer({
+      host: deps.host,
+      target: stream,
+      rank: async () => (await rank(seen)).map(toWireRelease),
+    });
+    hooks = {
+      onRoster: (ready, skipped) => streamer.roster(ready, skipped),
+      onSettled: (ix, outcome) => {
+        if ('releases' in outcome) seen.push(...outcome.releases);
+        streamer.settled(ix, outcome);
+      },
+    };
+  }
+
   let raw: IndexerRelease[];
   if (target.episode) {
-    raw = await searchSeriesAcrossIndexers(deps.indexer, indexers, query, target.season!.number, target.episode.number, externalIds, context);
+    raw = await searchSeriesAcrossIndexers(deps.indexer, indexers, query, target.season!.number, target.episode.number, externalIds, context, hooks);
   } else if (target.season) {
-    raw = await searchSeasonPackAcrossIndexers(deps.indexer, indexers, query, target.season.number, externalIds, context);
+    raw = await searchSeasonPackAcrossIndexers(deps.indexer, indexers, query, target.season.number, externalIds, context, hooks);
   } else {
-    raw = await searchMovieAcrossIndexers(deps.indexer, indexers, query, externalIds, context);
+    raw = await searchMovieAcrossIndexers(deps.indexer, indexers, query, externalIds, context, hooks);
   }
   if (!raw.length) return [];
 
+  return rank(raw);
+}
+
+/** One `releases.score` round trip over exactly the releases handed in. Called once per
+ *  search for the HTTP answer, and once more per indexer that adds results while a
+ *  streamed search fills in — core's sort needs the whole set, not a merge of batches. */
+async function rankReleases(
+  deps: Pick<ReleasePipelineDeps, 'host' | 'blocklistRepo'>,
+  target: AcquisitionTarget,
+  indexers: IndexerRow[],
+  releases: IndexerRelease[],
+): Promise<RankedRelease[]> {
+  if (!releases.length) return [];
   const scored = await deps.host.call('releases.score', {
     mediaId: target.mediaId,
     seasonNumber: target.season?.number,
     episodeNumber: target.episode?.number,
-    releases: await buildScoreRequest(raw, indexers, deps.blocklistRepo),
+    releases: await buildScoreRequest(releases, indexers, deps.blocklistRepo),
   });
-  return joinScored(raw, scored);
+  return joinScored(releases, scored);
 }
 
 /**
@@ -141,10 +188,11 @@ export async function searchReleases(
   seasonId?: number,
   episodeId?: number,
   customQuery?: string,
+  stream?: StreamTarget,
 ): Promise<RankedRelease[]> {
   const target = await loadTarget(deps, mediaId, seasonId, episodeId);
   if (!target.want) throw new GrabError('download.grab.errors.unprofiled');
-  const scored = await searchScored(deps, target, customQuery);
+  const scored = await searchScored(deps, target, customQuery, stream);
   const satisfied = target.want.decision === 'skip' ? ' (profile already satisfied)' : '';
   log.info(`Search #${mediaId} "${target.title}"${satisfied} q="${searchQuery(target, customQuery)}" → ${scored.length} result(s)`);
   return scored;

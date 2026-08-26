@@ -1,5 +1,6 @@
 import type { ReleasePipelineDeps } from './release-pipeline';
 import { grabRelease, searchReleases, type ManualGrabInput } from './release-pipeline';
+import type { StreamTarget } from './search-stream';
 import { searchMissing, rssSync } from './scheduler';
 import type { DownloadHistoryRepository } from '../db/repositories';
 
@@ -20,8 +21,8 @@ export type GrabPipelineDeps = ReleasePipelineDeps & { historyRepo: DownloadHist
 export class DownloadGrabPipeline {
   constructor(private readonly deps: GrabPipelineDeps) {}
 
-  searchReleases(mediaId: number, seasonId?: number, episodeId?: number, customQuery?: string) {
-    return searchReleases(this.deps, mediaId, seasonId, episodeId, customQuery);
+  searchReleases(mediaId: number, seasonId?: number, episodeId?: number, customQuery?: string, stream?: StreamTarget) {
+    return searchReleases(this.deps, mediaId, seasonId, episodeId, customQuery, stream);
   }
 
   grabRelease(mediaId: number, seasonId?: number, episodeId?: number, manual?: ManualGrabInput) {
