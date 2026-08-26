@@ -372,6 +372,9 @@ export const CONFIG_PAGES = [
         method: 'DELETE' as const,
         route: '/indexers/:id/cooldown',
         scope: 'row' as const,
+        // Renders beside the cooldown it clears rather than as a fourth button per row.
+        slot: 'cooldown-reset' as const,
+        confirmKey: 'download.config.indexers.actions.clear_cooldown_confirm',
       },
       {
         id: 'clear-all-cooldowns',
@@ -644,6 +647,8 @@ export const I18N = {
     'download.config.indexers.stats.errors': 'Errors',
     'download.config.indexers.stats.empty': 'No query recorded in the last 30 days.',
     'download.config.indexers.actions.clear_cooldown': 'Clear cooldown',
+    'download.config.indexers.actions.clear_cooldown_confirm':
+      'Query this indexer again right away? Its backoff is there because it failed or asked to be left alone.',
     'download.config.indexers.actions.clear_all_cooldowns': 'Clear all cooldowns',
     'download.config.download_clients.title': 'Download clients',
     'download.config.download_clients.implementations.qbittorrent': 'qBittorrent',
@@ -787,6 +792,8 @@ export const I18N = {
     'download.config.indexers.stats.errors': 'Erreurs',
     'download.config.indexers.stats.empty': 'Aucune requête enregistrée sur les 30 derniers jours.',
     'download.config.indexers.actions.clear_cooldown': 'Réinitialiser le cooldown',
+    'download.config.indexers.actions.clear_cooldown_confirm':
+      'Interroger de nouveau cet indexeur immédiatement ? Sa pause existe parce qu’il a échoué ou demandé à être laissé tranquille.',
     'download.config.indexers.actions.clear_all_cooldowns': 'Réinitialiser tous les cooldowns',
     'download.config.download_clients.title': 'Clients de téléchargement',
     'download.config.download_clients.implementations.qbittorrent': 'qBittorrent',
