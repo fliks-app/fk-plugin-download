@@ -230,7 +230,7 @@ export interface PluginHostApi {
   'events.emitOwn': (p: {
     type: string;
     payload: unknown;
-    audience: 'all' | { mediaId: number };
+    audience: 'all' | { mediaId: number } | { userId: number };
   }) => Promise<void>;
 
   /** Live acquisition progress. This plugin pushes; core emits the reserved

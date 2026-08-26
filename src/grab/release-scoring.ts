@@ -100,3 +100,10 @@ export function pickRelease<T extends Pick<ScoredRelease, 'rank' | 'rejections'>
 export function formatRejectionForLog(r: { code: string; detail?: string }): string {
   return r.detail ? `${r.code}: ${r.detail}` : r.code;
 }
+
+/** Core names the release source `sourceId`/`sourceName`; inside this plugin it is an
+ *  indexer row. Shared by the HTTP response and the streamed one so both speak the same
+ *  shape — a client that had to tell them apart would need two row types. */
+export function toWireRelease({ indexerId, indexerName, ...rest }: RankedRelease): Record<string, unknown> {
+  return { ...rest, sourceId: indexerId, sourceName: indexerName };
+}
