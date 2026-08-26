@@ -61,13 +61,13 @@ function fakeIndexerDriver(releases: { title: string; downloadUrl: string; index
   };
 }
 
-function buildDeps(opts: { releases?: { title: string; downloadUrl: string; indexerId: number }[] } = {}) {
+function buildDeps(opts: { releases?: { title: string; downloadUrl: string; indexerId: number }[]; isFullSeason?: boolean } = {}) {
   const historyRepo = new FakeHistoryRepo();
   const driver = new FakeDriver();
   const host = new FakeHost().on('events.publish', () => undefined).on('notifications.dispatch', () => undefined);
   host.on('releases.score', (p: unknown) => {
     const releases = (p as { releases: { id: string }[] }).releases;
-    return releases.map((r) => ({ id: r.id, qualityId: 5, qualityName: '1080p', rank: 30, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageName: null, languageAllowed: true, isFullSeason: false, sizeDeviation: 0, videoCodec: null, rejections: [] }));
+    return releases.map((r) => ({ id: r.id, qualityId: 5, qualityName: '1080p', rank: 30, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageName: null, languageAllowed: true, isFullSeason: opts.isFullSeason ?? false, sizeDeviation: 0, videoCodec: null, rejections: [] }));
   });
   const deps: SchedulerDeps = {
     host,
@@ -129,5 +129,64 @@ describe('rssSync', () => {
     withMatch(host, target());
     await rssSync(deps);
     assert.equal(historyRepo.insertCalls.length, 1);
+  });
+});
+
+const SEASON = { id: 20, number: 1 };
+
+/** A season-scoped target (a pack) and one of its episodes, in the order core lists them. */
+function packAndEpisode() {
+  return [
+    target({ kind: 'series', title: 'Show', searchTitle: 'Show', expectedTitles: ['Show'], season: SEASON } as Partial<AcquisitionTarget>),
+    target({ kind: 'series', title: 'Show', searchTitle: 'Show', expectedTitles: ['Show'], season: SEASON, episode: { id: 201, number: 3 } } as Partial<AcquisitionTarget>),
+  ];
+}
+
+describe('searchMissing — a partially available season', () => {
+  test('VERDICT: no eligible pack leaves the episodes to be grabbed on their own', async () => {
+    // The scorer answers isFullSeason:false, so the pack search finds only loose episodes.
+    const { deps, host, historyRepo } = buildDeps({ releases: [{ title: 'Show.S01E03.1080p', downloadUrl: 'u1', indexerId: 1 }] });
+    host.on('acquisition.candidates', () => ({ items: packAndEpisode(), cursor: null }));
+
+    await searchMissing(deps);
+
+    // Exactly one grab: the episode. The pack target must not take a loose episode and record
+    // it as the season, which is what would block the season on the next run.
+    assert.equal(historyRepo.insertCalls.length, 1);
+    assert.equal(historyRepo.insertCalls[0]?.episodeId, 201);
+  });
+
+  test('VERDICT: a pack that is grabbed stops its own episodes being grabbed behind it', async () => {
+    const { deps, host, historyRepo } = buildDeps({
+      releases: [{ title: 'Show.S01.1080p', downloadUrl: 'u1', indexerId: 1 }],
+      isFullSeason: true,
+    });
+    host.on('acquisition.candidates', () => ({ items: packAndEpisode(), cursor: null }));
+
+    await searchMissing(deps);
+
+    assert.equal(historyRepo.insertCalls.length, 1);
+    assert.equal(historyRepo.insertCalls[0]?.episodeId, null);
+  });
+
+  test('a pack still downloading from an earlier run covers its episodes', async () => {
+    const { deps, host, historyRepo } = buildDeps({
+      releases: [{ title: 'Show.S01E03.1080p', downloadUrl: 'u1', indexerId: 1 }],
+    });
+    host.on('acquisition.candidates', () => ({ items: [packAndEpisode()[1]!], cursor: null }));
+    historyRepo.rows.push({
+      id: 1,
+      mediaId: 1,
+      seasonId: SEASON.id,
+      episodeId: null,
+      status: 'grabbed',
+      sourceTitle: 'Show.S01.1080p',
+    } as never);
+
+    await searchMissing(deps);
+
+    // The pack's source title never matches an episode pattern, so without the season-pack
+    // check this episode would be grabbed alongside the pack already in flight.
+    assert.equal(historyRepo.insertCalls.length, 0);
   });
 });

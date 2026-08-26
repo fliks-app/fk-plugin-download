@@ -37,12 +37,17 @@ export async function searchMissing(deps: SchedulerDeps, mediaIds?: number[]): P
   const today = new Date().toISOString().slice(0, 10);
   let cursor: string | null | undefined;
   let count = 0;
+  // Core lists a season's pack and its episodes, pack first, so a pack taken here must stop its
+  // own episodes being taken behind it. Spans pages: the sort keeps them in that order.
+  const seasonsGrabbedAsPack = new Set<number>();
   do {
     const page = await deps.host.call('acquisition.candidates', { mediaIds, availableOn: today, limit: 200, cursor: cursor ?? undefined });
     for (const target of page.items) {
       count++;
       if (!target.want || target.want.decision === 'skip') continue;
-      await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t), () => pendingCheck(deps.historyRepo, target));
+      if (target.episode && target.season && seasonsGrabbedAsPack.has(target.season.id)) continue;
+      const grabbed = await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t), () => pendingCheck(deps.historyRepo, target));
+      if (grabbed && target.season && !target.episode) seasonsGrabbedAsPack.add(target.season.id);
     }
     cursor = page.cursor;
   } while (cursor);
@@ -59,6 +64,9 @@ async function pendingCheck(historyRepo: DownloadHistoryRepository, target: Acqu
     return !!pending;
   }
   if (target.season && target.episode) {
+    // A pack still downloading from an earlier run covers this episode, and its source title
+    // ("Show.S01.1080p") never matches the episode pattern below.
+    if (await historyRepo.findPendingSeasonPackGrab(target.mediaId, target.season.id)) return true;
     const epLabel = `S${String(target.season.number).padStart(2, '0')}E${String(target.episode.number).padStart(2, '0')}`;
     const pending = await historyRepo.findPendingEpisodeGrab(target.mediaId, `%${epLabel}%`);
     return !!pending;

@@ -41,6 +41,14 @@ export async function tryAutoGrab(
   if (!scored.length) return logSkip('no releases returned by indexers');
 
   const pick = pickRelease(scored, target.want);
+
+  // A season-scoped search that a loose episode wins means no pack was worth taking. Grabbing it
+  // would record one episode as the whole season, and the next run's pending-pack check would then
+  // block the season entirely — the season's own episode candidates handle it instead.
+  if (pick && target.season && !target.episode && !pick.isFullSeason) {
+    return logSkip(`no eligible season pack — best was "${pick.title}", left to the episode candidates`);
+  }
+
   if (!pick) {
     const sample = scored
       .slice(0, 3)
