@@ -229,22 +229,36 @@ export const UI_CONTRIBUTIONS = [
   {
     // Core owns the release picker and declares these two action ids; this plugin only
     // contributes the entries that open it, so nothing about grabbing shows without it.
-    id: 'fliks-download.media.grab-best',
+    //
+    // One submenu rather than two rows at the top level: the media menu groups its
+    // actions now, and acquisition is this plugin's group to fill. The gate stays on
+    // the parent — an empty group is dropped by core, so repeating it per child would
+    // only make the two disagree later.
+    id: 'fliks-download.media.group',
     slot: 'media.actions',
-    weight: 500,
-    labelKey: 'download.media.grab_best',
+    weight: 1000,
+    labelKey: 'download.media.group',
     icon: 'download',
     when: ['hasPermission:media.grab', '!mediaType:series', 'hasQualityProfile'],
-    action: { kind: 'action' as const, actionId: 'media.grab-best' },
-  },
-  {
-    id: 'fliks-download.media.search-releases',
-    slot: 'media.actions',
-    weight: 600,
-    labelKey: 'download.media.search_releases',
-    icon: 'search',
-    when: ['hasPermission:media.grab', '!mediaType:series', 'hasQualityProfile'],
-    action: { kind: 'action' as const, actionId: 'media.search-releases' },
+    action: { kind: 'submenu' as const },
+    children: [
+      {
+        id: 'fliks-download.media.grab-best',
+        slot: 'media.actions',
+        weight: 10,
+        labelKey: 'download.media.grab_best',
+        icon: 'download',
+        action: { kind: 'action' as const, actionId: 'media.grab-best' },
+      },
+      {
+        id: 'fliks-download.media.search-releases',
+        slot: 'media.actions',
+        weight: 20,
+        labelKey: 'download.media.search_releases',
+        icon: 'search',
+        action: { kind: 'action' as const, actionId: 'media.search-releases' },
+      },
+    ],
   },
   {
     id: 'fliks-download.season.search-releases',
@@ -560,6 +574,7 @@ export const I18N = {
     'download.config.download_clients.labels.edit_title': 'Edit download client',
     'download.season.search_releases': 'View packs',
     'download.season.grab_best': 'Download the season',
+    'download.media.group': 'Downloads',
     'download.media.grab_best': 'Grab the best release',
     'download.media.search_releases': 'Search releases',
     'download.config.general.search_budget_seconds': 'Seconds allowed for a release search',
@@ -712,6 +727,7 @@ export const I18N = {
     'download.config.download_clients.labels.edit_title': 'Modifier le client de téléchargement',
     'download.season.search_releases': 'Voir les packs',
     'download.season.grab_best': 'Télécharger la saison',
+    'download.media.group': 'Téléchargements',
     'download.media.grab_best': 'Récupérer la meilleure release',
     'download.media.search_releases': 'Rechercher des releases',
     'download.config.general.search_budget_seconds': 'Secondes accordées à une recherche de release',
@@ -827,7 +843,7 @@ export const MANIFEST_TEMPLATE = {
   id: PLUGIN_ID,
   pluginApi: 0,
   name: 'Download',
-  fliks: '>=3.0.0 <4.0.0',
+  fliks: '>=3.4.0 <4.0.0',
   author: 'Fliks',
   description: 'Indexer search, download-client management and the acquisition grab pipeline for Fliks.',
   license: 'AGPL-3.0-or-later',
