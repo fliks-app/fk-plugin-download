@@ -215,7 +215,7 @@ describe('grabRelease — season scope picks a pack or fans out per episode', ()
   const seasonTarget = () =>
     target({ kind: 'series', title: 'Show', searchTitle: 'Show', expectedTitles: ['Show'], season: SEASON });
   const episodeTarget = (n: number) =>
-    target({ kind: 'series', title: 'Show', searchTitle: 'Show', expectedTitles: ['Show'], season: SEASON, episode: { id: 100 + n, number: n, endNumber: null, airDate: '2026-01-01' } });
+    target({ kind: 'series', title: 'Show', searchTitle: 'Show', expectedTitles: ['Show'], season: SEASON, episode: { id: 100 + n, number: n, endNumber: null, airDate: '2026-01-01', title: `Episode ${n}` } });
 
   const scoredRow = (id: string, isFullSeason: boolean) => ({ id, qualityId: 5, qualityName: 'WEBDL-1080p', rank: 30, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageAllowed: true, isFullSeason, sizeDeviation: 0, videoCodec: null, rejections: [] });
 
@@ -251,5 +251,57 @@ describe('grabRelease — season scope picks a pack or fans out per episode', ()
       (e: unknown) => e instanceof GrabError && e.messageKey === 'download.grab.errors.no_eligible_release',
     );
     assert.ok(host.calls.some((c) => c.method === 'acquisition.candidates'));
+  });
+});
+
+/**
+ * A special has no numbering an indexer understands: `season=0&ep=3` matches only an `S00E03`
+ * tag that nothing publishes. Its title is the whole query — and with no title there is no
+ * query at all, only the series name, which would match its entire catalogue.
+ */
+describe('searchReleases — a special is searched by its title', () => {
+  const SPECIALS = { id: 10, number: 0, episodeCount: 4 };
+
+  function specialsDeps(episodeTitle: string | null) {
+    const seen: { query: string; season: number; episode: number }[] = [];
+    const built = buildDeps({
+      target: target({
+        kind: 'series',
+        title: 'Nova Skyline',
+        searchTitle: 'Nova Skyline',
+        expectedTitles: ['Nova Skyline'],
+        season: SPECIALS,
+        episode: { id: 103, number: 3, endNumber: null, airDate: '2026-01-01', title: episodeTitle },
+      }),
+      releases: [{ title: 'Nova.Skyline.Behind.The.Scenes.1080p', downloadUrl: 'u', indexerId: 1 }],
+    });
+    const driver = built.deps.indexer as unknown as Record<string, unknown>;
+    driver.searchSeries = async (
+      _ix: unknown,
+      query: string,
+      season: number,
+      episode: number,
+    ) => {
+      seen.push({ query, season, episode });
+      return [];
+    };
+    return { deps: built.deps, seen };
+  }
+
+  test('VERDICT: sends the episode title as the query', async () => {
+    const { deps, seen } = specialsDeps('Behind the Scenes');
+
+    await searchReleases(deps, 1, SPECIALS.id, 103);
+
+    assert.deepEqual(seen, [{ query: 'Nova Skyline Behind the Scenes', season: 0, episode: 3 }]);
+  });
+
+  test('VERDICT: asks no indexer at all when the special has no title', async () => {
+    const { deps, seen } = specialsDeps(null);
+
+    const result = await searchReleases(deps, 1, SPECIALS.id, 103);
+
+    assert.deepEqual(seen, []);
+    assert.deepEqual(result, []);
   });
 });

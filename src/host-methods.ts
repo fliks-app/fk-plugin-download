@@ -44,7 +44,15 @@ export interface AcquisitionTarget {
   expectedTitles: string[];
   searchTitle: string;
   season?: { id: number; number: number; episodeCount: number };
-  episode?: { id: number; number: number; endNumber: number | null; airDate: string | null };
+  episode?: {
+    id: number;
+    number: number;
+    endNumber: number | null;
+    airDate: string | null;
+    /** The only handle on a special: season 0 is never published as `S00Exx`, so searching one
+     *  means querying the episode title. Null when the provider has none. */
+    title: string | null;
+  };
 }
 
 /** The verdict on one candidate release, already sorted by relevance. */

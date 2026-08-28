@@ -92,7 +92,15 @@ function searchQuery(target: AcquisitionTarget, customQuery?: string): string {
   const trimmed = customQuery?.trim();
   if (trimmed) return trimmed;
   if (!target.season && !target.episode && target.year) return `${target.searchTitle} ${target.year}`;
+  // A special is published under its own title, never as `S00E03`, so the title is the query.
+  const specialTitle = isSpecial(target) ? target.episode?.title?.trim() : undefined;
+  if (specialTitle) return `${target.searchTitle} ${specialTitle}`;
   return target.searchTitle;
+}
+
+/** Season 0: the numbering an indexer understands does not exist for these. */
+function isSpecial(target: AcquisitionTarget): boolean {
+  return target.season?.number === 0;
 }
 
 /**
@@ -140,6 +148,17 @@ export async function searchScored(
         streamer.settled(ix, outcome);
       },
     };
+  }
+
+  // Nothing an indexer can be asked for: a specials pack is not a thing anyone publishes, and
+  // a special with no title leaves only the series name — which matches its whole catalogue and
+  // would let an unrelated release through, since a release naming no episode is never rejected
+  // as the wrong one.
+  if (isSpecial(target) && !target.episode?.title?.trim()) {
+    log.info(
+      `Search skipped for "${target.title}" ${target.episode ? `S00E${String(target.episode.number).padStart(2, '0')}` : 'S00 pack'}: no episode title to search a special by`,
+    );
+    return [];
   }
 
   let raw: IndexerRelease[];
