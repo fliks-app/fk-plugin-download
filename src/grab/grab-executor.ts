@@ -23,6 +23,8 @@ export interface GrabArgs {
    *  callers pass the display string to persist; the search/auto-grab paths
    *  the scored release carries the display name; the numeric id renders as a digit. */
   quality: string;
+  /** Release size in bytes as the indexer reported it; 0/undefined stores null. */
+  size?: number | null;
   indexerId?: number | null;
   grabSource: GrabSource;
   seasonNumber?: number;
@@ -64,6 +66,7 @@ export async function grabAndRecord(deps: GrabExecutorDeps, args: GrabArgs): Pro
       downloadClientId: args.client.id,
       sourceTitle: args.sourceTitle,
       torrentHash,
+      size: args.size,
       quality: args.quality,
       grabSource: args.grabSource,
       indexerId: args.indexerId,

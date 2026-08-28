@@ -437,7 +437,13 @@ export const CONFIG_PAGES = [
     paged: true,
     pageSize: 25,
     columns: [
-      { key: 'title', labelKey: 'download.config.queue.columns.title', truncate: true },
+      {
+        key: 'title',
+        labelKey: 'download.config.queue.columns.title',
+        truncate: true,
+        // Which tracker the release came from, badged under the name rather than costing a column.
+        subValues: [{ key: 'source', badges: { '*': 'neutral' as const } }],
+      },
       {
         key: 'state',
         labelKey: 'download.config.queue.columns.state',
@@ -509,6 +515,7 @@ export const CONFIG_PAGES = [
         subValues: [
           { key: 'quality', badges: { '*': 'ghost' as const } },
           { key: 'source', badges: { '*': 'neutral' as const } },
+          { key: 'size', format: 'bytes' as const, badges: { '*': 'ghost' as const } },
         ],
       },
       { key: 'grabSource', labelKey: 'download.config.history.columns.grab_source', nowrap: true },

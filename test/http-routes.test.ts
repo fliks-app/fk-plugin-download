@@ -26,6 +26,7 @@ function historyRow(over: Partial<DownloadHistoryRow> = {}): DownloadHistoryRow 
     quality: '1080p',
     language: null,
     torrentHash: null,
+    size: null,
     status: 'grabbed',
     statusMessage: null,
     grabSource: 'auto',
@@ -359,7 +360,11 @@ describe('route table — GET /queue', () => {
 
   test('an "importing" row reports state=importing and full progress regardless of any client', async () => {
     const deps = fakeDeps({
-      downloadHistory: { findByStatuses: async () => [historyRow({ id: 9, status: 'importing' })], listPage: async () => ({ rows: [], total: 0 }) },
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 9, status: 'importing', indexerId: 7 })],
+        listPage: async () => ({ rows: [], total: 0 }),
+      },
+      indexerService: { ...fakeDeps().indexerService, findAll: async () => [{ id: 7, name: 'Tracker A' }] as never },
     });
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
@@ -370,6 +375,7 @@ describe('route table — GET /queue', () => {
         id: 9,
         title: 'A Title',
         quality: '1080p',
+        source: 'Tracker A',
         state: 'importing',
         progress: 100,
         bytesPerSecond: null,
@@ -428,6 +434,7 @@ describe('route table — GET /queue', () => {
         id: 3,
         title: 'A Title',
         quality: '1080p',
+        source: '',
         state: 'stalled',
         // The client reports 0.5; the table renders this verbatim, so it must be a percent.
         progress: 50,
@@ -469,6 +476,7 @@ describe('route table — GET /queue', () => {
       id: 5,
       title: 'A Title',
       quality: '1080p',
+      source: '',
       state: 'queued',
       progress: null,
       bytesPerSecond: null,

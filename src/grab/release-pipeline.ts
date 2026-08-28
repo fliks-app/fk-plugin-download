@@ -284,6 +284,7 @@ export async function grabRelease(
       sourceTitle,
       downloadUrl: manual.downloadUrl,
       quality: scored.qualityName,
+      size: scored.size,
       indexerId: manual.indexerId,
       grabSource: 'manual',
     });
@@ -305,6 +306,7 @@ export async function grabRelease(
     sourceTitle: pick.title,
     downloadUrl: pick.downloadUrl,
     quality: pick.qualityName,
+    size: pick.size,
     indexerId: pick.indexerId,
     grabSource: 'auto',
   });

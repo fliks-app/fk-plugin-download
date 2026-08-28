@@ -67,6 +67,8 @@ export interface DownloadHistoryRow {
   quality: string;
   language: string | null;
   torrentHash: string | null;
+  /** `bigint` — see `pool.ts`'s OID 20 parser. Null on rows grabbed before it was recorded. */
+  size: number | null;
   status: DownloadHistoryStatus;
   statusMessage: string | null;
   grabSource: GrabSource;

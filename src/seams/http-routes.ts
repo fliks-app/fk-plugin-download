@@ -370,6 +370,8 @@ export interface QueueItemDto {
   bytesPerSecond: number | null;
   /** Total bytes of the torrent, null while no client row backs this one yet. */
   size: number | null;
+  /** Name of the indexer the release came from; empty when the row has no indexer. */
+  source: string;
   /** False when this row's own client could not be queried — `progress`/`bytesPerSecond`
    *  are then unknown, not zero. */
   clientReachable: boolean;
@@ -413,8 +415,19 @@ async function indexClientTorrents(
 
 /** `importing` is definitive regardless of the client (the download itself is already
  *  done); `grabbed` without a live torrent match means "unknown", never a guessed state. */
-function toQueueItem(row: DownloadHistoryRow, byClientId: Map<number, ClientTorrentIndex>): QueueItemDto {
-  const base = { id: row.id, title: row.sourceTitle, quality: row.quality, mediaId: row.mediaId, mediaType: null as MediaKind | null };
+function toQueueItem(
+  row: DownloadHistoryRow,
+  byClientId: Map<number, ClientTorrentIndex>,
+  indexerNames: Map<number, string>,
+): QueueItemDto {
+  const base = {
+    id: row.id,
+    title: row.sourceTitle,
+    quality: row.quality,
+    source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
+    mediaId: row.mediaId,
+    mediaType: null as MediaKind | null,
+  };
   if (row.status === 'importing') {
     return { ...base, state: 'importing', progress: 100, bytesPerSecond: null, size: null, clientReachable: true };
   }
@@ -462,6 +475,8 @@ interface HistoryItemDto {
   date: string;
   title: string;
   quality: string;
+  /** Null on rows grabbed before the column existed — the view omits it then. */
+  size: number | null;
   status: DownloadHistoryStatus;
   statusMessage: string | null;
   grabSource: GrabSource;
@@ -491,6 +506,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
     date: row.createdAt,
     title: row.sourceTitle,
     quality: row.quality,
+    size: row.size,
     status: row.status,
     statusMessage: row.statusMessage,
     grabSource: row.grabSource,
@@ -511,12 +527,14 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
   const page = Math.max(1, Math.trunc(Number(req.query['page'])) || 1);
   const pageSize = readPageSize(req.query['pageSize']);
 
-  const [rows, { byClientId, anyUnreachable }] = await Promise.all([
+  const [rows, { byClientId, anyUnreachable }, indexers] = await Promise.all([
     deps.downloadHistory.findByStatuses(QUEUE_STATUSES),
     indexClientTorrents(deps),
+    deps.indexerService.findAll(),
   ]);
+  const indexerNames = new Map(indexers.map((ix: { id: number; name: string }) => [ix.id, ix.name]));
 
-  const items = rows.map((row) => toQueueItem(row, byClientId)).sort((a, b) => b.id - a.id);
+  const items = rows.map((row) => toQueueItem(row, byClientId, indexerNames)).sort((a, b) => b.id - a.id);
   const start = (page - 1) * pageSize;
   // Slice to the page first — attachMediaTypes's host call must only ever see this page's ids.
   const data = await attachMediaTypes(deps, items.slice(start, start + pageSize));
