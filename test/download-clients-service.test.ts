@@ -232,6 +232,7 @@ test('blockTorrent: history found by hash directly -> blocklists, deletes with f
     quality: '1080p',
     language: null,
     torrentHash: 'abc',
+    size: null,
     status: 'grabbed',
     statusMessage: null,
     grabSource: 'auto',
@@ -281,6 +282,7 @@ test('blockTorrent: falls back to scanning enabled clients\' live torrents by ha
     quality: '720p',
     language: null,
     torrentHash: null, // not stored yet — this is exactly the fallback path
+    size: null,
     status: 'grabbed',
     statusMessage: null,
     grabSource: 'auto',
@@ -318,6 +320,7 @@ test('blockTorrent: an already-blocklisted release (insert throws) still gets de
     quality: '',
     language: null,
     torrentHash: 'abc',
+    size: null,
     status: 'grabbed',
     statusMessage: null,
     grabSource: 'auto',

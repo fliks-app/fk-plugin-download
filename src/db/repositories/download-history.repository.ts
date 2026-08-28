@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 import type { DownloadHistoryRow, DownloadHistoryStatus, GrabSource, IsoTimestamp } from '../rows';
 
-const COLUMNS = `"id", "sourceTitle", "quality", "language", "torrentHash", "status", "statusMessage",
+const COLUMNS = `"id", "sourceTitle", "quality", "language", "torrentHash", "size", "status", "statusMessage",
   "grabSource", "mediaId", "episodeId", "seasonId", "indexerId", "downloadClientId", "createdAt", "updatedAt"`;
 
 export interface NewDownloadHistoryGrab {
@@ -9,6 +9,7 @@ export interface NewDownloadHistoryGrab {
   quality: string;
   language?: string | null;
   torrentHash?: string | null;
+  size?: number | null;
   grabSource: GrabSource;
   mediaId: number;
   episodeId?: number | null;
@@ -198,15 +199,16 @@ export class DownloadHistoryRepository {
   async insertGrab(input: NewDownloadHistoryGrab): Promise<DownloadHistoryRow> {
     const { rows } = await this.pool.query<DownloadHistoryRow>(
       `INSERT INTO "download_history"
-         ("sourceTitle", "quality", "language", "torrentHash", "grabSource",
+         ("sourceTitle", "quality", "language", "torrentHash", "size", "grabSource",
           "mediaId", "episodeId", "seasonId", "indexerId", "downloadClientId")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING ${COLUMNS}`,
       [
         input.sourceTitle,
         input.quality,
         input.language ?? null,
         input.torrentHash ?? null,
+        input.size ?? null,
         input.grabSource,
         input.mediaId,
         input.episodeId ?? null,

@@ -19,6 +19,7 @@ export function makeHistoryRow(over: Partial<DownloadHistoryRow>): DownloadHisto
     quality: 'WEBDL-1080p',
     language: null,
     torrentHash: 'h1',
+    size: null,
     status: 'grabbed',
     statusMessage: null,
     grabSource: 'auto',

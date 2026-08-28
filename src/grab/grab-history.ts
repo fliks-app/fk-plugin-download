@@ -17,6 +17,7 @@ export function buildGrabHistoryRow(args: {
   downloadClientId: number;
   sourceTitle: string;
   torrentHash: string | null | undefined;
+  size?: number | null;
   quality: string;
   grabSource: GrabSource;
   indexerId?: number | null;
@@ -32,6 +33,7 @@ export function buildGrabHistoryRow(args: {
     // eventually flips the row to failed.
     sourceTitle: decodeHtmlEntities(args.sourceTitle),
     torrentHash: args.torrentHash || null,
+    size: args.size || null,
     quality: args.quality,
     grabSource: args.grabSource,
     indexerId: args.indexerId ?? null,

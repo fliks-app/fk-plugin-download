@@ -225,6 +225,7 @@ export class DownloadCompletionPoller {
             downloadClientId: torrent._clientId,
             sourceTitle: torrent.name,
             torrentHash: torrent.hash,
+            size: torrent.size,
             // Orphan binding has no release object to derive a quality from —
             // flagged gap, see the port report.
             quality: 'unknown',
