@@ -380,10 +380,17 @@ export class TorznabClient {
     const { baseUrl, apiKey } = target;
 
     if (!(await this.ensureCapsProbed(indexer))) return [];
-    const useTvSearch = indexer.capsTvSearch && !indexer.capsSearchFallback;
+    // Season 0 is a special: `season=0&ep=3` matches only a release tagged `S00E03`, which is
+    // not a form anything publishes, and an `S00` tag on `q` matches nothing either. The
+    // caller has put the episode title in `showTitle`, so a plain text search is the one
+    // query that can answer.
+    const isSpecial = season === 0;
+    const useTvSearch =
+      indexer.capsTvSearch && !indexer.capsSearchFallback && !isSpecial;
     // See searchSeasonPack: appending the season tag to a plain-text `q` keeps
     // popular series from filling the indexer's result cap with loud 1080p hits.
-    const searchQ = useTvSearch ? showTitle : `${showTitle} S${String(season).padStart(2, '0')}`;
+    const searchQ =
+      useTvSearch || isSpecial ? showTitle : `${showTitle} S${String(season).padStart(2, '0')}`;
     const typedUrl = `${baseUrl}?${buildTorznabQuery({
       t: useTvSearch ? 'tvsearch' : 'search',
       q: searchQ,

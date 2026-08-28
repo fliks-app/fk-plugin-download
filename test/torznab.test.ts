@@ -352,3 +352,62 @@ test('a cause-less error keeps its own message rather than becoming "undefined"'
     globalThis.fetch = original;
   }
 });
+
+/**
+ * `season=0&ep=3` only ever matches a release tagged `S00E03`, and no scene release is named
+ * that way — a special is published under its own title. The caller puts that title in the
+ * query, so the request has to be a plain text search even on a tvsearch-capable indexer.
+ */
+test('VERDICT: searchSeries queries a special as plain text, with no season/ep filter', async () => {
+  const { client } = makeClient();
+  const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
+  try {
+    await client.searchSeries(
+      indexer({
+        capsTvSearch: true,
+        capsProbedAt: '2026-01-01T00:00:00.000Z',
+        settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
+      }),
+      'Nova Skyline Behind the Scenes',
+      0,
+      3,
+      { tvdbId: 42 },
+    );
+
+    assert.equal(stub.calls.length, 1);
+    const url = stub.calls[0]!;
+    assert.ok(url.includes('t=search'), url);
+    assert.ok(!url.includes('t=tvsearch'), url);
+    assert.ok(!url.includes('season='), url);
+    assert.ok(!url.includes('ep='), url);
+    // The episode title carries the query; no `S00` tag is appended to it.
+    assert.ok(url.includes('q=Nova%20Skyline%20Behind%20the%20Scenes'), url);
+    assert.ok(!url.includes('S00'), url);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a numbered season still goes out as tvsearch with its season and episode', async () => {
+  const { client } = makeClient();
+  const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
+  try {
+    await client.searchSeries(
+      indexer({
+        capsTvSearch: true,
+        capsProbedAt: '2026-01-01T00:00:00.000Z',
+        settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
+      }),
+      'Nova Skyline',
+      4,
+      3,
+    );
+
+    const url = stub.calls[0]!;
+    assert.ok(url.includes('t=tvsearch'), url);
+    assert.ok(url.includes('season=4'), url);
+    assert.ok(url.includes('ep=3'), url);
+  } finally {
+    stub.restore();
+  }
+});
