@@ -28,6 +28,15 @@ const ORPHAN_GRACE_MS = 5 * 60_000;
  *  a torrent the client is still reporting. */
 const ORPHAN_STATUS_MESSAGE = 'Torrent no longer present in download client';
 
+/** `media.resolve` caps a call at 100 ids (core's `QUEUE_PAGE_SIZE_MAX`). */
+const RESOLVE_BATCH = 50;
+
+/** Season/episode numbers behind a history row's core ids. */
+interface ScopeNumbers {
+  seasonNumber?: number;
+  episodeNumber?: number;
+}
+
 type Torrent = ClientTorrent & { _clientId: number };
 
 export interface CompletionPollerDeps {
@@ -62,6 +71,12 @@ export class DownloadCompletionPoller {
   /** Torrent hashes the auto-matcher could not identify on the previous
    *  tick — rebuilt wholesale each run. */
   private unidentifiedHashes = new Set<string>();
+  /** History-row id → season/episode numbers. Ids never change number, and
+   *  this is read on every poll. */
+  private readonly scopeCache = new Map<number, ScopeNumbers>();
+  /** Rows whose progress has already been retired, so a torrent that stays
+   *  gone is not re-announced on every poll. */
+  private readonly retired = new Set<number>();
 
   constructor(private readonly deps: CompletionPollerDeps) {}
 
@@ -103,6 +118,14 @@ export class DownloadCompletionPoller {
 
     if (allClientsResponded) {
       await this.reconcileOrphanHistory(allTorrents, grabbed, importing);
+      const inFlight = [...grabbed.filter((h) => h.status === 'grabbed'), ...importing];
+      const present = new Set(
+        allTorrents.flatMap((t) => {
+          const m = this.deps.historyMatcher.findMatch(t, inFlight);
+          return m ? [m.history.id] : [];
+        }),
+      );
+      await this.retireVanished(inFlight, present);
     }
 
     await this.emitDownloadProgress(allTorrents);
@@ -288,13 +311,77 @@ export class DownloadCompletionPoller {
   }
 
   /**
-   * Ported from `emitDownloadProgress`. Season/episode number is omitted from
-   * the `progress.set` call: the row only carries season/episode **ids**, and
-   * resolving numbers would need `media.resolve`, whose response-key format
-   * for a mixed media/season/episode-id batch is unspecified in
-   * `src/host-methods.ts`. Taking the smaller option per the brief: whole-media
-   * progress still works, series just lose per-episode progress-clearing
-   * granularity — flagged in the port report, not guessed at.
+   * Season/episode numbers for a batch of history rows, which carry core **ids**
+   * only. Cached for the process: an id's number never changes, and this runs
+   * on every poll.
+   */
+  private async scopeNumbers(
+    rows: readonly DownloadHistoryRow[],
+  ): Promise<Map<number, ScopeNumbers>> {
+    const wanted = rows.filter((r) => !this.scopeCache.has(r.id) && (r.episodeId != null || r.seasonId != null));
+    if (wanted.length) {
+      const seasonIds = [...new Set(wanted.filter((r) => r.episodeId == null).map((r) => r.seasonId!))];
+      const episodeIds = [...new Set(wanted.filter((r) => r.episodeId != null).map((r) => r.episodeId!))];
+      for (let i = 0; i < Math.max(seasonIds.length, episodeIds.length); i += RESOLVE_BATCH) {
+        const batch = { seasonIds: seasonIds.slice(i, i + RESOLVE_BATCH), episodeIds: episodeIds.slice(i, i + RESOLVE_BATCH) };
+        if (!batch.seasonIds.length && !batch.episodeIds.length) break;
+        const resolved = await this.deps.host.call('media.resolve', batch).catch((e: Error) => {
+          log.warn(`Import: scope resolve failed: ${e.message}`);
+          return {} as Record<string, { seasonNumber?: number; episodeNumber?: number }>;
+        });
+        for (const r of wanted) {
+          // Keys are `season:<id>` / `episode:<id>` — see core's `mediaResolve`.
+          const hit = r.episodeId != null ? resolved[`episode:${r.episodeId}`] : resolved[`season:${r.seasonId}`];
+          if (hit) this.scopeCache.set(r.id, { seasonNumber: hit.seasonNumber, episodeNumber: hit.episodeNumber });
+        }
+      }
+    }
+    const out = new Map<number, ScopeNumbers>();
+    for (const r of rows) out.set(r.id, this.scopeCache.get(r.id) ?? {});
+    return out;
+  }
+
+  /**
+   * A `grabbed`/`importing` row whose torrent the client no longer reports has
+   * no progress to show. Without this its last tick stands for ever — the
+   * header badge freezes on a percentage from a torrent the user deleted
+   * minutes ago. `progress: 1` is core's retirement signal for a leaf (both its
+   * replay cache and the client drop the leaf at >= 1); the row itself keeps
+   * its orphan grace, so a torrent that comes back simply resumes ticking.
+   *
+   * Only ever called when every client answered — an unreachable client's
+   * empty list is not evidence that a torrent is gone.
+   */
+  private async retireVanished(
+    rows: readonly DownloadHistoryRow[],
+    present: ReadonlySet<number>,
+  ): Promise<void> {
+    const vanished = rows.filter((r) => r.mediaId != null && r.torrentHash && !present.has(r.id) && !this.retired.has(r.id));
+    if (!vanished.length) return;
+    const scopes = await this.scopeNumbers(vanished);
+    for (const r of vanished) {
+      this.retired.add(r.id);
+      const scope = scopes.get(r.id) ?? {};
+      await this.deps.host
+        .call('progress.set', {
+          mediaId: r.mediaId!,
+          seasonNumber: scope.seasonNumber,
+          episodeNumber: scope.episodeNumber,
+          ref: r.torrentHash!,
+          progress: 1,
+          state: 'stalled',
+        })
+        .catch((e: Error) => log.warn(`Import: progress retire failed: ${e.message}`));
+    }
+    log.info(`Import: ${vanished.length} entr(ies) lost their torrent — retired their progress`);
+  }
+
+  /**
+   * Push one progress tick per in-flight torrent. Season/episode numbers are
+   * resolved from the row's ids so a series leaf is attributed to the episode
+   * it belongs to: without them every tick reads as whole-media progress, which
+   * shows the badge on every episode page of the show and erases the episode
+   * the detail modal was naming.
    */
   private async emitDownloadProgress(allTorrents: readonly Torrent[]): Promise<void> {
     const rows = await this.deps.historyRepo.findByStatuses(['grabbed', 'importing']);
@@ -313,13 +400,23 @@ export class DownloadCompletionPoller {
     );
     if (!reportable.length) return;
 
+    const matched: { torrent: Torrent; history: DownloadHistoryRow }[] = [];
     for (const t of reportable) {
       const history = await this.deps.historyMatcher.matchAndHeal(t, rows);
-      if (!history?.mediaId) continue;
+      if (history?.mediaId) matched.push({ torrent: t, history });
+    }
+    const scopes = await this.scopeNumbers(matched.map((m) => m.history));
+
+    for (const { torrent: t, history } of matched) {
+      // Back after a retirement: let it be retired again if it vanishes twice.
+      this.retired.delete(history.id);
+      const scope = scopes.get(history.id) ?? {};
       // A progress tick is cosmetic; the import hand-off runs after this and must not be lost with it.
       await this.deps.host
         .call('progress.set', {
-          mediaId: history.mediaId,
+          mediaId: history.mediaId!,
+          seasonNumber: scope.seasonNumber,
+          episodeNumber: scope.episodeNumber,
           ref: t.hash,
           progress: t.progress,
           bytesPerSecond: t.dlspeed,

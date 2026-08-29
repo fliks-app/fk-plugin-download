@@ -676,3 +676,143 @@ describe('DownloadCompletionPoller.poll — reporting the importing state', () =
     assert.ok(progressCalls(h.host).some((t) => t.ref === 'abc' && t.state === 'stalled'));
   });
 });
+
+/**
+ * A series leaf has to be attributed to the episode it belongs to. Without
+ * season/episode numbers on the tick every leaf reads as whole-media progress:
+ * the header badge then shows on every episode page of the show, and the detail
+ * modal loses the episode it was naming. The row carries core **ids**, so the
+ * numbers come from `media.resolve` — keyed `season:<id>` / `episode:<id>`.
+ */
+describe('DownloadCompletionPoller.poll — attributing progress to its episode', () => {
+  function progressCalls(host: { calls: { method: string; payload: unknown }[] }) {
+    return host.calls
+      .filter((c) => c.method === 'progress.set')
+      .map((c) => c.payload as { seasonNumber?: number; episodeNumber?: number; progress: number; ref: string });
+  }
+
+  function withEpisodeRow(h: ReturnType<typeof buildPoller>) {
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, seasonId: 70, episodeId: 88, downloadClientId: 1 }),
+    );
+    h.host.on('media.resolve', () => ({
+      'episode:88': { title: 'S', kind: 'series', libraryId: 1, seasonNumber: 1, episodeNumber: 8 },
+    }));
+  }
+
+  test('VERDICT: a tick carries the episode its row points at', async () => {
+    const h = buildPoller();
+    withEpisodeRow(h);
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'abc', progress: 0.5, state: 'downloading' })] });
+
+    await h.poller.poll();
+
+    const tick = progressCalls(h.host).find((t) => t.ref === 'abc');
+    assert.equal(tick?.seasonNumber, 1);
+    assert.equal(tick?.episodeNumber, 8);
+  });
+
+  test('the numbers are resolved once, not on every poll', async () => {
+    const h = buildPoller();
+    withEpisodeRow(h);
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'abc', progress: 0.5, state: 'downloading' })] });
+
+    await h.poller.poll();
+    await h.poller.poll();
+
+    assert.equal(h.host.calls.filter((c) => c.method === 'media.resolve').length, 1);
+  });
+
+  test('a season-pack row is attributed to its season and no episode', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, seasonId: 70, episodeId: null, downloadClientId: 1 }),
+    );
+    h.host.on('media.resolve', () => ({ 'season:70': { title: 'S', kind: 'series', libraryId: 1, seasonNumber: 4 } }));
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'abc', progress: 0.5, state: 'downloading' })] });
+
+    await h.poller.poll();
+
+    const tick = progressCalls(h.host).find((t) => t.ref === 'abc');
+    assert.equal(tick?.seasonNumber, 4);
+    assert.equal(tick?.episodeNumber, undefined);
+  });
+
+  test('a resolve failure still ticks — progress matters more than its label', async () => {
+    const h = buildPoller();
+    withEpisodeRow(h);
+    h.host.on('media.resolve', () => { throw new Error('boom'); });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'abc', progress: 0.5, state: 'downloading' })] });
+
+    await h.poller.poll();
+
+    assert.ok(progressCalls(h.host).some((t) => t.ref === 'abc'));
+  });
+});
+
+/**
+ * Deleting a torrent from the client used to leave its last tick standing for
+ * ever: nothing reports a torrent that is no longer there, so the header badge
+ * froze on a percentage from a download the user had already removed.
+ */
+describe('DownloadCompletionPoller.poll — retiring a vanished torrent', () => {
+  function retirements(host: { calls: { method: string; payload: unknown }[] }) {
+    return host.calls
+      .filter((c) => c.method === 'progress.set')
+      .map((c) => c.payload as { progress: number; ref: string })
+      .filter((p) => p.progress >= 1);
+  }
+
+  function vanished() {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+    return h;
+  }
+
+  test('VERDICT: its progress is retired as soon as the client answers without it', async () => {
+    const h = vanished();
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [] });
+
+    await h.poller.poll();
+
+    assert.deepEqual(retirements(h.host).map((r) => r.ref), ['abc']);
+  });
+
+  test('an unreachable client retires nothing — an empty list is not evidence', async () => {
+    const h = vanished();
+    h.driver.torrentsByClient.set(1, { ok: false, torrents: [] });
+
+    await h.poller.poll();
+
+    assert.equal(retirements(h.host).length, 0);
+  });
+
+  test('a torrent that stays gone is retired once, not on every poll', async () => {
+    const h = vanished();
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [] });
+
+    await h.poller.poll();
+    await h.poller.poll();
+
+    assert.equal(retirements(h.host).length, 1);
+  });
+
+  test('a torrent that comes back ticks again, and can be retired a second time', async () => {
+    const h = vanished();
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [] });
+    await h.poller.poll();
+
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'abc', progress: 0.5, state: 'downloading' })] });
+    await h.poller.poll();
+
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [] });
+    await h.poller.poll();
+
+    assert.equal(retirements(h.host).length, 2);
+  });
+});
