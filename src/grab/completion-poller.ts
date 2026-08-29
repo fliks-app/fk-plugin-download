@@ -360,7 +360,6 @@ export class DownloadCompletionPoller {
     if (!vanished.length) return;
     const scopes = await this.scopeNumbers(vanished);
     for (const r of vanished) {
-      this.retired.add(r.id);
       const scope = scopes.get(r.id) ?? {};
       await this.deps.host
         .call('progress.set', {
@@ -371,6 +370,7 @@ export class DownloadCompletionPoller {
           progress: 1,
           state: 'stalled',
         })
+        .then(() => this.retired.add(r.id))
         .catch((e: Error) => log.warn(`Import: progress retire failed: ${e.message}`));
     }
     log.info(`Import: ${vanished.length} entr(ies) lost their torrent — retired their progress`);
@@ -418,7 +418,10 @@ export class DownloadCompletionPoller {
           seasonNumber: scope.seasonNumber,
           episodeNumber: scope.episodeNumber,
           ref: t.hash,
-          progress: t.progress,
+          // `progress >= 1` is the retirement signal on both consumers, so a
+          // finished torrent reporting its import would destroy the very leaf
+          // the tick exists to label.
+          progress: history.status === 'importing' ? Math.min(t.progress, 0.999) : t.progress,
           bytesPerSecond: t.dlspeed,
           etaSeconds: t.eta > 0 && t.eta < 8_640_000 ? t.eta : undefined,
           // The row is authoritative once it says importing: the client reports a finished
