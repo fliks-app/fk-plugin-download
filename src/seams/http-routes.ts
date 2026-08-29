@@ -415,11 +415,18 @@ async function indexClientTorrents(
 
 /** `importing` is definitive regardless of the client (the download itself is already
  *  done); `grabbed` without a live torrent match means "unknown", never a guessed state. */
+/**
+ * One queue row, enriched from the live client when it answered. Null when the
+ * row's client answered and does not hold its torrent: the download is gone —
+ * deleted from the client, most often — and rendering it as `queued` left a
+ * finished-with row sitting in the queue until the orphan sweep's grace expired
+ * minutes later. A client that did not answer proves nothing, so its rows stay.
+ */
 function toQueueItem(
   row: DownloadHistoryRow,
   byClientId: Map<number, ClientTorrentIndex>,
   indexerNames: Map<number, string>,
-): QueueItemDto {
+): QueueItemDto | null {
   const base = {
     id: row.id,
     title: row.sourceTitle,
@@ -443,13 +450,14 @@ function toQueueItem(
       clientReachable: true,
     };
   }
+  if (index?.ok) return null;
   return {
     ...base,
     state: 'queued',
     progress: null,
     bytesPerSecond: null,
     size: null,
-    clientReachable: index?.ok ?? false,
+    clientReachable: false,
   };
 }
 
@@ -534,7 +542,10 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
   ]);
   const indexerNames = new Map(indexers.map((ix: { id: number; name: string }) => [ix.id, ix.name]));
 
-  const items = rows.map((row) => toQueueItem(row, byClientId, indexerNames)).sort((a, b) => b.id - a.id);
+  const items = rows
+    .map((row) => toQueueItem(row, byClientId, indexerNames))
+    .filter((item): item is QueueItemDto => item !== null)
+    .sort((a, b) => b.id - a.id);
   const start = (page - 1) * pageSize;
   // Slice to the page first — attachMediaTypes's host call must only ever see this page's ids.
   const data = await attachMediaTypes(deps, items.slice(start, start + pageSize));

@@ -707,7 +707,7 @@ export const I18N = {
     'download.config.download_clients.subtitle': 'Clients auxquels une release récupérée est transmise.',
     'download.config.queue.subtitle': 'Téléchargements en cours, tous clients confondus.',
     'download.config.history.subtitle': 'Récupérations enregistrées et leur résultat.',
-    'download.config.queue.states.queued': 'En file',
+    'download.config.queue.states.queued': 'En file d\'attente',
     'download.config.queue.states.active': 'Téléchargement',
     'download.config.queue.states.stalled': 'Bloqué',
     'download.config.queue.states.paused': 'En pause',
