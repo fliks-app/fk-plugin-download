@@ -173,6 +173,8 @@ export interface PluginHostApi {
   }) => Promise<ScoredRelease[]>;
 
   /** Bounded: <= 100 ids (QUEUE_PAGE_SIZE_MAX). */
+  /** Keyed `media:<id>` / `season:<id>` / `episode:<id>`, so a mixed batch stays
+   *  unambiguous. At most 100 ids per call. */
   'media.resolve': (p: {
     mediaIds?: number[];
     seasonIds?: number[];
