@@ -387,6 +387,68 @@ describe('route table — GET /queue', () => {
     ]);
   });
 
+  /**
+   * Deleting a torrent from the client left its row sitting in the queue as
+   * "queued" — with no size, progress or speed — until the orphan sweep's grace
+   * expired minutes later. A client that answered and does not hold the torrent
+   * is proof it is gone; one that did not answer proves nothing.
+   */
+  test('VERDICT: a row whose reachable client no longer holds its torrent leaves the queue', async () => {
+    const driver: DownloadClientDriver = {
+      supports: (c) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({ ok: true, torrents: [] }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+    };
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 3, torrentHash: 'abcd', downloadClientId: 1 })],
+        listPage: async () => ({ rows: [], total: 0 }),
+      },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; total: number; clientsUnreachable: boolean };
+
+    assert.deepEqual(body.data, []);
+    assert.equal(body.total, 0);
+    assert.equal(body.clientsUnreachable, false, 'the client answered — the row is gone, not hidden behind an outage');
+  });
+
+  test('the same row stays when its client could not be reached', async () => {
+    const driver: DownloadClientDriver = {
+      supports: (c) => c.enabled,
+      testConnection: async () => ({ ok: false, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({ ok: false, torrents: [] }),
+      getTorrentFilesResult: async () => ({ ok: false, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+    };
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 3, torrentHash: 'abcd', downloadClientId: 1 })],
+        listPage: async () => ({ rows: [], total: 0 }),
+      },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; clientsUnreachable: boolean };
+
+    assert.equal(body.data.length, 1);
+    assert.equal(body.data[0]!.clientReachable, false);
+    assert.equal(body.clientsUnreachable, true);
+  });
+
   test('a grabbed row matched to a live torrent maps the client\'s own state through the closed vocabulary', async () => {
     const driver: DownloadClientDriver = {
       supports: (c) => c.enabled,
