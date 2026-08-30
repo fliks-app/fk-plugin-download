@@ -332,7 +332,9 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
 
   interface QueueRowLike {
     id: number;
+    /** The media's own name once it resolves; the release name until then. */
     title: string;
+    sourceTitle: string;
     quality: string;
     state: string;
     progress: number | null;
@@ -349,7 +351,9 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
   assert.equal(queueWithUnreachableClient.body.total, 1, 'the in-flight row still shows — never dropped to an empty page');
   assert.equal(queueWithUnreachableClient.body.clientsUnreachable, true, 'the client-down case must be flagged, not hidden');
   const [queueRow] = queueWithUnreachableClient.body.data;
+  // No media linked, so nothing to name it after: the release name stands in.
   assert.equal(queueRow!.title, 'Harness In-Flight Grab');
+  assert.equal(queueRow!.sourceTitle, 'Harness In-Flight Grab');
   assert.equal(queueRow!.state, 'queued');
   assert.equal(queueRow!.progress, null);
   assert.equal(queueRow!.clientReachable, false);
@@ -379,10 +383,14 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
   });
   assert.equal(queueWithMedia.status, 200);
   assert.equal(queueWithMedia.body.total, 2, 'both in-flight rows show');
-  const resolvedRow = queueWithMedia.body.data.find((r) => r.title === 'Harness Media Grab');
-  const unresolvedRow = queueWithMedia.body.data.find((r) => r.title === 'Harness In-Flight Grab');
+  // Rows are found by their release name, which never moves; `title` is what the resolve
+  // replaced, and asserting on it is what this test is here to check.
+  const resolvedRow = queueWithMedia.body.data.find((r) => r.sourceTitle === 'Harness Media Grab');
+  const unresolvedRow = queueWithMedia.body.data.find((r) => r.sourceTitle === 'Harness In-Flight Grab');
   assert.ok(resolvedRow, 'the media-linked row must still be present');
   assert.ok(unresolvedRow, 'the media-less row must still be present alongside it');
+  assert.equal(resolvedRow!.title, 'Harness Media', 'a resolved row is titled by its media, not by the release');
+  assert.equal(unresolvedRow!.title, 'Harness In-Flight Grab', 'an unresolved one keeps the release name');
   assert.equal(resolvedRow!.mediaId, resolvableMediaId, 'carries the real core media id straight off the row');
   assert.equal(resolvedRow!.mediaType, 'movie', 'resolved via media.resolve, over the real socket, keyed "media:<id>"');
   assert.equal(unresolvedRow!.mediaId, null, 'still no media linked — unaffected by the other row resolving');
