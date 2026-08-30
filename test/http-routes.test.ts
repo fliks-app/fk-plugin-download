@@ -1283,31 +1283,58 @@ describe('a queue control states the media set at once', () => {
 });
 
 describe('history entries are records, not queue state', () => {
-  const deleteRow = async (status: DownloadHistoryStatus) => {
+  /** One enabled client, holding the row's torrent or not. */
+  function deps(holds: boolean, row = historyRow({ id: 7, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 })) {
     const removed: number[] = [];
-    const deps = fakeDeps({
-      downloadHistory: {
-        findById: async () => historyRow({ id: 7, status }),
-        remove: async (id: number) => void removed.push(id),
-      },
-    });
-    const resolved = createRouteTable(deps).resolve('DELETE', '/history/7')!;
-    const res = await resolved.handler(req({ method: 'DELETE', path: '/history/7' }), resolved.params);
-    return { status: res.status, removed };
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: holds
+          ? [{ hash: 'abcd', name: 'x', size: 1, downloaded: 0, progress: 0.5, dlspeed: 0, upspeed: 0,
+               ratio: 0, eta: 0, state: 'downloading', category: '', num_seeds: 0, num_leechs: 0, added_on: 0 }]
+          : [],
+      }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    return {
+      removed,
+      deps: fakeDeps({
+        downloadHistory: { findById: async () => row, remove: async (id: number) => void removed.push(id) },
+        downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+        downloadClientDrivers: { qbittorrent: driver },
+      }),
+    };
+  }
+
+  const run = async (d: RouteDeps) => {
+    const resolved = createRouteTable(d).resolve('DELETE', '/history/7')!;
+    return (await resolved.handler(req({ method: 'DELETE', path: '/history/7' }), resolved.params)).status;
   };
 
-  test('a finished grab can be deleted, whatever the outcome was', async () => {
-    for (const s of ['completed', 'failed', 'warning'] as DownloadHistoryStatus[]) {
-      assert.deepEqual(await deleteRow(s), { status: 200, removed: [7] }, s);
-    }
+  test('VERDICT: refused while a client is positively still holding the torrent', async () => {
+    const { deps: d, removed } = deps(true);
+    assert.equal(await run(d), 409);
+    assert.deepEqual(removed, []);
   });
 
-  test('VERDICT: a running grab is refused — deleting the row orphans the download, it does not stop it', async () => {
-    for (const s of ['grabbed', 'importing'] as DownloadHistoryStatus[]) {
-      const { status, removed } = await deleteRow(s);
-      assert.equal(status, 409, s);
-      assert.deepEqual(removed, [], s);
-    }
+  test("VERDICT: a row reading `grabbed` with nothing behind it is deletable, or it is stuck for good", async () => {
+    // Not in the queue (no torrent to show) and not terminal: gating on the status left it with
+    // no way to cancel and no way to delete.
+    const { deps: d, removed } = deps(false);
+    assert.equal(await run(d), 200);
+    assert.deepEqual(removed, [7]);
+  });
+
+  test('a finished row is deletable whatever the client holds', async () => {
+    const { deps: d } = deps(true, historyRow({ id: 7, status: 'completed' }));
+    assert.equal(await run(d), 200);
   });
 });
 
