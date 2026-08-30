@@ -123,7 +123,7 @@ export function createAppGraph(repositories: Repositories, host: HostCaller): Ap
       downloadHistory: repositories.downloadHistory,
       downloadClientsRepo: repositories.downloadClients,
       downloadClientDrivers: DOWNLOAD_CLIENT_DRIVERS,
-      publishProgressFor: (mediaId) => completionPoller.publishProgressFor(mediaId),
+      settleAndPublish: (row, expect) => completionPoller.settleAndPublish(row, expect),
       host,
     }),
   };

@@ -100,7 +100,7 @@ function fakeDeps(over: { [K in keyof RouteDeps]?: Partial<RouteDeps[K]> } = {})
     },
     downloadClientsRepo: { listEnabled: async () => [] },
     downloadClientDrivers: {},
-    publishProgressFor: async () => {},
+    settleAndPublish: async () => {},
     host: { call: async () => ({}) },
     ...over,
   } as unknown as RouteDeps;
@@ -1149,65 +1149,6 @@ describe('history live state', () => {
   });
 });
 
-describe('queue controls settle before answering', () => {
-  /** A client that keeps reporting the old state for `staleReads` polls after the command. */
-  function laggingDeps(staleReads: number) {
-    let commanded = false;
-    let reads = 0;
-    const torrent = (state: string) => ({
-      hash: 'abcd', name: 'x', size: 1000, downloaded: 0, progress: 0.5, dlspeed: 1,
-      upspeed: 0, ratio: 0, eta: 60, state, category: '', num_seeds: 1, num_leechs: 0, added_on: 0,
-    });
-    const driver = {
-      supports: (c: DownloadClientRow) => c.enabled,
-      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
-      getTorrents: async () => [],
-      getTorrentsResult: async () => {
-        // Before the command it is downloading; after it, still downloading for `staleReads`
-        // polls, exactly like qBittorrent answering /stop before libtorrent has caught up.
-        const settled = commanded && reads++ >= staleReads;
-        return { ok: true, torrents: [torrent(settled ? 'pausedDL' : 'downloading')] };
-      },
-      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
-      addTorrentUrl: async () => 'x',
-      deleteTorrent: async () => {},
-      pauseTorrent: async () => { commanded = true; },
-      resumeTorrent: async () => {},
-    } as unknown as DownloadClientDriver;
-    const service = {
-      pauseTorrent: async () => driver.pauseTorrent({} as DownloadClientRow, 'abcd'),
-      resumeTorrent: async () => {},
-      removeTorrent: async () => {},
-    };
-    const deps = fakeDeps({
-      downloadHistory: {
-        findById: async () => historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 }),
-      },
-      downloadClientsService: service as unknown as RouteDeps['downloadClientsService'],
-      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
-      downloadClientDrivers: { qbittorrent: driver },
-    });
-    return { deps, reads: () => reads };
-  }
-
-  const pause = async (deps: RouteDeps) => {
-    const resolved = createRouteTable(deps).resolve('POST', '/queue/3/pause')!;
-    return resolved.handler(req({ method: 'POST', path: '/queue/3/pause' }), resolved.params);
-  };
-
-  test('VERDICT: does not answer while the client still reports the old state', async () => {
-    const { deps, reads } = laggingDeps(2);
-    assert.equal((await pause(deps)).status, 200);
-    assert.ok(reads() > 2, `polled until the client agreed, saw ${reads()} reads`);
-  });
-
-  test('a client that agrees at once is not polled again', async () => {
-    const { deps, reads } = laggingDeps(0);
-    await pause(deps);
-    assert.equal(reads(), 1);
-  });
-});
-
 describe('an unknown size is not a zero', () => {
   test('VERDICT: a client that has not fetched the metadata yet reports no size, not 0 B', async () => {
     const driver = {
@@ -1293,7 +1234,7 @@ describe('a manual grab keeps the tracker page', () => {
  */
 describe('a queue control states the media set at once', () => {
   function controlDeps(row: DownloadHistoryRow) {
-    const published: number[] = [];
+    const published: string[] = [];
     const deps = fakeDeps({
       downloadHistory: { findById: async () => row, markFailed: async () => {} },
       downloadClientsService: {
@@ -1301,7 +1242,7 @@ describe('a queue control states the media set at once', () => {
         resumeTorrent: async () => {},
         removeTorrent: async () => {},
       } as unknown as RouteDeps['downloadClientsService'],
-      publishProgressFor: async (mediaId: number) => void published.push(mediaId),
+      settleAndPublish: async (r: DownloadHistoryRow, expect: string) => void published.push(`${r.mediaId}:${expect}`),
     });
     return { deps, published };
   }
@@ -1314,33 +1255,27 @@ describe('a queue control states the media set at once', () => {
   const live = () =>
     historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1, mediaId: 12 });
 
-  test('VERDICT: pause publishes the media set', async () => {
+  test('VERDICT: pause waits for the client to agree, then states the media set', async () => {
     const { deps, published } = controlDeps(live());
     await run(deps, 'POST', '/queue/3/pause');
-    assert.deepEqual(published, [12]);
+    assert.deepEqual(published, ['12:paused']);
   });
 
-  test('resume publishes it too', async () => {
+  test('resume waits for the opposite', async () => {
     const { deps, published } = controlDeps(live());
     await run(deps, 'POST', '/queue/3/resume');
-    assert.deepEqual(published, [12]);
+    assert.deepEqual(published, ['12:running']);
   });
 
-  test('so does a removal — the set it leaves is one download shorter', async () => {
+  test('VERDICT: a removal waits for the torrent to be gone, so the set it states is without it', async () => {
     const { deps, published } = controlDeps(live());
     await run(deps, 'DELETE', '/queue/3');
-    assert.deepEqual(published, [12]);
-  });
-
-  test('a row with no media has nothing to state', async () => {
-    const { deps, published } = controlDeps(historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 }));
-    await run(deps, 'POST', '/queue/3/pause');
-    assert.deepEqual(published, []);
+    assert.deepEqual(published, ['12:absent']);
   });
 
   test('a publish failure never fails the control that succeeded', async () => {
     const { deps } = controlDeps(live());
-    deps.publishProgressFor = async () => {
+    deps.settleAndPublish = async () => {
       throw new Error('boom');
     };
     assert.equal((await run(deps, 'POST', '/queue/3/pause')).status, 200);
