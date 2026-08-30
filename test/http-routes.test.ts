@@ -100,6 +100,7 @@ function fakeDeps(over: { [K in keyof RouteDeps]?: Partial<RouteDeps[K]> } = {})
     },
     downloadClientsRepo: { listEnabled: async () => [] },
     downloadClientDrivers: {},
+    publishProgressFor: async () => {},
     host: { call: async () => ({}) },
     ...over,
   } as unknown as RouteDeps;
@@ -1282,5 +1283,66 @@ describe('a manual grab keeps the tracker page', () => {
       await grab(deps, { downloadUrl: 'https://x/dl', infoUrl: bad });
       assert.equal((calls[0] as { infoUrl?: string }).infoUrl, undefined, `refused ${bad || '(empty)'}`);
     }
+  });
+});
+
+/**
+ * The media page reads the published set, not this route's answer. Without a push here the badge
+ * kept saying "downloading 73%" on a torrent the operator had just paused, until the next poll a
+ * minute out.
+ */
+describe('a queue control states the media set at once', () => {
+  function controlDeps(row: DownloadHistoryRow) {
+    const published: number[] = [];
+    const deps = fakeDeps({
+      downloadHistory: { findById: async () => row, markFailed: async () => {} },
+      downloadClientsService: {
+        pauseTorrent: async () => {},
+        resumeTorrent: async () => {},
+        removeTorrent: async () => {},
+      } as unknown as RouteDeps['downloadClientsService'],
+      publishProgressFor: async (mediaId: number) => void published.push(mediaId),
+    });
+    return { deps, published };
+  }
+
+  const run = async (deps: RouteDeps, method: string, path: string) => {
+    const resolved = createRouteTable(deps).resolve(method, path)!;
+    return resolved.handler(req({ method, path }), resolved.params);
+  };
+
+  const live = () =>
+    historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1, mediaId: 12 });
+
+  test('VERDICT: pause publishes the media set', async () => {
+    const { deps, published } = controlDeps(live());
+    await run(deps, 'POST', '/queue/3/pause');
+    assert.deepEqual(published, [12]);
+  });
+
+  test('resume publishes it too', async () => {
+    const { deps, published } = controlDeps(live());
+    await run(deps, 'POST', '/queue/3/resume');
+    assert.deepEqual(published, [12]);
+  });
+
+  test('so does a removal — the set it leaves is one download shorter', async () => {
+    const { deps, published } = controlDeps(live());
+    await run(deps, 'DELETE', '/queue/3');
+    assert.deepEqual(published, [12]);
+  });
+
+  test('a row with no media has nothing to state', async () => {
+    const { deps, published } = controlDeps(historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 }));
+    await run(deps, 'POST', '/queue/3/pause');
+    assert.deepEqual(published, []);
+  });
+
+  test('a publish failure never fails the control that succeeded', async () => {
+    const { deps } = controlDeps(live());
+    deps.publishProgressFor = async () => {
+      throw new Error('boom');
+    };
+    assert.equal((await run(deps, 'POST', '/queue/3/pause')).status, 200);
   });
 });

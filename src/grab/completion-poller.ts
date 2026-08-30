@@ -87,6 +87,30 @@ export class DownloadCompletionPoller {
 
   constructor(private readonly deps: CompletionPollerDeps) {}
 
+  /**
+   * State one media's set now, rather than at the next poll a minute out. A control the operator
+   * just pressed changes what its downloads are doing, and the badge on the media page reads the
+   * published set, not the queue route.
+   *
+   * Deliberately the poller's own builder, scoped: a second implementation of "what is this
+   * media downloading" is how the two drift, which is the whole class of bug the snapshot shape
+   * exists to close.
+   */
+  async publishProgressFor(mediaId: number): Promise<void> {
+    const clients = (await this.deps.clientsRepo.listEnabled()).filter((c) => this.deps.driver.supports(c));
+    const fetches = await Promise.all(
+      clients.map(async (c) => {
+        const { ok, torrents } = await this.deps.driver.getTorrentsResult(c);
+        return { ok, torrents: torrents.map((t): Torrent => ({ ...t, _clientId: c.id })) };
+      }),
+    );
+    await this.emitDownloadProgress(
+      fetches.flatMap((f) => f.torrents),
+      fetches.every((f) => f.ok),
+      mediaId,
+    );
+  }
+
   /** Boot re-arm of every stranded `importing` row — nothing is in flight
    *  right after a fresh process start. Call once at startup. */
   async init(): Promise<void> {
@@ -357,6 +381,7 @@ export class DownloadCompletionPoller {
   private async emitDownloadProgress(
     allTorrents: readonly Torrent[],
     allClientsResponded: boolean,
+    onlyMediaId?: number,
   ): Promise<void> {
     if (!allClientsResponded) return;
 
@@ -406,12 +431,14 @@ export class DownloadCompletionPoller {
     this.firstProgressTick = false;
     this.reportedMediaIds = new Set([...byMedia].filter(([, list]) => list.length).map(([id]) => id));
 
-    for (const [mediaId, downloads] of byMedia) {
-      // A progress push is cosmetic; the import hand-off runs after this and must not be lost with it.
-      await this.deps.host
-        .call('progress.set', { mediaId, downloads })
-        .catch((e: Error) => log.warn(`Import: progress publish failed: ${e.message}`));
-    }
+    for (const [mediaId, downloads] of byMedia) await this.publishSet(mediaId, downloads);
+  }
+
+  /** A progress push is cosmetic; the import hand-off runs after it and must not be lost with it. */
+  private async publishSet(mediaId: number, downloads: ProgressDownload[]): Promise<void> {
+    await this.deps.host
+      .call('progress.set', { mediaId, downloads })
+      .catch((e: Error) => log.warn(`Import: progress publish failed: ${e.message}`));
   }
 
   /**

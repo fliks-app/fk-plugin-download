@@ -77,6 +77,10 @@ export interface RouteDeps {
    *  them before a driver call ever happens. */
   downloadClientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
   downloadClientDrivers: Readonly<Record<string, DownloadClientDriver>>;
+  /** States one media's download set now rather than at the next poll a minute out. The poller's
+   *  own builder, scoped — a control changes what a media's downloads are doing, and the media
+   *  page reads the published set, not this route's answer. */
+  publishProgressFor: (mediaId: number) => Promise<void>;
   host: HostCaller;
 }
 
@@ -449,6 +453,13 @@ async function settleState(
   }
 }
 
+/** Never fails the control it follows: the operation succeeded, and the next poll states the set
+ *  anyway. A row with no media has nothing to state. */
+async function publishMediaProgress(deps: RouteDeps, row: DownloadHistoryRow): Promise<void> {
+  if (row.mediaId == null) return;
+  await deps.publishProgressFor(row.mediaId).catch((e: Error) => log.warn(`progress publish failed: ${e.message}`));
+}
+
 async function handleQueueControl(
   deps: RouteDeps,
   params: Record<string, string>,
@@ -463,6 +474,7 @@ async function handleQueueControl(
     await deps.downloadClientsService.resumeTorrent(resolved.clientId, resolved.hash);
     await settleState(deps, resolved.row, (state) => state !== 'paused');
   }
+  await publishMediaProgress(deps, resolved.row);
   return jsonResponse(200, {});
 }
 
@@ -476,6 +488,7 @@ async function handleQueueRemove(deps: RouteDeps, req: PluginHttpRequest, params
   if (isHttpResponse(resolved)) return resolved;
   await deps.downloadClientsService.removeTorrent(resolved.clientId, resolved.hash, req.query['deleteFiles'] === 'true');
   await deps.downloadHistory.markFailed(resolved.row.id, REMOVED_BY_USER_KEY);
+  await publishMediaProgress(deps, resolved.row);
   return jsonResponse(200, {});
 }
 
