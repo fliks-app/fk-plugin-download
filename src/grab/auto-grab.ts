@@ -1,5 +1,5 @@
 import type { ReleasePipelineDeps, AcquisitionTarget } from './release-pipeline';
-import { pickRelease } from './release-scoring';
+import { pickRelease, pickReleases } from './release-scoring';
 import { tryGrabAndRecord, type GrabExecutorDeps } from './grab-executor';
 import type { DownloadClientRow } from '../db/rows';
 import { log } from '../log';
@@ -57,24 +57,30 @@ export async function tryAutoGrab(
     return logSkip(`no eligible release (${scored.length} checked)${sample ? ` — top: ${sample}` : ''}`);
   }
 
-  return tryGrabAndRecord(execDeps(deps), {
-    mediaId: target.mediaId,
-    client,
-    mediaType: target.kind,
-    label: target.title,
-    sourceTitle: pick.title,
-    downloadUrl: pick.downloadUrl,
-    quality: pick.qualityName,
-    size: pick.size,
-    infoUrl: pick.infoUrl,
-    indexerId: pick.indexerId,
-    grabSource: 'auto',
-    seasonNumber: target.season?.number,
-    episodeNumber: target.episode?.number,
-    seasonId: target.season?.id ?? null,
-    episodeId: target.episode?.id ?? null,
-    // Only the scheduler/RSS path rejects a hash the client already holds —
-    // interactive grabs (`release-pipeline.ts`) leave this off.
-    rejectIfAlreadyPresent: true,
-  });
+  // A release the indexer cannot hand over, or one the client already holds outside the managed
+  // category, is unobtainable rather than a reason to give up on the title.
+  for (const candidate of pickReleases(scored, target.want)) {
+    const grabbed = await tryGrabAndRecord(execDeps(deps), {
+      mediaId: target.mediaId,
+      client,
+      mediaType: target.kind,
+      label: target.title,
+      sourceTitle: candidate.title,
+      downloadUrl: candidate.downloadUrl,
+      quality: candidate.qualityName,
+      size: candidate.size,
+      infoUrl: candidate.infoUrl,
+      indexerId: candidate.indexerId,
+      grabSource: 'auto',
+      seasonNumber: target.season?.number,
+      episodeNumber: target.episode?.number,
+      seasonId: target.season?.id ?? null,
+      episodeId: target.episode?.id ?? null,
+      // Only the scheduler/RSS path rejects a hash the client already holds —
+      // interactive grabs (`release-pipeline.ts`) leave this off.
+      rejectIfAlreadyPresent: true,
+    });
+    if (grabbed) return true;
+  }
+  return logSkip('every eligible release was unobtainable');
 }

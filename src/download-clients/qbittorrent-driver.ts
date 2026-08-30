@@ -9,6 +9,7 @@ import {
   DownloadClientUnreachableError,
   TorrentAlreadyPresentError,
   TorrentHashUnresolvedError,
+  ReleaseUnobtainableError,
   type QbittorrentSettings,
 } from './types';
 
@@ -95,9 +96,13 @@ async function parseJsonArray(res: Response): Promise<unknown[] | null> {
   return Array.isArray(parsed) ? parsed : null;
 }
 
-async function snapshotHashes(base: string, cookie: string): Promise<Set<string>> {
+/** Scoped to the category this client manages, exactly like `getTorrentsResult`. Reading every
+ *  category instead made a torrent sitting outside it look held to a grab and absent to the
+ *  queue, so the grab reported success into a row the queue then dropped. */
+async function snapshotHashes(base: string, cookie: string, category: string): Promise<Set<string>> {
   try {
-    const res = await httpRequest(`${base}/api/v2/torrents/info`, { headers: { Cookie: cookie }, timeoutMs: 60_000 });
+    const qs = category ? `?category=${encodeURIComponent(category)}` : '';
+    const res = await httpRequest(`${base}/api/v2/torrents/info${qs}`, { headers: { Cookie: cookie }, timeoutMs: 60_000 });
     const parsed = await parseJsonArray(res);
     if (!parsed) return new Set();
     return new Set(
@@ -142,21 +147,21 @@ async function fetchTorrentOrMagnet(startUrl: string, maxHops = 5): Promise<{ bu
       res = await httpRequest(url, { timeoutMs: 30_000, redirect: 'manual' });
     } catch (e) {
       const cause = (e as { cause?: Error }).cause;
-      throw new DownloadClientUnreachableError(`could not fetch the torrent from the indexer: ${cause?.message ?? (e as Error).message}`);
+      throw new ReleaseUnobtainableError(`could not fetch the torrent from the indexer: ${cause?.message ?? (e as Error).message}`);
     }
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
-      if (!location) throw new DownloadClientHttpError(res.status, `indexer redirected without a Location header (HTTP ${res.status})`);
+      if (!location) throw new ReleaseUnobtainableError(`the indexer redirected without a Location header (HTTP ${res.status})`);
       if (location.startsWith('magnet:')) return { magnet: location };
       url = new URL(location, url).toString();
       continue;
     }
     if (res.status !== 200) {
-      throw new DownloadClientHttpError(res.status, `indexer returned HTTP ${res.status} for the torrent download`);
+      throw new ReleaseUnobtainableError(`the indexer returned HTTP ${res.status} for this release's download`);
     }
     return { buffer: Buffer.from(await res.arrayBuffer()) };
   }
-  throw new Error(`indexer redirect chain exceeded ${maxHops} hops`);
+  throw new ReleaseUnobtainableError(`the indexer's redirect chain exceeded ${maxHops} hops`);
 }
 
 async function addMagnet(base: string, cookie: string, magnetUrl: string, category: string): Promise<Response> {
@@ -172,40 +177,6 @@ async function addMagnet(base: string, cookie: string, magnetUrl: string, catego
 
 /** Native `FormData`/`Blob` encode the multipart body `fetch` needs — no
  *  extra dependency for what one file field and one text field require. */
-function form(base: string, cookie: string, path: string, fields: Record<string, string>): Promise<Response> {
-  return httpRequest(`${base}/api/v2/${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
-    body: new URLSearchParams(fields),
-    timeoutMs: 15_000,
-  });
-}
-
-/**
- * Moves a torrent the client already held into the category this client manages. Without it a
- * reused torrent stays invisible: `getTorrentsResult` lists one category, so a torrent sitting
- * outside it reads as "the client answered and does not hold this", and its queue row vanishes
- * while the grab reports success.
- *
- * `setCategory` answers 409 for a category that does not exist yet — `add` creates one on the
- * fly, this does not — so a first miss creates it and retries. Failing after that throws: a
- * torrent we cannot put where the queue looks is not one we can claim to have reused.
- */
-async function adoptIntoCategory(base: string, cookie: string, hash: string, category: string): Promise<void> {
-  if (!category) return;
-  let res = await form(base, cookie, 'torrents/setCategory', { hashes: hash, category });
-  if (res.status === 409) {
-    await form(base, cookie, 'torrents/createCategory', { category, savePath: '' });
-    res = await form(base, cookie, 'torrents/setCategory', { hashes: hash, category });
-  }
-  if (res.status !== 200) {
-    throw new DownloadClientHttpError(
-      res.status,
-      `the torrent is already in the download client but could not be moved to the "${category}" category (HTTP ${res.status})`,
-    );
-  }
-}
-
 async function addTorrentFile(base: string, cookie: string, buffer: Buffer, category: string): Promise<Response> {
   const fd = new FormData();
   fd.append('torrents', new Blob([buffer], { type: 'application/x-bittorrent' }), 'download.torrent');
@@ -382,7 +353,7 @@ export class QbittorrentDriver implements DownloadClientDriver {
     // Snapshot before the add so a hash the upfront extractors missed can be
     // recovered by diffing, and so a duplicate add (the client dedupes by hash,
     // creating nothing) can be detected and rejected when asked to.
-    const beforeHashes = await snapshotHashes(base, cookie);
+    const beforeHashes = await snapshotHashes(base, cookie, category);
 
     /**
      * An infohash identifies the content, so a torrent the client already holds *is* the release
@@ -396,9 +367,6 @@ export class QbittorrentDriver implements DownloadClientDriver {
       if (rejectIfAlreadyPresent) {
         throw new TorrentAlreadyPresentError(`torrent ${hash} is already in the download client`);
       }
-      // The snapshot spans every category; the queue reads one. Adopting it is what makes the
-      // reuse real rather than a grab that succeeds into thin air.
-      await adoptIntoCategory(base, cookie, hash, category);
       return hash;
     };
 
@@ -425,6 +393,16 @@ export class QbittorrentDriver implements DownloadClientDriver {
       }
     }
 
+    // 409 is how qBittorrent reports a torrent it already holds. The snapshot above covers the
+    // category this client manages, so reaching here means it sits outside it: someone else's
+    // torrent, or one added by hand. Fliks does not take it over — moving it would reach into a
+    // download the user arranged themselves — so the release is unobtainable and the caller is
+    // free to try the next one.
+    if (addRes.status === 409) {
+      throw new ReleaseUnobtainableError(
+        'the download client already holds this torrent, outside the category Fliks manages',
+      );
+    }
     if (addRes.status !== 200) {
       throw new DownloadClientHttpError(addRes.status, `the download client refused the torrent (HTTP ${addRes.status})`);
     }

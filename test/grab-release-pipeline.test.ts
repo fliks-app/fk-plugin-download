@@ -10,6 +10,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { grabRelease, searchReleases, GrabError, type ReleasePipelineDeps, type AcquisitionTarget } from '../src/grab/release-pipeline';
 import type { IndexerDriver } from '../src/seams/indexers';
+import { DownloadClientHttpError, ReleaseUnobtainableError } from '../src/download-clients/types';
 import { FakeHistoryRepo, FakeDriver, FakeHost, FakeBlocklistRepo, makeClient, asHistoryRepo, asBlocklistRepo } from './grab-test-helpers';
 
 function target(over: Partial<AcquisitionTarget> = {}): AcquisitionTarget {
@@ -303,5 +304,50 @@ describe('searchReleases — a special is searched by its title', () => {
 
     assert.deepEqual(seen, []);
     assert.deepEqual(result, []);
+  });
+});
+
+describe('a release the indexer cannot hand over is not the end of the grab', () => {
+  const two = [
+    { title: 'First.Release.1080p', downloadUrl: 'https://x/1', indexerId: 1 },
+    { title: 'Second.Release.1080p', downloadUrl: 'https://x/2', indexerId: 1 },
+  ];
+
+  test('VERDICT: falls through to the next candidate, and only for an unobtainable release', async () => {
+    const { deps, driver } = buildDeps({ target: target(), releases: two });
+    const attempted: string[] = [];
+    driver.addTorrentUrl = async (_c, url: string) => {
+      attempted.push(url);
+      if (url.endsWith('/1')) throw new ReleaseUnobtainableError('the indexer returned HTTP 404');
+      return 'b'.repeat(40);
+    };
+
+    await grabRelease(deps, 1);
+
+    assert.deepEqual(attempted, ['https://x/1', 'https://x/2']);
+  });
+
+  test('a download client refusing is not retried against another release', async () => {
+    const { deps, driver } = buildDeps({ target: target(), releases: two });
+    const attempted: string[] = [];
+    driver.addTorrentUrl = async (_c, url: string) => {
+      attempted.push(url);
+      throw new DownloadClientHttpError(500, 'the client is broken');
+    };
+
+    await assert.rejects(() => grabRelease(deps, 1));
+    assert.deepEqual(attempted, ['https://x/1'], 'it would refuse the next one for the same reason');
+  });
+
+  test('every candidate unobtainable reports why, rather than "no eligible release"', async () => {
+    const { deps, driver } = buildDeps({ target: target(), releases: two });
+    driver.addTorrentUrl = async () => {
+      throw new ReleaseUnobtainableError('the indexer returned HTTP 404');
+    };
+
+    await assert.rejects(
+      () => grabRelease(deps, 1),
+      (e: unknown) => e instanceof GrabError && e.messageKey === 'download.grab.errors.releases_unobtainable',
+    );
   });
 });
