@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { createPrivateKey, sign as ed25519Sign } from 'crypto';
 
 const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
@@ -93,22 +92,22 @@ function buildZip(entries: Entry[]): Buffer {
   return Buffer.concat([...localParts, centralDirectory, eocd]);
 }
 
-/** Signs unsigned when `FK_DOWNLOAD_SIGNING_KEY` (a PEM Ed25519 private key) is
- *  absent — local installs use the core's `FLIKS_UNSIGNED_PLUGINS` allowlist
- *  instead of a production key. */
+/**
+ * Always unsigned, on purpose. Signing is the catalog's job: `package-plugin.yml` there builds
+ * the archive from `plugins/<id>/src/` and signs `plugin.json` with `CATALOG_SIGNING_KEY`, the
+ * same key that signs `catalog.json`, which is what makes a consumer's trust store resolve it to
+ * `official`. A second signing path here would need a second key and could only ever produce an
+ * archive the catalog does not vouch for.
+ *
+ * What this is for: a local install, which core admits through its `FLIKS_UNSIGNED_PLUGINS`
+ * allowlist rather than through a signature.
+ */
 export function packageArchive(): string {
   const manifestBytes = fs.readFileSync(path.join(DIST, 'plugin.json'));
   const pluginJsBytes = fs.readFileSync(path.join(DIST, 'plugin.js'));
   const logoBytes = fs.readFileSync(path.join(DIST, 'logo.svg'));
 
   const entries: Entry[] = [{ name: 'plugin.json', content: manifestBytes }];
-
-  const keyPem = process.env.FK_DOWNLOAD_SIGNING_KEY;
-  if (keyPem) {
-    const privateKey = createPrivateKey({ key: keyPem, format: 'pem' });
-    const signature = ed25519Sign(null, manifestBytes, privateKey).toString('base64');
-    entries.push({ name: 'plugin.json.sig', content: Buffer.from(signature, 'utf8') });
-  }
 
   entries.push({ name: 'plugin.js', content: pluginJsBytes }, { name: 'logo.svg', content: logoBytes });
 
@@ -119,5 +118,5 @@ export function packageArchive(): string {
 
 if (require.main === module) {
   const outFile = packageArchive();
-  console.log(`wrote ${outFile} (${process.env.FK_DOWNLOAD_SIGNING_KEY ? 'signed' : 'unsigned'})`);
+  console.log(`wrote ${outFile} — unsigned, for a local install; the catalog signs what it publishes`);
 }
