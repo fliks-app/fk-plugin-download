@@ -3,10 +3,12 @@ import type { DownloadClientDriver, ClientTorrent } from '../download-clients/co
 import type { DownloadClientsRepository, IndexersRepository, DownloadHistoryRepository, StalledChecksRepository, BlocklistRepository } from '../db/repositories';
 import type { DownloadHistoryRow, DownloadClientRow } from '../db/rows';
 import type { HostCaller } from './types';
-import { HostCallError } from '../host-client';
+import { HostCallError, type HostParams } from '../host-client';
 import { TorrentHistoryMatcher, normaliseTorrentName, outranksForTorrent } from './torrent-name-matcher';
 import { identifyOrphans, resolveSeasonEpisodeIds } from './orphan-matcher';
 import { buildGrabHistoryRow } from './grab-history';
+
+type ProgressDownload = HostParams<'progress.set'>['downloads'][number];
 import { getStallConfig, type StallConfig } from './stall-config';
 import { countStalledStrikes, STALL_ELIGIBLE_STATES } from '../download-clients/stalled-progress';
 import { torrentProgressState } from './progress-state';
@@ -74,9 +76,14 @@ export class DownloadCompletionPoller {
   /** History-row id → season/episode numbers. Ids never change number, and
    *  this is read on every poll. */
   private readonly scopeCache = new Map<number, ScopeNumbers>();
-  /** Rows whose progress has already been retired, so a torrent that stays
-   *  gone is not re-announced on every poll. */
-  private readonly retired = new Set<number>();
+  /** Media whose set was published on the previous tick. A media missing from the next one
+   *  needs an empty snapshot so its viewers stop holding the last set they saw. */
+  private reportedMediaIds = new Set<number>();
+
+  /** Nothing was published yet this process, but a viewer may still hold a snapshot from
+   *  before a restart. The first tick therefore states every in-flight media's set, empty
+   *  included, which is what keeps the model from depending on a field that a restart clears. */
+  private firstProgressTick = true;
 
   constructor(private readonly deps: CompletionPollerDeps) {}
 
@@ -118,17 +125,9 @@ export class DownloadCompletionPoller {
 
     if (allClientsResponded) {
       await this.reconcileOrphanHistory(allTorrents, grabbed, importing);
-      const inFlight = [...grabbed.filter((h) => h.status === 'grabbed'), ...importing];
-      const present = new Set(
-        allTorrents.flatMap((t) => {
-          const m = this.deps.historyMatcher.findMatch(t, inFlight);
-          return m ? [m.history.id] : [];
-        }),
-      );
-      await this.retireVanished(inFlight, present);
     }
 
-    await this.emitDownloadProgress(allTorrents);
+    await this.emitDownloadProgress(allTorrents, allClientsResponded);
 
     const completedTorrents = allTorrents.filter(
       (t) => t.progress >= 1 || t.state === 'seeding' || t.state === 'stalledUP' || t.state === 'stoppedUP',
@@ -342,63 +341,33 @@ export class DownloadCompletionPoller {
   }
 
   /**
-   * A `grabbed`/`importing` row whose torrent the client no longer reports has
-   * no progress to show. Without this its last tick stands for ever — the
-   * header badge freezes on a percentage from a torrent the user deleted
-   * minutes ago. `progress: 1` is core's retirement signal for a leaf (both its
-   * replay cache and the client drop the leaf at >= 1); the row itself keeps
-   * its orphan grace, so a torrent that comes back simply resumes ticking.
+   * Publish each media's complete set of in-flight downloads. A replacement, not a delta:
+   * whatever a media no longer has is retired by its absence, which is why no compensating
+   * "this one vanished" push is needed any more.
    *
-   * Only ever called when every client answered — an unreachable client's
-   * empty list is not evidence that a torrent is gone.
+   * Skipped outright when a client did not answer. Its empty list is indistinguishable from a
+   * client that genuinely holds nothing, and a snapshot built from it would assert that every
+   * torrent it holds is gone. A missed tick shows a stale percentage; a wrong snapshot erases
+   * live downloads from every viewer's screen.
+   *
+   * Season/episode numbers are resolved from the row's ids so a series download is attributed to
+   * the episode it belongs to: without them every download reads as whole-media progress, which
+   * shows the badge on every episode page of the show.
    */
-  private async retireVanished(
-    rows: readonly DownloadHistoryRow[],
-    present: ReadonlySet<number>,
+  private async emitDownloadProgress(
+    allTorrents: readonly Torrent[],
+    allClientsResponded: boolean,
   ): Promise<void> {
-    const vanished = rows.filter((r) => r.mediaId != null && r.torrentHash && !present.has(r.id) && !this.retired.has(r.id));
-    if (!vanished.length) return;
-    const scopes = await this.scopeNumbers(vanished);
-    for (const r of vanished) {
-      const scope = scopes.get(r.id) ?? {};
-      await this.deps.host
-        .call('progress.set', {
-          mediaId: r.mediaId!,
-          seasonNumber: scope.seasonNumber,
-          episodeNumber: scope.episodeNumber,
-          ref: r.torrentHash!,
-          progress: 1,
-          state: 'stalled',
-        })
-        .then(() => this.retired.add(r.id))
-        .catch((e: Error) => log.warn(`Import: progress retire failed: ${e.message}`));
-    }
-    log.info(`Import: ${vanished.length} entr(ies) lost their torrent — retired their progress`);
-  }
+    if (!allClientsResponded) return;
 
-  /**
-   * Push one progress tick per in-flight torrent. Season/episode numbers are
-   * resolved from the row's ids so a series leaf is attributed to the episode
-   * it belongs to: without them every tick reads as whole-media progress, which
-   * shows the badge on every episode page of the show and erases the episode
-   * the detail modal was naming.
-   */
-  private async emitDownloadProgress(allTorrents: readonly Torrent[]): Promise<void> {
     const rows = await this.deps.historyRepo.findByStatuses(['grabbed', 'importing']);
-    if (!rows.length) return;
 
-    // A torrent at 100% used to be filtered out before it could be reported, so the flip to
-    // `importing` was never pushed — a view driven by these events kept showing the download
-    // until something else made it refetch. Its hash earns it one more tick.
+    // A torrent at 100% is filtered out, except while its row says importing: the flip to
+    // `importing` is the last thing a viewer sees before the import badge takes over.
     const importingHashes = new Set(
-      rows
-        .filter((r) => r.status === 'importing' && r.torrentHash)
-        .map((r) => r.torrentHash!.toLowerCase()),
+      rows.filter((r) => r.status === 'importing' && r.torrentHash).map((r) => r.torrentHash!.toLowerCase()),
     );
-    const reportable = allTorrents.filter(
-      (t) => t.progress < 1 || importingHashes.has(t.hash.toLowerCase()),
-    );
-    if (!reportable.length) return;
+    const reportable = allTorrents.filter((t) => t.progress < 1 || importingHashes.has(t.hash.toLowerCase()));
 
     const matched: { torrent: Torrent; history: DownloadHistoryRow }[] = [];
     for (const t of reportable) {
@@ -407,27 +376,40 @@ export class DownloadCompletionPoller {
     }
     const scopes = await this.scopeNumbers(matched.map((m) => m.history));
 
+    const byMedia = new Map<number, ProgressDownload[]>();
     for (const { torrent: t, history } of matched) {
-      // Back after a retirement: let it be retired again if it vanishes twice.
-      this.retired.delete(history.id);
       const scope = scopes.get(history.id) ?? {};
-      // A progress tick is cosmetic; the import hand-off runs after this and must not be lost with it.
+      const list = byMedia.get(history.mediaId!) ?? [];
+      list.push({
+        ref: t.hash,
+        seasonNumber: scope.seasonNumber,
+        episodeNumber: scope.episodeNumber,
+        progress: t.progress,
+        bytesPerSecond: t.dlspeed,
+        etaSeconds: t.eta > 0 && t.eta < 8_640_000 ? t.eta : undefined,
+        // The row is authoritative once it says importing: the client reports a finished
+        // torrent as seeding, which this mapping reads as `active`.
+        state: history.status === 'importing' ? 'importing' : torrentProgressState(t),
+      });
+      byMedia.set(history.mediaId!, list);
+    }
+
+    // A media that had downloads last tick and has none now must be told so, or its viewers keep
+    // the last set they saw. On the first tick of the process that memory is gone, so the rows
+    // stand in for it: every media with an in-flight row is stated once, empty included.
+    const owed = this.firstProgressTick
+      ? rows.flatMap((r) => (r.mediaId != null ? [r.mediaId] : []))
+      : [...this.reportedMediaIds];
+    for (const mediaId of owed) {
+      if (!byMedia.has(mediaId)) byMedia.set(mediaId, []);
+    }
+    this.firstProgressTick = false;
+    this.reportedMediaIds = new Set([...byMedia].filter(([, list]) => list.length).map(([id]) => id));
+
+    for (const [mediaId, downloads] of byMedia) {
+      // A progress push is cosmetic; the import hand-off runs after this and must not be lost with it.
       await this.deps.host
-        .call('progress.set', {
-          mediaId: history.mediaId!,
-          seasonNumber: scope.seasonNumber,
-          episodeNumber: scope.episodeNumber,
-          ref: t.hash,
-          // `progress >= 1` is the retirement signal on both consumers, so a
-          // finished torrent reporting its import would destroy the very leaf
-          // the tick exists to label.
-          progress: history.status === 'importing' ? Math.min(t.progress, 0.999) : t.progress,
-          bytesPerSecond: t.dlspeed,
-          etaSeconds: t.eta > 0 && t.eta < 8_640_000 ? t.eta : undefined,
-          // The row is authoritative once it says importing: the client reports a finished
-          // torrent as seeding, which this mapping reads as `active`.
-          state: history.status === 'importing' ? 'importing' : torrentProgressState(t),
-        })
+        .call('progress.set', { mediaId, downloads })
         .catch((e: Error) => log.warn(`Import: progress publish failed: ${e.message}`));
     }
   }

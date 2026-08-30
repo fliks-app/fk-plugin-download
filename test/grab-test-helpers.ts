@@ -20,6 +20,7 @@ export function makeHistoryRow(over: Partial<DownloadHistoryRow>): DownloadHisto
     language: null,
     torrentHash: 'h1',
     size: null,
+    infoUrl: null,
     status: 'grabbed',
     statusMessage: null,
     grabSource: 'auto',

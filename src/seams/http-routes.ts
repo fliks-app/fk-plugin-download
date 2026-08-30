@@ -233,6 +233,19 @@ async function handleSearchReleases(deps: RouteDeps, params: Record<string, stri
 }
 
 /** Core names the release source `sourceId`; inside this plugin that source is an indexer row. */
+/** The picker echoes back the release's own tracker page, which came from a feed and reaches a
+ *  browser as an anchor. Anything that is not an absolute http(s) URL is dropped rather than
+ *  stored — the client that sent it is not the one that produced it. */
+function readInfoUrl(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function readManualGrabInput(body: unknown): ManualGrabInput | undefined {
   const b = (body ?? {}) as Record<string, unknown>;
   const downloadUrl = b['downloadUrl'];
@@ -241,6 +254,7 @@ function readManualGrabInput(body: unknown): ManualGrabInput | undefined {
     downloadUrl,
     sourceTitle: typeof b['sourceTitle'] === 'string' ? b['sourceTitle'] : undefined,
     indexerId: typeof b['sourceId'] === 'number' ? b['sourceId'] : undefined,
+    infoUrl: readInfoUrl(b['infoUrl']),
     force: b['force'] === true,
   };
 }
@@ -397,6 +411,44 @@ function isHttpResponse(v: unknown): v is PluginHttpResponse {
   return typeof v === 'object' && v !== null && 'status' in v && 'headers' in v;
 }
 
+/**
+ * qBittorrent answers a stop/start before libtorrent has flipped the torrent's own state:
+ * measured at up to ~2s against a real client. Answering straight away made the caller's
+ * immediate re-read report the state it had just changed, and nothing corrected it until the
+ * queue's next poll tick ten seconds later.
+ */
+const CONTROL_SETTLE_TIMEOUT_MS = 4_000;
+const CONTROL_SETTLE_INTERVAL_MS = 300;
+
+/** Just this row's own client, not every enabled one — a settle loop must stay cheap. */
+async function torrentOfRow(deps: RouteDeps, row: DownloadHistoryRow): Promise<ClientTorrent | undefined> {
+  if (row.downloadClientId == null || !row.torrentHash) return undefined;
+  const client = (await deps.downloadClientsRepo.listEnabled()).find((c) => c.id === row.downloadClientId);
+  const driver = client ? deps.downloadClientDrivers[client.implementation] : undefined;
+  if (!client || !driver || !driver.supports(client)) return undefined;
+  const result = await driver.getTorrentsResult(client);
+  if (!result.ok) return undefined;
+  const hash = row.torrentHash.toLowerCase();
+  return result.torrents.find((t) => t.hash.toLowerCase() === hash);
+}
+
+/** Returns once the client agrees, or once the budget runs out: the command itself succeeded,
+ *  so a slow client delays the confirmation rather than turning it into an error. A torrent that
+ *  is gone, or a client that stopped answering, is nothing to wait for. */
+async function settleState(
+  deps: RouteDeps,
+  row: DownloadHistoryRow,
+  reached: (state: ReturnType<typeof torrentProgressState>) => boolean,
+): Promise<void> {
+  const deadline = Date.now() + CONTROL_SETTLE_TIMEOUT_MS;
+  for (;;) {
+    const torrent = await torrentOfRow(deps, row);
+    if (!torrent || reached(torrentProgressState(torrent))) return;
+    if (Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, CONTROL_SETTLE_INTERVAL_MS));
+  }
+}
+
 async function handleQueueControl(
   deps: RouteDeps,
   params: Record<string, string>,
@@ -404,8 +456,13 @@ async function handleQueueControl(
 ): Promise<PluginHttpResponse> {
   const resolved = await resolveControllable(deps, params);
   if (isHttpResponse(resolved)) return resolved;
-  if (action === 'pause') await deps.downloadClientsService.pauseTorrent(resolved.clientId, resolved.hash);
-  else await deps.downloadClientsService.resumeTorrent(resolved.clientId, resolved.hash);
+  if (action === 'pause') {
+    await deps.downloadClientsService.pauseTorrent(resolved.clientId, resolved.hash);
+    await settleState(deps, resolved.row, (state) => state === 'paused');
+  } else {
+    await deps.downloadClientsService.resumeTorrent(resolved.clientId, resolved.hash);
+    await settleState(deps, resolved.row, (state) => state !== 'paused');
+  }
   return jsonResponse(200, {});
 }
 
@@ -438,10 +495,15 @@ async function handleClearHistory(deps: RouteDeps): Promise<PluginHttpResponse> 
 
 /** What the queue table page renders per row — `state` is always one of core's closed
  *  five progress values, never a client's own vocabulary (`progress-state.ts`). */
-export interface QueueItemDto {
+export interface QueueItemDto extends MediaLabelled {
   id: number;
-  title: string;
   quality: string;
+  /** Both read only by the detail dialog, which is why neither is a column. */
+  grabSource: GrabSource;
+  date: string;
+  /** The tracker's page for this release; null when the feed named none, or on a row grabbed
+   *  before the column existed. Never the download URL, which carries the API key. */
+  infoUrl: string | null;
   state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
   /** Percent, 0-100 — the table renders it verbatim. Clients report a 0-1 fraction, which
    *  rounded to 0% for everything short of a finished download. */
@@ -454,10 +516,69 @@ export interface QueueItemDto {
   /** False when this row's own client could not be queried — `progress`/`bytesPerSecond`
    *  are then unknown, not zero. */
   clientReachable: boolean;
-  /** Both null when the row's media can't be resolved — never guessed, since `table.open-media`
-   *  renders no button without both. */
+}
+
+/**
+ * What both views render as their row title, and the ids `attachMediaLabels` needs to build it.
+ * `title` arrives holding the release name and leaves holding the media's; `sourceTitle` keeps
+ * the release name, which the title column opens on demand.
+ */
+interface MediaLabelled {
+  title: string;
+  sourceTitle: string;
+  quality: string;
   mediaId: number | null;
+  seasonId: number | null;
+  episodeId: number | null;
+  /** Null when the row's media can't be resolved — never guessed, since `table.open-media`
+   *  renders no button without both this and `mediaId`. */
   mediaType: MediaKind | null;
+}
+
+/** `S01E02`, `S01`, or '' — what a series row carries beyond its show's name. */
+function seasonEpisodeLabel(seasonNumber?: number, episodeNumber?: number): string {
+  if (seasonNumber == null) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return episodeNumber == null ? `S${pad(seasonNumber)}` : `S${pad(seasonNumber)}E${pad(episodeNumber)}`;
+}
+
+/** The one id that resolves a row: an episode's entry already carries its show's title and both
+ *  numbers, so asking for its season and media too would spend three of the call's budget on one row. */
+function resolveKeyFor(item: MediaLabelled): { kind: 'episode' | 'season' | 'media'; id: number } | null {
+  if (item.episodeId != null) return { kind: 'episode', id: item.episodeId };
+  if (item.seasonId != null) return { kind: 'season', id: item.seasonId };
+  if (item.mediaId != null) return { kind: 'media', id: item.mediaId };
+  return null;
+}
+
+/**
+ * Replaces each row's release name with the media it names — a film's title, or
+ * "Show - S01E02" (a pack: "Show - S01"). A release name is what a tracker chose to call a
+ * file; the queue is read to see which film is downloading.
+ *
+ * One id per row keeps a full page inside `media.resolve`'s 100-id bound, and only this page's
+ * ids are ever sent. A row whose media doesn't come back keeps its release name and a null
+ * `mediaType` — never a guessed one.
+ */
+async function attachMediaLabels<T extends MediaLabelled>(deps: RouteDeps, items: T[]): Promise<T[]> {
+  const keys = items.map(resolveKeyFor);
+  const ids = { episode: new Set<number>(), season: new Set<number>(), media: new Set<number>() };
+  for (const key of keys) if (key) ids[key.kind].add(key.id);
+  if (!ids.episode.size && !ids.season.size && !ids.media.size) return items;
+
+  const resolved = await deps.host.call('media.resolve', {
+    mediaIds: [...ids.media],
+    seasonIds: [...ids.season],
+    episodeIds: [...ids.episode],
+  });
+
+  return items.map((item, i) => {
+    const key = keys[i];
+    const hit = key ? resolved[`${key.kind}:${key.id}`] : undefined;
+    if (!hit) return item;
+    const suffix = seasonEpisodeLabel(hit.seasonNumber, hit.episodeNumber);
+    return { ...item, title: suffix ? `${hit.title} - ${suffix}` : hit.title, mediaType: hit.kind };
+  });
 }
 
 const QUEUE_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing'];
@@ -501,6 +622,16 @@ async function indexClientTorrents(
  * finished-with row sitting in the queue until the orphan sweep's grace expired
  * minutes later. A client that did not answer proves nothing, so its rows stay.
  */
+/** The client's own view of a row's torrent, or undefined when its client was not asked,
+ *  did not answer, or no longer holds it. */
+function liveTorrentFor(
+  row: DownloadHistoryRow,
+  byClientId: Map<number, ClientTorrentIndex>,
+): ClientTorrent | undefined {
+  const index = row.downloadClientId != null ? byClientId.get(row.downloadClientId) : undefined;
+  return index && row.torrentHash ? index.byHash.get(row.torrentHash.toLowerCase()) : undefined;
+}
+
 function toQueueItem(
   row: DownloadHistoryRow,
   byClientId: Map<number, ClientTorrentIndex>,
@@ -509,23 +640,31 @@ function toQueueItem(
   const base = {
     id: row.id,
     title: row.sourceTitle,
+    sourceTitle: row.sourceTitle,
     quality: row.quality,
+    grabSource: row.grabSource,
+    date: row.createdAt,
+    infoUrl: row.infoUrl,
     source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
     mediaId: row.mediaId,
+    seasonId: row.seasonId,
+    episodeId: row.episodeId,
     mediaType: null as MediaKind | null,
   };
   if (row.status === 'importing') {
     return { ...base, state: 'importing', progress: 100, bytesPerSecond: null, size: null, clientReachable: true };
   }
   const index = row.downloadClientId != null ? byClientId.get(row.downloadClientId) : undefined;
-  const torrent = index && row.torrentHash ? index.byHash.get(row.torrentHash.toLowerCase()) : undefined;
+  const torrent = liveTorrentFor(row, byClientId);
   if (torrent) {
     return {
       ...base,
       state: torrentProgressState(torrent),
       progress: torrent.progress * 100,
       bytesPerSecond: torrent.dlspeed,
-      size: torrent.size,
+      // A client reports 0 until it has the torrent's metadata. That is "not known yet",
+      // not an empty file, and the detail dialog renders a 0 as "0 B".
+      size: torrent.size || null,
       clientReachable: true,
     };
   }
@@ -540,36 +679,23 @@ function toQueueItem(
   };
 }
 
-/** `media.resolve` throws above 100 ids — bounding to the ids already on the rendered
- *  page (never the full, unpaged history) is what keeps a large queue from tripping that.
- *  A row whose media doesn't come back (or never had one) keeps `mediaType: null`, never
- *  a guessed kind. */
-async function attachMediaTypes(deps: RouteDeps, pageItems: QueueItemDto[]): Promise<QueueItemDto[]> {
-  const mediaIds = [...new Set(pageItems.map((item) => item.mediaId).filter((id): id is number => id != null))];
-  if (!mediaIds.length) return pageItems;
-  const resolved = await deps.host.call('media.resolve', { mediaIds });
-  return pageItems.map((item) => {
-    if (item.mediaId == null) return item;
-    const hit = resolved[`media:${item.mediaId}`];
-    return hit ? { ...item, mediaType: hit.kind } : item;
-  });
-}
-
 /** One row of the history view. `status` and `statusMessage` are the point of it: a failed grab
  *  leaves the queue immediately and this is the only place it can still be read. */
-interface HistoryItemDto {
+interface HistoryItemDto extends MediaLabelled {
   id: number;
   date: string;
-  title: string;
-  quality: string;
   /** Null on rows grabbed before the column existed — the view omits it then. */
   size: number | null;
   status: DownloadHistoryStatus;
   statusMessage: string | null;
   grabSource: GrabSource;
   source: string;
-  mediaId: number | null;
-  mediaType: MediaKind | null;
+  infoUrl: string | null;
+  /** Live client state, for a row still running. Null on every terminal row, and on a running
+   *  one whose client did not answer — which is what gates the controls: an unknown state
+   *  offers none, rather than a Pause that cannot know whether it applies. */
+  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing' | null;
+  progress: number | null;
 }
 
 /** Every grab ever recorded, newest first — the queue only shows what is still in flight.
@@ -582,28 +708,46 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
     ? (req.query['status'] as DownloadHistoryStatus)
     : undefined;
 
-  const [{ rows, total }, indexers] = await Promise.all([
+  // The client sweep is what lets a still-running row here carry its live state, so the same
+  // controls the queue offers can be state-gated here too. One pass per page view, where the
+  // queue does one every refresh tick.
+  const [{ rows, total }, indexers, { byClientId }] = await Promise.all([
     deps.downloadHistory.listPage(pageSize, (page - 1) * pageSize, { ...(q ? { q } : {}), ...(status ? { status } : {}) }),
     deps.indexerService.findAll(),
+    indexClientTorrents(deps),
   ]);
   const indexerNames = new Map(indexers.map((ix: { id: number; name: string }) => [ix.id, ix.name]));
 
-  const items: HistoryItemDto[] = rows.map((row) => ({
-    id: row.id,
-    date: row.createdAt,
-    title: row.sourceTitle,
-    quality: row.quality,
-    size: row.size,
-    status: row.status,
-    statusMessage: row.statusMessage,
-    grabSource: row.grabSource,
-    source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
-    mediaId: row.mediaId,
-    mediaType: null,
-  }));
+  const items: HistoryItemDto[] = rows.map((row) => {
+    // Only a row still in flight has a live state. A terminal row can still have its torrent
+    // sitting in the client — seeding, or left behind by a failed import — and reporting that
+    // as `active` offered a Pause button on a failed grab, for a route that answers 409.
+    const live = QUEUE_STATUSES.includes(row.status) ? liveTorrentFor(row, byClientId) : undefined;
+    return {
+      id: row.id,
+      date: row.createdAt,
+      title: row.sourceTitle,
+      sourceTitle: row.sourceTitle,
+      quality: row.quality,
+      size: row.size || null,
+      status: row.status,
+      statusMessage: row.statusMessage,
+      grabSource: row.grabSource,
+      source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
+      infoUrl: row.infoUrl,
+      // `importing` is definitive whatever the client says: the download is done, the files
+      // are being moved. Same rule as the queue's own `toQueueItem`.
+      state: row.status === 'importing' ? 'importing' : live ? torrentProgressState(live) : null,
+      progress: row.status === 'importing' ? 100 : live ? live.progress * 100 : null,
+      mediaId: row.mediaId,
+      seasonId: row.seasonId,
+      episodeId: row.episodeId,
+      mediaType: null,
+    };
+  });
 
   // Same bound as the queue: `media.resolve` refuses more than 100 ids, and only this page's are sent.
-  const data = await attachMediaTypes(deps, items as unknown as QueueItemDto[]);
+  const data = await attachMediaLabels(deps, items);
   return jsonResponse(200, { data, total, page, pageSize });
 }
 
@@ -626,8 +770,8 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
     .filter((item): item is QueueItemDto => item !== null)
     .sort((a, b) => b.id - a.id);
   const start = (page - 1) * pageSize;
-  // Slice to the page first — attachMediaTypes's host call must only ever see this page's ids.
-  const data = await attachMediaTypes(deps, items.slice(start, start + pageSize));
+  // Slice to the page first — attachMediaLabels's host call must only ever see this page's ids.
+  const data = await attachMediaLabels(deps, items.slice(start, start + pageSize));
 
   return jsonResponse(200, {
     data,

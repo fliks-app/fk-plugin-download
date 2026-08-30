@@ -625,10 +625,12 @@ describe('DownloadCompletionPoller auto-match — what it reads, and what it mus
  * that had finished — until an unrelated refetch caught up, minutes later.
  */
 describe('DownloadCompletionPoller.poll — reporting the importing state', () => {
+  /** A push now carries a media's whole set, so a test about one download reads the flattened
+   *  downloads rather than the payload itself. */
   function progressCalls(host: { calls: { method: string; payload: unknown }[] }): { state: string; progress: number; ref: string }[] {
     return host.calls
       .filter((c) => c.method === 'progress.set')
-      .map((c) => c.payload as { state: string; progress: number; ref: string });
+      .flatMap((c) => (c.payload as { downloads: { state: string; progress: number; ref: string }[] }).downloads);
   }
 
   test('VERDICT: a finished torrent whose row is importing still gets a tick', async () => {
@@ -688,7 +690,11 @@ describe('DownloadCompletionPoller.poll — attributing progress to its episode'
   function progressCalls(host: { calls: { method: string; payload: unknown }[] }) {
     return host.calls
       .filter((c) => c.method === 'progress.set')
-      .map((c) => c.payload as { seasonNumber?: number; episodeNumber?: number; progress: number; ref: string });
+      .flatMap(
+        (c) =>
+          (c.payload as { downloads: { seasonNumber?: number; episodeNumber?: number; progress: number; ref: string }[] })
+            .downloads,
+      );
   }
 
   function withEpisodeRow(h: ReturnType<typeof buildPoller>) {
@@ -753,16 +759,17 @@ describe('DownloadCompletionPoller.poll — attributing progress to its episode'
 });
 
 /**
- * Deleting a torrent from the client used to leave its last tick standing for
- * ever: nothing reports a torrent that is no longer there, so the header badge
- * froze on a percentage from a download the user had already removed.
+ * Deleting a torrent from the client used to leave its last tick standing for ever: nothing
+ * reports a torrent that is no longer there. A push now states a media's whole set, so the
+ * torrent is retired by being absent from it, and an empty set retires the media.
  */
 describe('DownloadCompletionPoller.poll — retiring a vanished torrent', () => {
+  /** A media told it has nothing in flight. There is no per-download retirement any more. */
   function retirements(host: { calls: { method: string; payload: unknown }[] }) {
     return host.calls
       .filter((c) => c.method === 'progress.set')
-      .map((c) => c.payload as { progress: number; ref: string })
-      .filter((p) => p.progress >= 1);
+      .map((c) => c.payload as { mediaId: number; downloads: unknown[] })
+      .filter((p) => p.downloads.length === 0);
   }
 
   function vanished() {
@@ -780,7 +787,7 @@ describe('DownloadCompletionPoller.poll — retiring a vanished torrent', () => 
 
     await h.poller.poll();
 
-    assert.deepEqual(retirements(h.host).map((r) => r.ref), ['abc']);
+    assert.deepEqual(retirements(h.host).map((r) => r.mediaId), [5]);
   });
 
   test('an unreachable client retires nothing — an empty list is not evidence', async () => {
@@ -814,5 +821,50 @@ describe('DownloadCompletionPoller.poll — retiring a vanished torrent', () => 
     await h.poller.poll();
 
     assert.equal(retirements(h.host).length, 2);
+  });
+});
+
+/**
+ * A snapshot asserts "this is all of it". Built while a client was unreachable it would assert
+ * that every torrent that client holds is gone, and every viewer would see them vanish. A missed
+ * tick only shows a stale percentage, so the tick is skipped instead.
+ */
+describe('DownloadCompletionPoller.poll — a snapshot is never built from a partial answer', () => {
+  const pushes = (host: { calls: { method: string; payload: unknown }[] }) =>
+    host.calls.filter((c) => c.method === 'progress.set');
+
+  test('VERDICT: publishes nothing at all while any client is unreachable', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }), makeClient({ id: 2 }));
+    // One client answers with a live torrent, the other cannot be asked.
+    h.driver.torrentsByClient.set(1, {
+      ok: true,
+      torrents: [makeTorrent({ hash: 'abc', progress: 0.5, state: 'downloading' })],
+    });
+    h.driver.torrentsByClient.set(2, { ok: false, torrents: [] });
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+
+    await h.poller.poll();
+
+    assert.deepEqual(pushes(h.host), []);
+  });
+
+  test('publishes once every client has answered', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }), makeClient({ id: 2 }));
+    h.driver.torrentsByClient.set(1, {
+      ok: true,
+      torrents: [makeTorrent({ hash: 'abc', progress: 0.5, state: 'downloading' })],
+    });
+    h.driver.torrentsByClient.set(2, { ok: true, torrents: [] });
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+
+    await h.poller.poll();
+
+    assert.equal(pushes(h.host).length, 1);
   });
 });

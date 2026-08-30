@@ -86,14 +86,6 @@ export type AcquisitionEvent =
       episodeNumber?: number;
     }
   | {
-      type: 'acquisition.progress';
-      mediaId: number;
-      ref: string;
-      progress: number;
-      etaSeconds: number | null;
-      state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
-    }
-  | {
       type: 'acquisition.imported';
       mediaId: number;
       seasonNumber?: number;
@@ -245,17 +237,25 @@ export interface PluginHostApi {
     audience: 'all' | { mediaId: number } | { userId: number };
   }) => Promise<void>;
 
-  /** Live acquisition progress. This plugin pushes; core emits the reserved
-   *  `download.progress` SSE type. Coalesced server-side to <= 1/media/second. */
+  /**
+   * Live acquisition progress, as the complete set for one media. This plugin pushes; core emits
+   * the reserved `download.progress` SSE type, coalesced to one emission per media per second.
+   *
+   * `downloads` is a replacement, never a delta: whatever is absent from it is retired, and an
+   * empty array retires the media outright. Only push a set you fully enumerated — a download
+   * client that could not be reached is not evidence that its torrents are gone.
+   */
   'progress.set': (p: {
     mediaId: number;
-    seasonNumber?: number;
-    episodeNumber?: number;
-    ref: string;
-    progress: number;
-    bytesPerSecond?: number;
-    etaSeconds?: number;
-    state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
+    downloads: {
+      ref: string;
+      seasonNumber?: number;
+      episodeNumber?: number;
+      progress: number;
+      bytesPerSecond?: number;
+      etaSeconds?: number;
+      state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
+    }[];
   }) => Promise<void>;
 
   // Group E — config (2)

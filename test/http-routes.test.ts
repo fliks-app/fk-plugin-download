@@ -27,6 +27,7 @@ function historyRow(over: Partial<DownloadHistoryRow> = {}): DownloadHistoryRow 
     language: null,
     torrentHash: null,
     size: null,
+    infoUrl: null,
     status: 'grabbed',
     statusMessage: null,
     grabSource: 'auto',
@@ -200,7 +201,7 @@ describe('route table — shape matching', () => {
       resolved.params,
     );
     assert.equal(res.status, 200);
-    assert.deepEqual(seen, [{ mediaId: 5, seasonId: undefined, episodeId: undefined, manual: { downloadUrl: 'magnet:?xt=x', sourceTitle: 'A Title', indexerId: undefined, force: false } }]);
+    assert.deepEqual(seen, [{ mediaId: 5, seasonId: undefined, episodeId: undefined, manual: { downloadUrl: 'magnet:?xt=x', sourceTitle: 'A Title', indexerId: undefined, infoUrl: undefined, force: false } }]);
   });
 
   test('a POST grab body with force: true threads force through to grabRelease', async () => {
@@ -218,7 +219,7 @@ describe('route table — shape matching', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('POST', '/5/grab')!;
     await resolved.handler(req({ method: 'POST', path: '/5/grab', body: { downloadUrl: 'magnet:?xt=x', force: true } }), resolved.params);
-    assert.deepEqual(seen, [{ downloadUrl: 'magnet:?xt=x', sourceTitle: undefined, indexerId: undefined, force: true }]);
+    assert.deepEqual(seen, [{ downloadUrl: 'magnet:?xt=x', sourceTitle: undefined, indexerId: undefined, infoUrl: undefined, force: true }]);
   });
 });
 
@@ -386,7 +387,11 @@ describe('route table — GET /queue', () => {
       {
         id: 9,
         title: 'A Title',
+        sourceTitle: 'A Title',
         quality: '1080p',
+        grabSource: 'auto',
+        date: '2026-01-01T00:00:00.000Z',
+        infoUrl: null,
         source: 'Tracker A',
         state: 'importing',
         progress: 100,
@@ -394,6 +399,8 @@ describe('route table — GET /queue', () => {
         size: null,
         clientReachable: true,
         mediaId: null,
+        seasonId: null,
+        episodeId: null,
         mediaType: null,
       },
     ]);
@@ -513,7 +520,11 @@ describe('route table — GET /queue', () => {
       {
         id: 3,
         title: 'A Title',
+        sourceTitle: 'A Title',
         quality: '1080p',
+        grabSource: 'auto',
+        date: '2026-01-01T00:00:00.000Z',
+        infoUrl: null,
         source: '',
         state: 'stalled',
         // The client reports 0.5; the table renders this verbatim, so it must be a percent.
@@ -522,6 +533,8 @@ describe('route table — GET /queue', () => {
         size: 1000,
         clientReachable: true,
         mediaId: null,
+        seasonId: null,
+        episodeId: null,
         mediaType: null,
       },
     ]);
@@ -557,7 +570,11 @@ describe('route table — GET /queue', () => {
     assert.deepEqual(body.data[0], {
       id: 5,
       title: 'A Title',
+      sourceTitle: 'A Title',
       quality: '1080p',
+      grabSource: 'auto',
+      date: '2026-01-01T00:00:00.000Z',
+      infoUrl: null,
       source: '',
       state: 'queued',
       progress: null,
@@ -565,6 +582,8 @@ describe('route table — GET /queue', () => {
       size: null,
       clientReachable: false,
       mediaId: null,
+      seasonId: null,
+      episodeId: null,
       mediaType: null,
     });
   });
@@ -971,5 +990,297 @@ describe('history pruning', () => {
     const resolved = createRouteTable(deps).resolve('DELETE', '/history/all')!;
     const res = await resolved.handler(req({ method: 'DELETE', path: '/history/all' }), resolved.params);
     assert.deepEqual(res.body, { removed: 12 });
+  });
+});
+
+describe('queue and history row titles', () => {
+  /** `media.resolve` answers whatever these keys hold; anything else is an unresolved row. */
+  function depsResolving(resolved: Record<string, unknown>, rows: DownloadHistoryRow[]) {
+    const payloads: unknown[] = [];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => rows,
+        listPage: async () => ({ rows, total: rows.length }),
+      },
+      host: {
+        call: async (method: string, payload: unknown) => {
+          if (method !== 'media.resolve') return {};
+          payloads.push(payload);
+          return resolved;
+        },
+      } as unknown as RouteDeps['host'],
+    });
+    return { deps, payloads };
+  }
+
+  async function queueRows(deps: RouteDeps) {
+    const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    return (res.body as { data: QueueItemDto[] }).data;
+  }
+
+  test('a film shows its own title, not the release name', async () => {
+    const { deps } = depsResolving({ 'media:5': { title: 'Nova Skyline', kind: 'movie', libraryId: 1 } }, [
+      historyRow({ id: 1, mediaId: 5, sourceTitle: 'Nova.Skyline.2012.1080p.WEB-DL.x264-GRP' }),
+    ]);
+    const [row] = await queueRows(deps);
+    assert.equal(row!.title, 'Nova Skyline');
+    assert.equal(row!.mediaType, 'movie');
+  });
+
+  test('VERDICT: an episode reads "Show - S01E02", zero-padded', async () => {
+    const { deps } = depsResolving(
+      { 'episode:44': { title: 'Harbour Lights', kind: 'series', libraryId: 1, seasonNumber: 1, episodeNumber: 2 } },
+      [historyRow({ id: 1, mediaId: 5, seasonId: 9, episodeId: 44 })],
+    );
+    assert.equal((await queueRows(deps))[0]!.title, 'Harbour Lights - S01E02');
+  });
+
+  test('VERDICT: a season pack reads "Show - S01" — no episode to name', async () => {
+    const { deps } = depsResolving(
+      { 'season:9': { title: 'Harbour Lights', kind: 'series', libraryId: 1, seasonNumber: 1 } },
+      [historyRow({ id: 1, mediaId: 5, seasonId: 9 })],
+    );
+    assert.equal((await queueRows(deps))[0]!.title, 'Harbour Lights - S01');
+  });
+
+  test('VERDICT: one id per row — an episode never also asks for its season and media', async () => {
+    const { deps, payloads } = depsResolving({}, [historyRow({ id: 1, mediaId: 5, seasonId: 9, episodeId: 44 })]);
+    await queueRows(deps);
+    assert.deepEqual(payloads, [{ mediaIds: [], seasonIds: [], episodeIds: [44] }]);
+  });
+
+  test('an unresolvable row keeps its release name rather than rendering blank', async () => {
+    const { deps } = depsResolving({}, [historyRow({ id: 1, mediaId: 5, sourceTitle: 'Some.Release.1080p' })]);
+    const [row] = await queueRows(deps);
+    assert.equal(row!.title, 'Some.Release.1080p');
+    assert.equal(row!.mediaType, null);
+  });
+
+  test('the release name is always kept alongside, for the title cell to open', async () => {
+    const { deps } = depsResolving({ 'media:5': { title: 'Nova Skyline', kind: 'movie', libraryId: 1 } }, [
+      historyRow({ id: 1, mediaId: 5, sourceTitle: 'Nova.Skyline.2012.1080p' }),
+    ]);
+    assert.equal((await queueRows(deps))[0]!.sourceTitle, 'Nova.Skyline.2012.1080p');
+  });
+
+  test('history labels its rows the same way, from the same resolver', async () => {
+    const { deps } = depsResolving(
+      { 'episode:44': { title: 'Harbour Lights', kind: 'series', libraryId: 1, seasonNumber: 12, episodeNumber: 7 } },
+      [historyRow({ id: 1, status: 'completed', mediaId: 5, seasonId: 9, episodeId: 44 })],
+    );
+    const resolved = createRouteTable(deps).resolve('GET', '/history')!;
+    const res = await resolved.handler(req({ path: '/history' }), resolved.params);
+    const data = (res.body as { data: { title: string }[] }).data;
+    assert.equal(data[0]!.title, 'Harbour Lights - S12E07');
+  });
+});
+
+describe('history live state', () => {
+  /** One enabled client still holding the torrent, whatever the row's own status says. */
+  function depsHolding(row: DownloadHistoryRow) {
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: [
+          {
+            hash: 'abcd',
+            name: 'x',
+            size: 1000,
+            downloaded: 500,
+            progress: 0.5,
+            dlspeed: 1,
+            upspeed: 0,
+            ratio: 0,
+            eta: 60,
+            state: 'downloading',
+            category: '',
+            num_seeds: 1,
+            num_leechs: 0,
+            added_on: 0,
+          },
+        ],
+      }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    return fakeDeps({
+      downloadHistory: { listPage: async () => ({ rows: [row], total: 1 }) },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+  }
+
+  async function historyRowOf(deps: RouteDeps) {
+    const resolved = createRouteTable(deps).resolve('GET', '/history')!;
+    const res = await resolved.handler(req({ path: '/history' }), resolved.params);
+    return (res.body as { data: { state: string | null; progress: number | null }[] }).data[0]!;
+  }
+
+  const stateOf = async (status: DownloadHistoryStatus) => {
+    const row = historyRow({ id: 1, status, torrentHash: 'abcd', downloadClientId: 1 });
+    const item = await historyRowOf(depsHolding(row));
+    return { state: item.state, progress: item.progress };
+  };
+
+  test('a running row reports what its client says', async () => {
+    assert.deepEqual(await stateOf('grabbed'), { state: 'active', progress: 50 });
+  });
+
+  test('VERDICT: a terminal row reports no live state, even while its client still holds the torrent', async () => {
+    // Seeding on, or left behind by an import that failed. Reporting `active` offered a Pause
+    // button on a dead row, for a route that answers 409.
+    assert.deepEqual(await stateOf('failed'), { state: null, progress: null });
+    assert.deepEqual(await stateOf('completed'), { state: null, progress: null });
+  });
+
+  test('an importing row is definitive whatever the client reports', async () => {
+    const row = historyRow({ id: 1, status: 'importing', torrentHash: 'abcd', downloadClientId: 1 });
+    const item = await historyRowOf(depsHolding(row));
+    assert.equal(item.state, 'importing');
+    assert.equal(item.progress, 100);
+  });
+});
+
+describe('queue controls settle before answering', () => {
+  /** A client that keeps reporting the old state for `staleReads` polls after the command. */
+  function laggingDeps(staleReads: number) {
+    let commanded = false;
+    let reads = 0;
+    const torrent = (state: string) => ({
+      hash: 'abcd', name: 'x', size: 1000, downloaded: 0, progress: 0.5, dlspeed: 1,
+      upspeed: 0, ratio: 0, eta: 60, state, category: '', num_seeds: 1, num_leechs: 0, added_on: 0,
+    });
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => {
+        // Before the command it is downloading; after it, still downloading for `staleReads`
+        // polls, exactly like qBittorrent answering /stop before libtorrent has caught up.
+        const settled = commanded && reads++ >= staleReads;
+        return { ok: true, torrents: [torrent(settled ? 'pausedDL' : 'downloading')] };
+      },
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => { commanded = true; },
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    const service = {
+      pauseTorrent: async () => driver.pauseTorrent({} as DownloadClientRow, 'abcd'),
+      resumeTorrent: async () => {},
+      removeTorrent: async () => {},
+    };
+    const deps = fakeDeps({
+      downloadHistory: {
+        findById: async () => historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 }),
+      },
+      downloadClientsService: service as unknown as RouteDeps['downloadClientsService'],
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    return { deps, reads: () => reads };
+  }
+
+  const pause = async (deps: RouteDeps) => {
+    const resolved = createRouteTable(deps).resolve('POST', '/queue/3/pause')!;
+    return resolved.handler(req({ method: 'POST', path: '/queue/3/pause' }), resolved.params);
+  };
+
+  test('VERDICT: does not answer while the client still reports the old state', async () => {
+    const { deps, reads } = laggingDeps(2);
+    assert.equal((await pause(deps)).status, 200);
+    assert.ok(reads() > 2, `polled until the client agreed, saw ${reads()} reads`);
+  });
+
+  test('a client that agrees at once is not polled again', async () => {
+    const { deps, reads } = laggingDeps(0);
+    await pause(deps);
+    assert.equal(reads(), 1);
+  });
+});
+
+describe('an unknown size is not a zero', () => {
+  test('VERDICT: a client that has not fetched the metadata yet reports no size, not 0 B', async () => {
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: [{
+          hash: 'abcd', name: 'x', size: 0, downloaded: 0, progress: 0, dlspeed: 0, upspeed: 0,
+          ratio: 0, eta: 60, state: 'metaDL', category: '', num_seeds: 0, num_leechs: 0, added_on: 0,
+        }],
+      }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 1, torrentHash: 'abcd', downloadClientId: 1 })],
+      },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    assert.equal((res.body as { data: QueueItemDto[] }).data[0]!.size, null);
+  });
+
+  test('a history row stored with 0 reads the same way', async () => {
+    const deps = fakeDeps({
+      downloadHistory: { listPage: async () => ({ rows: [historyRow({ id: 1, size: 0 })], total: 1 }) },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/history')!;
+    const res = await resolved.handler(req({ path: '/history' }), resolved.params);
+    assert.equal((res.body as { data: { size: number | null }[] }).data[0]!.size, null);
+  });
+});
+
+describe('a manual grab keeps the tracker page', () => {
+  function grabDeps() {
+    const calls: unknown[] = [];
+    return {
+      calls,
+      deps: fakeDeps({
+        grabPipeline: {
+          searchReleases: async () => [],
+          grabRelease: async (_m: number, _s?: number, _e?: number, manual?: unknown) => {
+            calls.push(manual);
+            return { torrentHash: 'h' };
+          },
+        } as unknown as RouteDeps['grabPipeline'],
+      }),
+    };
+  }
+
+  const grab = async (deps: RouteDeps, body: unknown) => {
+    const resolved = createRouteTable(deps).resolve('POST', '/5/grab')!;
+    return resolved.handler(req({ method: 'POST', path: '/5/grab', body }), resolved.params);
+  };
+
+  test('forwards an http tracker page', async () => {
+    const { deps, calls } = grabDeps();
+    await grab(deps, { downloadUrl: 'https://x/dl', infoUrl: 'https://tracker.example/details/42' });
+    assert.equal((calls[0] as { infoUrl?: string }).infoUrl, 'https://tracker.example/details/42');
+  });
+
+  test('VERDICT: drops anything that is not an http url — the sender is not who produced it', async () => {
+    for (const bad of ['javascript:alert(1)', 'not a url', 'ftp://x/y', '']) {
+      const { deps, calls } = grabDeps();
+      await grab(deps, { downloadUrl: 'https://x/dl', infoUrl: bad });
+      assert.equal((calls[0] as { infoUrl?: string }).infoUrl, undefined, `refused ${bad || '(empty)'}`);
+    }
   });
 });

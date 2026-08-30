@@ -37,6 +37,72 @@ function subjectFor(name: string): string {
   return `plugin:${PLUGIN_ID}:${name}`;
 }
 
+/** Hides every control from a viewer who could not use it anyway — the routes themselves are
+ *  CASL-guarded, so this is presentation, not the boundary. */
+const WHEN_QUEUE_CONTROL = [`hasPermission:${subjectFor(PERMISSIONS.queueControl)}`];
+
+/** Shared by both tables. Every value is already on the row, so this needs no route — and a row
+ *  that carries none of a field simply omits the line, which is what lets one declaration serve a
+ *  running queue row and a finished history one. */
+const DETAIL_ACTION = {
+  kind: 'detail' as const,
+  labelKey: 'download.config.queue.actions.info',
+  titleKey: 'download.config.queue.detail_title',
+  fields: [
+    { key: 'sourceTitle', labelKey: 'download.config.queue.detail.release' },
+    { key: 'quality', labelKey: 'download.config.history.columns.quality' },
+    { key: 'size', labelKey: 'download.config.queue.columns.size', format: 'bytes' as const },
+    { key: 'source', labelKey: 'download.config.queue.detail.indexer' },
+    {
+      key: 'grabSource',
+      labelKey: 'download.config.queue.detail.grab_source',
+      labelKeys: {
+        auto: 'download.config.history.grab_source.auto',
+        manual: 'download.config.history.grab_source.manual',
+      },
+    },
+    { key: 'date', labelKey: 'download.config.history.columns.date', format: 'date' as const },
+    {
+      kind: 'link' as const,
+      key: 'infoUrl',
+      labelKey: 'download.config.queue.detail.indexer_page',
+      textKey: 'download.config.queue.detail.indexer_page_open',
+    },
+  ],
+};
+
+/** Shared by both tables: the same three controls, gated on the row's live state. `importing`
+ *  appears in none of them — its files are already being moved. */
+const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
+  {
+    kind: 'proxy' as const,
+    labelKey: 'download.config.queue.actions.pause',
+    method: 'POST' as const,
+    path: '/queue/:id/pause',
+    when: WHEN_QUEUE_CONTROL,
+    visibleWhen: { key: stateKey, in: ['queued', 'active', 'stalled'] },
+  },
+  {
+    kind: 'proxy' as const,
+    labelKey: 'download.config.queue.actions.resume',
+    method: 'POST' as const,
+    path: '/queue/:id/resume',
+    when: WHEN_QUEUE_CONTROL,
+    visibleWhen: { key: stateKey, in: ['paused'] },
+  },
+  {
+    kind: 'proxy' as const,
+    labelKey: 'download.config.queue.actions.remove',
+    method: 'DELETE' as const,
+    path: '/queue/:id',
+    confirmKey: 'download.config.queue.actions.remove_confirm',
+    confirmToggle: { labelKey: 'download.config.queue.actions.remove_delete_files', param: 'deleteFiles' },
+    tone: 'danger' as const,
+    when: WHEN_QUEUE_CONTROL,
+    visibleWhen: { key: stateKey, in: ['queued', 'active', 'stalled', 'paused'] },
+  },
+];
+
 /** `manage` (not `read`) backs every mutating route below — core's own equivalent
  *  controllers gate the same operations with a single `Action.Manage` check too. */
 export const POLICY = {
@@ -450,7 +516,10 @@ export const CONFIG_PAGES = [
       {
         key: 'title',
         labelKey: 'download.config.queue.columns.title',
-        truncate: true,
+        // The media, not the release name: the queue is read to see which film is downloading,
+        // and the title is what you click to reach it. Everything else about the row, the
+        // release name included, is one button away in the detail dialog.
+        linkActionId: 'table.open-media' as const,
         // Which tracker the release came from, badged under the name rather than costing a column.
         subValues: [{ key: 'source', badges: { '*': 'neutral' as const } }],
       },
@@ -473,9 +542,11 @@ export const CONFIG_PAGES = [
           paused: 'ghost' as const,
           importing: 'primary' as const,
         },
+        // The percentage fills this badge instead of holding a column of its own: it says what
+        // the state beside it is doing, and a column of bare numbers read as unrelated to it.
+        progressField: 'progress',
       },
       { key: 'size', labelKey: 'download.config.queue.columns.size', format: 'bytes' as const },
-      { key: 'progress', labelKey: 'download.config.queue.columns.progress', format: 'percent' as const },
       { key: 'bytesPerSecond', labelKey: 'download.config.queue.columns.speed', format: 'speed' as const },
     ],
     // Rows enter and leave on `queue.updated`; the percentages and speeds between two such
@@ -484,9 +555,7 @@ export const CONFIG_PAGES = [
     refreshMs: 10_000,
     // Reads mediaId/mediaType straight off each row — core's own resolver renders no
     // button when either is null, so an unresolved row is simply inert, not broken.
-    rowActions: [
-      { kind: 'action' as const, labelKey: 'download.config.queue.actions.open_media', actionId: 'table.open-media' },
-    ],
+    rowActions: [DETAIL_ACTION, ...QUEUE_CONTROL_ACTIONS('state')],
   },
   {
     // The queue holds what is in flight; a row that completes or fails leaves it immediately.
@@ -520,6 +589,8 @@ export const CONFIG_PAGES = [
       {
         key: 'title',
         labelKey: 'download.config.history.columns.title',
+        // Same as the queue: the media, and the title is the way to it.
+        linkActionId: 'table.open-media' as const,
         // Quality and tracker belong with the release's name; as columns of their own they
         // spent the width the title needed. Every quality value is worth badging: `*`.
         subValues: [
@@ -549,10 +620,34 @@ export const CONFIG_PAGES = [
         // The reason a grab failed reads in a dialog; as a column it stretched every row.
         detailField: 'statusMessage',
         detailTitleKey: 'download.config.history.detail_title',
+        // A row still running carries its live percentage; a terminal one reports none and
+        // the badge stays flat.
+        progressField: 'progress',
       },
     ],
+    // The same controls as the queue, gated on the live `state` this view now resolves too —
+    // a row read here is often the one an operator wants to stop, and sending them to another
+    // page to do it is the kind of gap that makes a feature go unused.
     rowActions: [
-      { kind: 'action' as const, labelKey: 'download.config.queue.actions.open_media', actionId: 'table.open-media' },
+      DETAIL_ACTION,
+      ...QUEUE_CONTROL_ACTIONS('state'),
+      {
+        kind: 'proxy' as const,
+        labelKey: 'download.config.history.actions.delete',
+        method: 'DELETE' as const,
+        path: '/history/:id',
+        confirmKey: 'download.config.history.actions.delete_confirm',
+        tone: 'danger' as const,
+        when: WHEN_QUEUE_CONTROL,
+      },
+    ],
+    listActions: [
+      {
+        labelKey: 'download.config.history.actions.clear',
+        method: 'DELETE' as const,
+        path: '/history/all',
+        confirmKey: 'download.config.history.actions.clear_confirm',
+      },
     ],
   },
 ];
@@ -707,10 +802,29 @@ export const I18N = {
     'download.config.queue.title': 'Queue',
     'download.config.queue.columns.title': 'Title',
     'download.config.queue.columns.state': 'State',
-    'download.config.queue.columns.progress': 'Progress',
+    'download.config.queue.actions.info': 'Info',
+    'download.config.queue.detail_title': 'Download details',
+    'download.config.queue.detail.release': 'Release',
+    'download.config.queue.detail.indexer': 'Indexer',
+    'download.config.queue.detail.indexer_page': 'Torrent page',
+    'download.config.queue.detail.indexer_page_open': 'Open on the indexer',
+    'download.config.queue.detail.grab_source': 'Grab method',
+    'download.config.history.columns.quality': 'Quality',
+    'download.config.history.grab_source.auto': 'Automatic',
+    'download.config.history.grab_source.manual': 'Manual',
+    'download.config.queue.actions.pause': 'Pause',
+    'download.config.queue.actions.resume': 'Resume',
+    'download.config.queue.actions.remove': 'Remove',
+    'download.config.queue.actions.remove_confirm':
+      'Remove this download from its client? It will stop and leave the queue.',
+    'download.config.queue.actions.remove_delete_files': 'Also delete the downloaded files',
+    'download.config.history.actions.delete': 'Delete',
+    'download.config.history.actions.delete_confirm': 'Delete this history entry?',
+    'download.config.history.actions.clear': 'Clear history',
+    'download.config.history.actions.clear_confirm':
+      'Delete every finished, failed and warned entry? Downloads still running are kept.',
     'download.config.queue.columns.speed': 'Speed',
     'download.config.queue.columns.size': 'Size',
-    'download.config.queue.actions.open_media': 'Open',
   },
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
   // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
@@ -855,10 +969,29 @@ export const I18N = {
     'download.config.queue.title': 'File d’attente',
     'download.config.queue.columns.title': 'Titre',
     'download.config.queue.columns.state': 'État',
-    'download.config.queue.columns.progress': 'Progression',
+    'download.config.queue.actions.info': 'Info',
+    'download.config.queue.detail_title': 'Détails du téléchargement',
+    'download.config.queue.detail.release': 'Release',
+    'download.config.queue.detail.indexer': 'Indexeur',
+    'download.config.queue.detail.indexer_page': 'Page du torrent',
+    'download.config.queue.detail.indexer_page_open': "Ouvrir sur l'indexeur",
+    'download.config.queue.detail.grab_source': 'Méthode de récupération',
+    'download.config.history.columns.quality': 'Qualité',
+    'download.config.history.grab_source.auto': 'Automatique',
+    'download.config.history.grab_source.manual': 'Manuelle',
+    'download.config.queue.actions.pause': 'Mettre en pause',
+    'download.config.queue.actions.resume': 'Reprendre',
+    'download.config.queue.actions.remove': 'Supprimer',
+    'download.config.queue.actions.remove_confirm':
+      "Retirer ce téléchargement de son client ? Il s'arrêtera et quittera la file d'attente.",
+    'download.config.queue.actions.remove_delete_files': 'Supprimer aussi les fichiers téléchargés',
+    'download.config.history.actions.delete': 'Supprimer',
+    'download.config.history.actions.delete_confirm': 'Supprimer cette entrée de l’historique ?',
+    'download.config.history.actions.clear': 'Vider l’historique',
+    'download.config.history.actions.clear_confirm':
+      'Supprimer toutes les entrées terminées, échouées et en avertissement ? Les téléchargements en cours sont conservés.',
     'download.config.queue.columns.speed': 'Vitesse',
     'download.config.queue.columns.size': 'Taille',
-    'download.config.queue.actions.open_media': 'Ouvrir',
   },
 };
 
@@ -866,7 +999,11 @@ export const MANIFEST_TEMPLATE = {
   id: PLUGIN_ID,
   pluginApi: 0,
   name: 'Download',
-  fliks: '>=3.4.0 <4.0.0',
+  // 3.7.0 is the first core that reads `visibleWhen`, `confirmToggle` and `progressField`, and
+  // the first whose data table substitutes `:id` into a proxy row action. An older client ignores
+  // all four in silence — which would render every control unconditionally and drop the
+  // "delete the files" answer, so the floor is a correctness bound, not a courtesy.
+  fliks: '>=3.7.0 <4.0.0',
   author: 'Fliks',
   description: 'Indexer search, download-client management and the acquisition grab pipeline for Fliks.',
   license: 'AGPL-3.0-or-later',
