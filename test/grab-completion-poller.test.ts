@@ -868,3 +868,83 @@ describe('DownloadCompletionPoller.poll — a snapshot is never built from a par
     assert.equal(pushes(h.host).length, 1);
   });
 });
+
+/**
+ * A control is answered once the client agrees, not once it acknowledges: qBittorrent returns 200
+ * on a stop/start/delete before libtorrent has caught up. The read that ends the wait is the read
+ * the published set is built from, so there is no second fetch and no window between them.
+ */
+describe('DownloadCompletionPoller.settleAndPublish', () => {
+  const torrent = (state: string) =>
+    makeTorrent({ hash: 'abc', progress: 0.5, state });
+
+  /** Reports `before` until `staleReads` reads have gone by, then `after`. */
+  function lagging(before: string, after: string, staleReads: number) {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+    let reads = 0;
+    Object.defineProperty(h.driver, 'torrentsByClient', {
+      value: {
+        get: () => ({ ok: true, torrents: [torrent(reads++ >= staleReads ? after : before)] }),
+      },
+      writable: true,
+    });
+    return { h, reads: () => reads };
+  }
+
+  const sets = (h: ReturnType<typeof buildPoller>) =>
+    h.host.calls
+      .filter((c) => c.method === 'progress.set')
+      .map((c) => c.payload as { mediaId: number; downloads: { state: string }[] });
+
+  test('VERDICT: waits until the client reports the state that was asked for', async () => {
+    const { h, reads } = lagging('downloading', 'pausedDL', 2);
+    await h.poller.settleAndPublish(h.historyRepo.rows[0]!, 'paused');
+
+    assert.ok(reads() > 2, `polled until it agreed, ${reads()} reads`);
+    assert.deepEqual(sets(h).map((s) => s.downloads.map((d) => d.state)), [['paused']]);
+  });
+
+  test('the read that ends the wait is the one published — no second fetch', async () => {
+    const { h, reads } = lagging('pausedDL', 'pausedDL', 0);
+    await h.poller.settleAndPublish(h.historyRepo.rows[0]!, 'paused');
+    assert.equal(reads(), 1);
+  });
+
+  test("VERDICT: a removal waits for the torrent to be gone, so the set it states is without it", async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [] });
+
+    await h.poller.settleAndPublish(h.historyRepo.rows[0]!, 'absent');
+
+    assert.deepEqual(sets(h), [{ mediaId: 5, downloads: [] }]);
+  });
+
+  test('a row with no media or no hash has nothing to state', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    await h.poller.settleAndPublish(makeHistoryRow({ id: 1, mediaId: null, torrentHash: 'abc' }), 'paused');
+    await h.poller.settleAndPublish(makeHistoryRow({ id: 2, mediaId: 5, torrentHash: null }), 'paused');
+    assert.deepEqual(sets(h), []);
+  });
+
+  test('publishes nothing while a client is unreachable, same rule as a tick', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+    h.driver.torrentsByClient.set(1, { ok: false, torrents: [] });
+
+    await h.poller.settleAndPublish(h.historyRepo.rows[0]!, 'absent');
+
+    assert.deepEqual(sets(h), []);
+  });
+});

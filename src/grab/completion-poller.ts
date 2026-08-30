@@ -9,6 +9,15 @@ import { identifyOrphans, resolveSeasonEpisodeIds } from './orphan-matcher';
 import { buildGrabHistoryRow } from './grab-history';
 
 type ProgressDownload = HostParams<'progress.set'>['downloads'][number];
+
+/** What a queue control asks the download client to become, so the wait knows when it is over. */
+export type ControlOutcome = 'paused' | 'running' | 'absent';
+
+/** qBittorrent answers a stop/start/delete before libtorrent has caught up: measured at up to
+ *  ~2s against a real client. Publishing on the acknowledgement stated the state that was just
+ *  changed, and nothing corrected it until the next poll. */
+const CONTROL_SETTLE_TIMEOUT_MS = 4_000;
+const CONTROL_SETTLE_INTERVAL_MS = 300;
 import { getStallConfig, type StallConfig } from './stall-config';
 import { countStalledStrikes, STALL_ELIGIBLE_STATES } from '../download-clients/stalled-progress';
 import { torrentProgressState } from './progress-state';
@@ -87,6 +96,51 @@ export class DownloadCompletionPoller {
 
   constructor(private readonly deps: CompletionPollerDeps) {}
 
+  /** Every enabled client's torrents in one read, with whether all of them answered. A failed
+   *  fetch yields an empty list indistinguishable from a client that genuinely holds nothing,
+   *  and several callers turn on telling those apart. */
+  private async fetchAllTorrents(): Promise<{ torrents: Torrent[]; allOk: boolean }> {
+    const clients = (await this.deps.clientsRepo.listEnabled()).filter((c) => this.deps.driver.supports(c));
+    const fetches = await Promise.all(
+      clients.map(async (c) => {
+        const { ok, torrents } = await this.deps.driver.getTorrentsResult(c);
+        return { ok, torrents: torrents.map((t): Torrent => ({ ...t, _clientId: c.id })) };
+      }),
+    );
+    return { torrents: fetches.flatMap((f) => f.torrents), allOk: fetches.every((f) => f.ok) };
+  }
+
+  /** Whether the client now reflects the control that was issued. A torrent that is gone is
+   *  nothing to keep waiting on, whatever was expected of it. */
+  private reached(torrents: readonly Torrent[], hash: string, expect: ControlOutcome): boolean {
+    const torrent = torrents.find((t) => t.hash.toLowerCase() === hash.toLowerCase());
+    if (!torrent) return true;
+    if (expect === 'absent') return false;
+    const state = torrentProgressState(torrent);
+    return expect === 'paused' ? state === 'paused' : state !== 'paused';
+  }
+
+  /**
+   * Wait for the client to reflect a control the operator just issued, then state that media's
+   * set from the same read. One loop, not a settle loop followed by a second fetch: the read
+   * that decides the wait is over is the read the snapshot is built from.
+   *
+   * The budget running out still publishes. The control itself succeeded, so a slow client
+   * delays the confirmation rather than turning it into an error.
+   */
+  async settleAndPublish(row: DownloadHistoryRow, expect: ControlOutcome): Promise<void> {
+    if (row.mediaId == null || !row.torrentHash) return;
+    const deadline = Date.now() + CONTROL_SETTLE_TIMEOUT_MS;
+    for (;;) {
+      const { torrents, allOk } = await this.fetchAllTorrents();
+      if (this.reached(torrents, row.torrentHash, expect) || Date.now() >= deadline) {
+        await this.publishOne(row.mediaId, torrents, allOk);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, CONTROL_SETTLE_INTERVAL_MS));
+    }
+  }
+
   /** Boot re-arm of every stranded `importing` row — nothing is in flight
    *  right after a fresh process start. Call once at startup. */
   async init(): Promise<void> {
@@ -105,17 +159,9 @@ export class DownloadCompletionPoller {
       return;
     }
 
-    const fetches = await Promise.all(
-      qbitClients.map(async (c) => {
-        const { ok, torrents } = await this.deps.driver.getTorrentsResult(c);
-        return { ok, torrents: torrents.map((t): Torrent => ({ ...t, _clientId: c.id })) };
-      }),
-    );
-    // A failed fetch yields an empty list indistinguishable from a client that
-    // genuinely holds nothing. The orphan sweep declares a torrent gone by its
-    // absence, so it runs only when every client answered.
-    const allClientsResponded = fetches.every((f) => f.ok);
-    const allTorrents = fetches.flatMap((f) => f.torrents);
+    // The orphan sweep declares a torrent gone by its absence, so it runs only when every
+    // client answered — see `fetchAllTorrents`.
+    const { torrents: allTorrents, allOk: allClientsResponded } = await this.fetchAllTorrents();
     const torrentClient = new Map(qbitClients.map((c) => [c.id, c]));
 
     await this.autoMatchOrphanTorrents(allTorrents);
@@ -354,12 +400,12 @@ export class DownloadCompletionPoller {
    * the episode it belongs to: without them every download reads as whole-media progress, which
    * shows the badge on every episode page of the show.
    */
-  private async emitDownloadProgress(
+  /** What every media currently has in flight, from one read of the clients. The one place that
+   *  answers "what is this media downloading": two builders drifting apart is the whole class of
+   *  bug the snapshot shape exists to close. */
+  private async buildSets(
     allTorrents: readonly Torrent[],
-    allClientsResponded: boolean,
-  ): Promise<void> {
-    if (!allClientsResponded) return;
-
+  ): Promise<{ byMedia: Map<number, ProgressDownload[]>; rows: DownloadHistoryRow[] }> {
     const rows = await this.deps.historyRepo.findByStatuses(['grabbed', 'importing']);
 
     // A torrent at 100% is filtered out, except while its row says importing: the flip to
@@ -393,6 +439,34 @@ export class DownloadCompletionPoller {
       });
       byMedia.set(history.mediaId!, list);
     }
+    return { byMedia, rows };
+  }
+
+  /**
+   * State one media's set. Not a tick: it says nothing about any other media, and touches none
+   * of the tick's bookkeeping. At worst the next tick re-states an empty set it already sent.
+   */
+  private async publishOne(mediaId: number, allTorrents: readonly Torrent[], allClientsResponded: boolean): Promise<void> {
+    if (!allClientsResponded) return;
+    const { byMedia } = await this.buildSets(allTorrents);
+    await this.publishSet(mediaId, byMedia.get(mediaId) ?? []);
+  }
+
+  /**
+   * State every media's complete set. A replacement, not a delta: whatever a media no longer has
+   * is retired by its absence, which is why no compensating "this one vanished" push exists.
+   *
+   * Skipped outright when a client did not answer. A snapshot built from a partial read would
+   * assert that every torrent that client holds is gone. A missed tick shows a stale percentage;
+   * a wrong snapshot erases live downloads from every viewer's screen.
+   *
+   * Season/episode numbers come from the row's ids so a series download is attributed to the
+   * episode it belongs to: without them every download reads as whole-media progress, which
+   * shows the badge on every episode page of the show.
+   */
+  private async emitDownloadProgress(allTorrents: readonly Torrent[], allClientsResponded: boolean): Promise<void> {
+    if (!allClientsResponded) return;
+    const { byMedia, rows } = await this.buildSets(allTorrents);
 
     // A media that had downloads last tick and has none now must be told so, or its viewers keep
     // the last set they saw. On the first tick of the process that memory is gone, so the rows
@@ -406,12 +480,14 @@ export class DownloadCompletionPoller {
     this.firstProgressTick = false;
     this.reportedMediaIds = new Set([...byMedia].filter(([, list]) => list.length).map(([id]) => id));
 
-    for (const [mediaId, downloads] of byMedia) {
-      // A progress push is cosmetic; the import hand-off runs after this and must not be lost with it.
-      await this.deps.host
-        .call('progress.set', { mediaId, downloads })
-        .catch((e: Error) => log.warn(`Import: progress publish failed: ${e.message}`));
-    }
+    for (const [mediaId, downloads] of byMedia) await this.publishSet(mediaId, downloads);
+  }
+
+  /** A progress push is cosmetic; the import hand-off runs after it and must not be lost with it. */
+  private async publishSet(mediaId: number, downloads: ProgressDownload[]): Promise<void> {
+    await this.deps.host
+      .call('progress.set', { mediaId, downloads })
+      .catch((e: Error) => log.warn(`Import: progress publish failed: ${e.message}`));
   }
 
   /**
