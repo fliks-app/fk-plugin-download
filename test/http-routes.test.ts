@@ -14,7 +14,7 @@ import {
   type QueueItemDto,
 } from '../src/seams/http-routes';
 import { IndexerNotFoundError } from '../src/indexers/types';
-import { DownloadClientNotFoundError } from '../src/download-clients/types';
+import { DownloadClientHttpError, DownloadClientNotFoundError, DownloadClientUnreachableError } from '../src/download-clients/types';
 import type { DownloadClientDriver } from '../src/download-clients/contract';
 import type { DownloadClientRow, DownloadHistoryRow, DownloadHistoryStatus } from '../src/db/rows';
 import { CONFIG_PAGES } from '../scripts/manifest-template';
@@ -1355,5 +1355,41 @@ describe('the history status column reads like the queue while a row runs', () =
 
   test('a running row whose client no longer holds it falls back to the record', async () => {
     assert.equal((await displayStatus('grabbed', null)).displayStatus, 'grabbed');
+  });
+});
+
+describe('an error from the download client says what the client said', () => {
+  const grabFailing = async (err: Error) => {
+    const deps = fakeDeps({
+      grabPipeline: {
+        searchReleases: async () => [],
+        grabRelease: async () => {
+          throw err;
+        },
+      } as unknown as RouteDeps['grabPipeline'],
+    });
+    const resolved = createRouteTable(deps).resolve('POST', '/5/grab')!;
+    const res = await resolved.handler(req({ method: 'POST', path: '/5/grab', body: {} }), resolved.params);
+    return res as { status: number; body: { error: { key: string; detail: string } } };
+  };
+
+  test('VERDICT: a refusal from the client is a 502 naming it, not a generic internal error', async () => {
+    const res = await grabFailing(new DownloadClientHttpError(409, 'the download client refused the torrent (HTTP 409)'));
+    assert.equal(res.status, 502);
+    assert.equal(res.body.error.key, 'download.http.errors.download_client');
+    assert.equal(res.body.error.detail, 'the download client refused the torrent (HTTP 409)');
+  });
+
+  test('an unreachable client reads the same way', async () => {
+    const res = await grabFailing(new DownloadClientUnreachableError('no host configured'));
+    assert.equal(res.status, 502);
+    assert.equal(res.body.error.detail, 'no host configured');
+  });
+
+  test('anything else stays internal, and still carries its message', async () => {
+    const res = await grabFailing(new Error('boom'));
+    assert.equal(res.status, 500);
+    assert.equal(res.body.error.key, 'download.http.errors.internal');
+    assert.equal(res.body.error.detail, 'boom');
   });
 });

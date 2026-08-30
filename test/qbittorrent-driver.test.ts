@@ -450,3 +450,49 @@ test('a refusal neither spelling answers is reported, never swallowed as success
     await server.close();
   }
 });
+
+test('VERDICT: a torrent the client already holds is reused, not re-added', async () => {
+  const held = makeTorrent({ hash: 'a'.repeat(40) });
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [held] });
+  try {
+    const hash = await new QbittorrentDriver().addTorrentUrl(
+      clientFor(server.url),
+      `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+    );
+    assert.equal(hash, 'a'.repeat(40));
+    // The add is what qBittorrent answers 409 to; not making it is the fix.
+    assert.equal(server.requests.some((r) => r.path === '/api/v2/torrents/add'), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a torrent it does not hold is added as before', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [] });
+  try {
+    await new QbittorrentDriver().addTorrentUrl(clientFor(server.url), `magnet:?xt=urn:btih:${'b'.repeat(40)}`);
+    assert.ok(server.requests.some((r) => r.path === '/api/v2/torrents/add'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('an unattended grab still refuses a torrent already held, without adding it', async () => {
+  const held = makeTorrent({ hash: 'a'.repeat(40) });
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [held] });
+  try {
+    await assert.rejects(
+      () =>
+        new QbittorrentDriver().addTorrentUrl(
+          clientFor(server.url),
+          `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+          undefined,
+          true,
+        ),
+      TorrentAlreadyPresentError,
+    );
+    assert.equal(server.requests.some((r) => r.path === '/api/v2/torrents/add'), false);
+  } finally {
+    await server.close();
+  }
+});

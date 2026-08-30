@@ -42,7 +42,7 @@ export interface ReleasePipelineDeps {
   driver: DownloadClientDriver;
   indexersRepo: Pick<IndexersRepository, 'listEnabled'>;
   clientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
-  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab'>;
+  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab' | 'findLatestByTorrentHash'>;
   /** The plugin's own `blocklist` table — core cannot see it, so every
    *  `releases.score` call declares `blocked` per release itself
    *  (`src/host-methods.ts`'s doc-comment on that field). */

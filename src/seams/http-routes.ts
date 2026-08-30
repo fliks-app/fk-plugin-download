@@ -14,7 +14,10 @@ import {
   type UpdateIndexerInput,
 } from './indexers';
 import {
+  DownloadClientAuthError,
+  DownloadClientHttpError,
   DownloadClientNotFoundError,
+  DownloadClientUnreachableError,
   UnsupportedDownloadClientError,
   type ClientTorrent,
   type CreateDownloadClientInput,
@@ -883,6 +886,18 @@ function wrap(handler: RouteHandler): RouteHandler {
       }
       if (err instanceof UnknownIndexerImplementationError || err instanceof UnsupportedDownloadClientError) {
         return badBody('implementation');
+      }
+      // The download client refusing, or not answering, is not this plugin going wrong: naming it
+      // as internal buried what the client actually said behind a generic sentence.
+      if (
+        err instanceof DownloadClientHttpError ||
+        err instanceof DownloadClientUnreachableError ||
+        err instanceof DownloadClientAuthError
+      ) {
+        log.error(`download client refused the request: ${(err as Error).message}`);
+        return jsonResponse(502, {
+          error: { key: 'download.http.errors.download_client', detail: (err as Error).message },
+        });
       }
       log.error(`http handler failed: ${(err as Error).message}`);
       return jsonResponse(500, { error: { key: 'download.http.errors.internal', detail: (err as Error).message } });
