@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildBaseUrl, QbittorrentDriver } from '../src/download-clients/qbittorrent-driver';
-import { TorrentAlreadyPresentError, TorrentHashUnresolvedError } from '../src/download-clients/types';
+import {
+  DownloadClientHttpError,
+  ReleaseUnobtainableError,
+  TorrentAlreadyPresentError,
+  TorrentHashUnresolvedError,
+} from '../src/download-clients/types';
 import type { DownloadClientRow } from '../src/db/rows';
 import { log } from '../src/log';
 import { FakeQbitServer, makeTorrent } from './fake-qbittorrent-server';
@@ -497,43 +502,37 @@ test('an unattended grab still refuses a torrent already held, without adding it
   }
 });
 
-test('VERDICT: a reused torrent is moved into the category the queue reads, or it stays invisible', async () => {
+test('VERDICT: a torrent held in the managed category is reused; one held outside it is not touched', async () => {
   const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent({ hash: 'a'.repeat(40) })] });
-  server.categories.add('fliks');
+  server.categoryByHash.set('a'.repeat(40), 'someone-elses');
   try {
-    await new QbittorrentDriver().addTorrentUrl(
-      clientFor(server.url, { category: 'fliks' }),
-      `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+    // The snapshot is scoped to the client's own category, so this torrent is not "held" to us.
+    // qBittorrent then answers the add with 409, and that is a release we cannot have.
+    server.addStatus = 409;
+    await assert.rejects(
+      () =>
+        new QbittorrentDriver().addTorrentUrl(
+          clientFor(server.url, { category: 'fliks' }),
+          `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+        ),
+      ReleaseUnobtainableError,
     );
-    assert.equal(server.categoryByHash.get('a'.repeat(40)), 'fliks');
-  } finally {
-    await server.close();
-  }
-});
-
-test('a category the client does not know yet is created, then used', async () => {
-  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent({ hash: 'a'.repeat(40) })] });
-  try {
-    await new QbittorrentDriver().addTorrentUrl(
-      clientFor(server.url, { category: 'brand-new' }),
-      `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
-    );
-    assert.ok(server.categories.has('brand-new'));
-    assert.equal(server.categoryByHash.get('a'.repeat(40)), 'brand-new');
-  } finally {
-    await server.close();
-  }
-});
-
-test('a client with no category configured needs no adoption', async () => {
-  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent({ hash: 'a'.repeat(40) })] });
-  try {
-    const hash = await new QbittorrentDriver().addTorrentUrl(
-      clientFor(server.url),
-      `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
-    );
-    assert.equal(hash, 'a'.repeat(40));
+    // Never recategorised: it is a download the user arranged themselves.
+    assert.equal(server.categoryByHash.get('a'.repeat(40)), 'someone-elses');
     assert.equal(server.requests.some((r) => r.path.endsWith('/setCategory')), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a client refusal that is not a duplicate stays a client error, so no other release is tried', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [] });
+  server.addStatus = 415;
+  try {
+    await assert.rejects(
+      () => new QbittorrentDriver().addTorrentUrl(clientFor(server.url), `magnet:?xt=urn:btih:${'b'.repeat(40)}`),
+      DownloadClientHttpError,
+    );
   } finally {
     await server.close();
   }

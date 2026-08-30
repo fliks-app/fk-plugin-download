@@ -760,6 +760,8 @@ export const I18N = {
     'download.grab.errors.no_download_client': 'No enabled download client is configured',
     'download.grab.errors.unprofiled': 'This title has no quality profile — nothing to grab',
     'download.grab.errors.blocklisted': 'This release is blocklisted',
+    'download.grab.errors.releases_unobtainable':
+      'No release could be fetched. Last reason: {{detail}}',
     'download.queue.removed_by_user': 'Removed from the queue by a user',
     'download.queue.errors.not_controllable': 'This download can no longer be controlled',
     'download.queue.errors.no_torrent': 'No download client holds this release yet',
@@ -935,6 +937,8 @@ export const I18N = {
     'download.grab.errors.no_download_client': 'Aucun client de téléchargement actif n’est configuré',
     'download.grab.errors.unprofiled': 'Ce titre n’a pas de profil de qualité — rien à télécharger',
     'download.grab.errors.blocklisted': 'Cette release est sur liste de blocage',
+    'download.grab.errors.releases_unobtainable':
+      'Aucune release n’a pu être récupérée. Dernière raison : {{detail}}',
     'download.queue.removed_by_user': "Retiré de la file d'attente par un utilisateur",
     'download.queue.errors.not_controllable': 'Ce téléchargement ne peut plus être piloté',
     'download.queue.errors.no_torrent': 'Aucun client de téléchargement ne détient encore cette release',

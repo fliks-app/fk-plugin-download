@@ -85,14 +85,29 @@ export function pickRelease<T extends Pick<ScoredRelease, 'rank' | 'rejections'>
   sorted: T[],
   want: AcquisitionWant,
 ): T | undefined {
-  if (!want) return undefined;
+  return pickReleases(sorted, want)[0];
+}
+
+/** How many dead links one grab will walk past before giving up. An indexer handing out broken
+ *  URLs should not cost a fetch per candidate it returned. */
+export const MAX_RELEASE_ATTEMPTS = 3;
+
+/**
+ * Every release eligible under `want`, best first — the same predicate {@link pickRelease}
+ * applies, kept as a list so a caller can fall through to the next one when the indexer cannot
+ * hand over the file it advertised. Capped: see {@link MAX_RELEASE_ATTEMPTS}.
+ */
+export function pickReleases<T extends Pick<ScoredRelease, 'rank' | 'rejections'>>(
+  sorted: T[],
+  want: AcquisitionWant,
+  limit = MAX_RELEASE_ATTEMPTS,
+): T[] {
+  if (!want) return [];
   // A title that already satisfies its profile is searchable by hand, never picked for the user.
-  if (want.decision === 'skip') return undefined;
-  return sorted.find((r) => {
-    if (r.rejections.length > 0) return false;
-    if (r.rank <= want.minRankExclusive || r.rank > want.maxRankInclusive) return false;
-    return true;
-  });
+  if (want.decision === 'skip') return [];
+  return sorted
+    .filter((r) => r.rejections.length === 0 && r.rank > want.minRankExclusive && r.rank <= want.maxRankInclusive)
+    .slice(0, limit);
 }
 
 /** `${code}: ${detail}` when present, else just the code — matches
