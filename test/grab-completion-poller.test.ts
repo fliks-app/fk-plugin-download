@@ -948,3 +948,55 @@ describe('DownloadCompletionPoller.settleAndPublish', () => {
     assert.deepEqual(sets(h), []);
   });
 });
+
+/**
+ * The reuse path records a `grabbed` row against a torrent the client already had. When that
+ * torrent is already finished there is no download left to wait for, so the import is the only
+ * thing that can still happen for it — and it has to happen on the very next tick.
+ */
+describe('DownloadCompletionPoller.poll — a reused torrent that is already complete', () => {
+  function withCompletedTorrent(rows: Parameters<typeof makeHistoryRow>[0][]) {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.driver.torrentsByClient.set(1, {
+      ok: true,
+      torrents: [makeTorrent({ hash: 'abc', progress: 1, state: 'stalledUP', save_path: '/downloads' })],
+    });
+    h.driver.filesByHash.set('abc', [{ name: 'Show.S01E01.mkv', size: 10, progress: 1, priority: 1 }]);
+    h.host.on('library.ingest', () => ({
+      imported: [{ mediaFileId: 1, relativePath: 'Show.S01E01.mkv', quality: 'Bluray-1080p' }],
+      alreadyPresent: [],
+    }));
+    for (const row of rows) h.historyRepo.rows.push(makeHistoryRow(row));
+    return h;
+  }
+
+  /** Which history row the import ran for — the key core dedupes a retried ingest on. */
+  const importedRowIds = (h: ReturnType<typeof buildPoller>) =>
+    h.host.calls
+      .filter((c) => c.method === 'library.ingest')
+      .map((c) => Number((c.payload as { idempotencyKey: string }).idempotencyKey.split(':')[1]));
+
+  test('VERDICT: the import fires on the next tick, with no download to wait for', async () => {
+    const h = withCompletedTorrent([{ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }]);
+
+    await h.poller.poll();
+
+    assert.deepEqual(importedRowIds(h), [1]);
+    assert.equal(h.historyRepo.rows.find((r) => r.id === 1)?.status, 'completed');
+  });
+
+  test('VERDICT: the fresh row wins over the failed ones sharing that hash', async () => {
+    // Re-grabbing a release whose earlier attempts failed leaves several rows on one hash.
+    const h = withCompletedTorrent([
+      { id: 1, status: 'failed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 },
+      { id: 2, status: 'failed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 },
+      { id: 3, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 },
+    ]);
+
+    await h.poller.poll();
+
+    assert.deepEqual(importedRowIds(h), [3]);
+    assert.equal(h.historyRepo.rows.find((r) => r.id === 3)?.status, 'completed');
+  });
+});
