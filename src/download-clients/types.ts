@@ -30,6 +30,17 @@ export class DownloadClientHttpError extends Error {
     super(message);
   }
 }
+/**
+ * This particular release cannot be had: the indexer would not hand over the .torrent (a dead
+ * link, a tracker 500, a redirect loop), or the download client already holds it outside the
+ * category Fliks manages.
+ *
+ * Distinct from the download-client errors because the remedy differs. Another candidate is a
+ * different file, often from a different tracker, so it is worth trying; a client that refuses
+ * would refuse every one of them for the same reason.
+ */
+export class ReleaseUnobtainableError extends Error {}
+
 export class TorrentAlreadyPresentError extends Error {}
 /** The contract requires `addTorrentUrl` to reject rather than resolve with an
  *  empty hash — thrown when neither the upfront extractors nor the list-diff

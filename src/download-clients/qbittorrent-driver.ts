@@ -9,6 +9,7 @@ import {
   DownloadClientUnreachableError,
   TorrentAlreadyPresentError,
   TorrentHashUnresolvedError,
+  ReleaseUnobtainableError,
   type QbittorrentSettings,
 } from './types';
 
@@ -95,9 +96,13 @@ async function parseJsonArray(res: Response): Promise<unknown[] | null> {
   return Array.isArray(parsed) ? parsed : null;
 }
 
-async function snapshotHashes(base: string, cookie: string): Promise<Set<string>> {
+/** Scoped to the category this client manages, exactly like `getTorrentsResult`. Reading every
+ *  category instead made a torrent sitting outside it look held to a grab and absent to the
+ *  queue, so the grab reported success into a row the queue then dropped. */
+async function snapshotHashes(base: string, cookie: string, category: string): Promise<Set<string>> {
   try {
-    const res = await httpRequest(`${base}/api/v2/torrents/info`, { headers: { Cookie: cookie }, timeoutMs: 60_000 });
+    const qs = category ? `?category=${encodeURIComponent(category)}` : '';
+    const res = await httpRequest(`${base}/api/v2/torrents/info${qs}`, { headers: { Cookie: cookie }, timeoutMs: 60_000 });
     const parsed = await parseJsonArray(res);
     if (!parsed) return new Set();
     return new Set(
@@ -142,21 +147,21 @@ async function fetchTorrentOrMagnet(startUrl: string, maxHops = 5): Promise<{ bu
       res = await httpRequest(url, { timeoutMs: 30_000, redirect: 'manual' });
     } catch (e) {
       const cause = (e as { cause?: Error }).cause;
-      throw new DownloadClientUnreachableError(`could not fetch the torrent from the indexer: ${cause?.message ?? (e as Error).message}`);
+      throw new ReleaseUnobtainableError(`could not fetch the torrent from the indexer: ${cause?.message ?? (e as Error).message}`);
     }
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
-      if (!location) throw new DownloadClientHttpError(res.status, `indexer redirected without a Location header (HTTP ${res.status})`);
+      if (!location) throw new ReleaseUnobtainableError(`the indexer redirected without a Location header (HTTP ${res.status})`);
       if (location.startsWith('magnet:')) return { magnet: location };
       url = new URL(location, url).toString();
       continue;
     }
     if (res.status !== 200) {
-      throw new DownloadClientHttpError(res.status, `indexer returned HTTP ${res.status} for the torrent download`);
+      throw new ReleaseUnobtainableError(`the indexer returned HTTP ${res.status} for this release's download`);
     }
     return { buffer: Buffer.from(await res.arrayBuffer()) };
   }
-  throw new Error(`indexer redirect chain exceeded ${maxHops} hops`);
+  throw new ReleaseUnobtainableError(`the indexer's redirect chain exceeded ${maxHops} hops`);
 }
 
 async function addMagnet(base: string, cookie: string, magnetUrl: string, category: string): Promise<Response> {
@@ -348,25 +353,56 @@ export class QbittorrentDriver implements DownloadClientDriver {
     // Snapshot before the add so a hash the upfront extractors missed can be
     // recovered by diffing, and so a duplicate add (the client dedupes by hash,
     // creating nothing) can be detected and rejected when asked to.
-    const beforeHashes = await snapshotHashes(base, cookie);
+    const beforeHashes = await snapshotHashes(base, cookie, category);
+
+    /**
+     * An infohash identifies the content, so a torrent the client already holds *is* the release
+     * being grabbed: there is nothing to add and nothing to re-download. Deciding this before the
+     * add matters — qBittorrent answers a duplicate with 409, which used to surface as "the
+     * download client refused the torrent" on a release that was already there, sometimes
+     * already finished.
+     */
+    const alreadyHeld = async (hash: string | undefined): Promise<string | undefined> => {
+      if (!hash || !beforeHashes.has(hash.toLowerCase())) return undefined;
+      if (rejectIfAlreadyPresent) {
+        throw new TorrentAlreadyPresentError(`torrent ${hash} is already in the download client`);
+      }
+      return hash;
+    };
 
     let infoHash: string | undefined;
     let addRes: Response;
 
     if (url.startsWith('magnet:')) {
       infoHash = extractMagnetInfoHash(url);
+      const held = await alreadyHeld(infoHash);
+      if (held) return held;
       addRes = await addMagnet(base, cookie, url, category);
     } else {
       const fetched = await fetchTorrentOrMagnet(url);
       if ('magnet' in fetched) {
         infoHash = extractMagnetInfoHash(fetched.magnet);
+        const held = await alreadyHeld(infoHash);
+        if (held) return held;
         addRes = await addMagnet(base, cookie, fetched.magnet, category);
       } else {
         infoHash = computeInfoHash(fetched.buffer);
+        const held = await alreadyHeld(infoHash);
+        if (held) return held;
         addRes = await addTorrentFile(base, cookie, fetched.buffer, category);
       }
     }
 
+    // 409 is how qBittorrent reports a torrent it already holds. The snapshot above covers the
+    // category this client manages, so reaching here means it sits outside it: someone else's
+    // torrent, or one added by hand. Fliks does not take it over — moving it would reach into a
+    // download the user arranged themselves — so the release is unobtainable and the caller is
+    // free to try the next one.
+    if (addRes.status === 409) {
+      throw new ReleaseUnobtainableError(
+        'the download client already holds this torrent, outside the category Fliks manages',
+      );
+    }
     if (addRes.status !== 200) {
       throw new DownloadClientHttpError(addRes.status, `the download client refused the torrent (HTTP ${addRes.status})`);
     }
@@ -378,8 +414,9 @@ export class QbittorrentDriver implements DownloadClientDriver {
       throw new TorrentHashUnresolvedError('could not determine the hash of the torrent that was just added');
     }
 
-    // The add above created nothing when the torrent was already present (the
-    // client dedupes by hash), so refusing after the fact costs nothing.
+    // Only reachable when the hash could not be read before the add: the checks above return
+    // or throw otherwise. The add created nothing in that case (the client dedupes by hash),
+    // so refusing after the fact costs nothing.
     if (rejectIfAlreadyPresent && beforeHashes.has(infoHash.toLowerCase())) {
       throw new TorrentAlreadyPresentError(`torrent ${infoHash} is already in the download client`);
     }

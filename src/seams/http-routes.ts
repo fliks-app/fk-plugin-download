@@ -14,7 +14,10 @@ import {
   type UpdateIndexerInput,
 } from './indexers';
 import {
+  DownloadClientAuthError,
+  DownloadClientHttpError,
   DownloadClientNotFoundError,
+  DownloadClientUnreachableError,
   UnsupportedDownloadClientError,
   type ClientTorrent,
   type CreateDownloadClientInput,
@@ -450,11 +453,29 @@ async function handleQueueRemove(deps: RouteDeps, req: PluginHttpRequest, params
   return jsonResponse(200, {});
 }
 
-/** Deletes one history row outright — the operator asked for the record itself to go. */
+/**
+ * Deletes one history row outright. Refused only while a client is positively still holding its
+ * torrent: the row is the only link between that torrent and its media, so dropping it would not
+ * stop the download, it would orphan it — and `autoMatchOrphanTorrents` recreates a row for a
+ * torrent it still finds, so the deletion would not even stick. Cancelling belongs to the queue.
+ *
+ * The test is a sighting, never the recorded status. A row can read `grabbed` with nothing behind
+ * it — a torrent deleted outside Fliks, or one the queue cannot show — and gating on the status
+ * left such a row impossible to cancel (it is not in the queue) and impossible to delete (it does
+ * not read as finished). A record with nothing running behind it is just a record.
+ */
 async function handleDeleteHistoryEntry(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
   const id = requireIntParam(params, 'id');
   if (id === null) return badRequest('id');
-  if (!(await deps.downloadHistory.findById(id))) return notFoundResponse(String(id));
+  const row = await deps.downloadHistory.findById(id);
+  if (!row) return notFoundResponse(String(id));
+
+  if (row.torrentHash) {
+    const { byClientId } = await indexClientTorrents(deps);
+    if (liveTorrentFor(row, byClientId)) {
+      return jsonResponse(409, { error: { key: 'download.config.history.errors.still_running', detail: row.status } });
+    }
+  }
   await deps.downloadHistory.remove(id);
   return jsonResponse(200, {});
 }
@@ -658,6 +679,9 @@ interface HistoryItemDto extends MediaLabelled {
   /** Null on rows grabbed before the column existed — the view omits it then. */
   size: number | null;
   status: DownloadHistoryStatus;
+  /** What the status column renders: the live client state while the row is running, the
+   *  recorded status once it is not. `status` stays what it was, since the filter queries it. */
+  displayStatus: string;
   statusMessage: string | null;
   grabSource: GrabSource;
   source: string;
@@ -667,6 +691,27 @@ interface HistoryItemDto extends MediaLabelled {
    *  offers none, rather than a Pause that cannot know whether it applies. */
   state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing' | null;
   progress: number | null;
+}
+
+/**
+ * What the status column renders. A row still in flight reads as its client reports it, so the
+ * history and the queue agree; a terminal row reads as what was recorded.
+ *
+ * `missing` is the case in between: every client answered and none holds this row's torrent, so
+ * it is gone. The record waits out the orphan grace before being stamped failed — a torrent can
+ * be briefly absent across a client restart or a recheck — but the badge has no reason to keep
+ * saying "grabbed" about something nothing is downloading.
+ */
+function displayStatusOf(
+  row: DownloadHistoryRow,
+  live: ClientTorrent | undefined,
+  anyUnreachable: boolean,
+): string {
+  if (row.status === 'importing') return 'importing';
+  if (live) return torrentProgressState(live);
+  if (!QUEUE_STATUSES.includes(row.status)) return row.status;
+  // A client that could not be asked is not evidence that its torrents are gone.
+  return !anyUnreachable && row.torrentHash ? 'missing' : row.status;
 }
 
 /** Every grab ever recorded, newest first — the queue only shows what is still in flight.
@@ -682,7 +727,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
   // The client sweep is what lets a still-running row here carry its live state, so the same
   // controls the queue offers can be state-gated here too. One pass per page view, where the
   // queue does one every refresh tick.
-  const [{ rows, total }, indexers, { byClientId }] = await Promise.all([
+  const [{ rows, total }, indexers, { byClientId, anyUnreachable }] = await Promise.all([
     deps.downloadHistory.listPage(pageSize, (page - 1) * pageSize, { ...(q ? { q } : {}), ...(status ? { status } : {}) }),
     deps.indexerService.findAll(),
     indexClientTorrents(deps),
@@ -702,6 +747,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
       quality: row.quality,
       size: row.size || null,
       status: row.status,
+      displayStatus: displayStatusOf(row, live, anyUnreachable),
       statusMessage: row.statusMessage,
       grabSource: row.grabSource,
       source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
@@ -867,6 +913,18 @@ function wrap(handler: RouteHandler): RouteHandler {
       }
       if (err instanceof UnknownIndexerImplementationError || err instanceof UnsupportedDownloadClientError) {
         return badBody('implementation');
+      }
+      // The download client refusing, or not answering, is not this plugin going wrong: naming it
+      // as internal buried what the client actually said behind a generic sentence.
+      if (
+        err instanceof DownloadClientHttpError ||
+        err instanceof DownloadClientUnreachableError ||
+        err instanceof DownloadClientAuthError
+      ) {
+        log.error(`download client refused the request: ${(err as Error).message}`);
+        return jsonResponse(502, {
+          error: { key: 'download.http.errors.download_client', detail: (err as Error).message },
+        });
       }
       log.error(`http handler failed: ${(err as Error).message}`);
       return jsonResponse(500, { error: { key: 'download.http.errors.internal', detail: (err as Error).message } });

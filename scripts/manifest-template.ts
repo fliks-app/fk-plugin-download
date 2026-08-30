@@ -92,11 +92,15 @@ const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
   },
   {
     kind: 'proxy' as const,
-    labelKey: 'download.config.queue.actions.remove',
+    labelKey: 'download.config.queue.actions.cancel',
     method: 'DELETE' as const,
     path: '/queue/:id',
-    confirmKey: 'download.config.queue.actions.remove_confirm',
-    confirmToggle: { labelKey: 'download.config.queue.actions.remove_delete_files', param: 'deleteFiles' },
+    confirmKey: 'download.config.queue.actions.cancel_confirm',
+    confirmToggle: {
+      labelKey: 'download.config.queue.actions.cancel_delete_files',
+      hintKey: 'download.config.queue.actions.cancel_delete_files_hint',
+      param: 'deleteFiles',
+    },
     tone: 'danger' as const,
     when: WHEN_QUEUE_CONTROL,
     visibleWhen: { key: stateKey, in: ['queued', 'active', 'stalled', 'paused'] },
@@ -601,9 +605,15 @@ export const CONFIG_PAGES = [
       },
       { key: 'grabSource', labelKey: 'download.config.history.columns.grab_source', nowrap: true },
       {
-        key: 'status',
+        key: 'displayStatus',
         labelKey: 'download.config.history.columns.status',
+        // Both vocabularies: a running row reads exactly as it does in the queue, a finished one
+        // reads as what was recorded.
         labelKeys: {
+          queued: 'download.config.queue.states.queued',
+          active: 'download.config.queue.states.active',
+          stalled: 'download.config.queue.states.stalled',
+          paused: 'download.config.queue.states.paused',
           grabbed: 'download.config.history.filters.status_grabbed',
           importing: 'download.status.importing',
           completed: 'download.config.history.filters.status_completed',
@@ -611,6 +621,10 @@ export const CONFIG_PAGES = [
           warning: 'download.config.history.filters.status_warning',
         },
         badges: {
+          queued: 'neutral' as const,
+          active: 'info' as const,
+          stalled: 'warning' as const,
+          paused: 'ghost' as const,
           grabbed: 'info' as const,
           importing: 'primary' as const,
           completed: 'success' as const,
@@ -639,6 +653,9 @@ export const CONFIG_PAGES = [
         confirmKey: 'download.config.history.actions.delete_confirm',
         tone: 'danger' as const,
         when: WHEN_QUEUE_CONTROL,
+        // Not gated on the status: a row can read `grabbed` with no torrent behind it, and
+        // hiding the button then left it with no way out at all. The route refuses on a
+        // sighting instead.
       },
     ],
     listActions: [
@@ -674,6 +691,7 @@ export const I18N = {
     'download.config.history.filters.status_label': 'Status',
     'download.config.history.filters.status_all': 'All statuses',
     'download.config.history.filters.status_grabbed': 'Grabbed',
+    'download.config.history.states.missing': 'Gone from the client',
     'download.config.history.filters.status_completed': 'Completed',
     'download.config.history.filters.status_failed': 'Failed',
     'download.config.history.filters.status_warning': 'Warning',
@@ -743,7 +761,9 @@ export const I18N = {
     'download.grab.errors.no_download_client': 'No enabled download client is configured',
     'download.grab.errors.unprofiled': 'This title has no quality profile — nothing to grab',
     'download.grab.errors.blocklisted': 'This release is blocklisted',
-    'download.queue.removed_by_user': 'Removed from the queue by an operator',
+    'download.grab.errors.releases_unobtainable':
+      'No release could be fetched. Last reason: {{detail}}',
+    'download.queue.removed_by_user': 'Removed from the queue by a user',
     'download.queue.errors.not_controllable': 'This download can no longer be controlled',
     'download.queue.errors.no_torrent': 'No download client holds this release yet',
     'download.grab.errors.quality_not_allowed': "This release's quality is not allowed by the profile",
@@ -754,7 +774,8 @@ export const I18N = {
     'download.http.errors.not_ready': 'The plugin is still starting up',
     'download.http.errors.bad_param': 'Invalid or missing path parameter',
     'download.http.errors.bad_body': 'Invalid or missing field in the request body',
-    'download.http.errors.internal': 'Something went wrong handling this request',
+    'download.http.errors.internal': 'Something went wrong handling this request: {{detail}}',
+    'download.http.errors.download_client': 'The download client returned: {{detail}}',
     'download.config.indexers.title': 'Indexers',
     'download.config.indexers.implementations.torznab': 'Torznab',
     'download.config.indexers.fields.base_url': 'Base URL',
@@ -814,12 +835,17 @@ export const I18N = {
     'download.config.history.grab_source.manual': 'Manual',
     'download.config.queue.actions.pause': 'Pause',
     'download.config.queue.actions.resume': 'Resume',
-    'download.config.queue.actions.remove': 'Remove',
-    'download.config.queue.actions.remove_confirm':
-      'Remove this download from its client? It will stop and leave the queue.',
-    'download.config.queue.actions.remove_delete_files': 'Also delete the downloaded files',
-    'download.config.history.actions.delete': 'Delete',
-    'download.config.history.actions.delete_confirm': 'Delete this history entry?',
+    'download.config.queue.actions.cancel': 'Cancel download',
+    'download.config.queue.actions.cancel_confirm':
+      'Stop this download and remove it from its download client? It leaves the queue either way.',
+    'download.config.queue.actions.cancel_delete_files': 'Also delete the files held by the download client',
+    'download.config.queue.actions.cancel_delete_files_hint':
+      'Anything already imported into your library is kept.',
+    'download.config.history.actions.delete': 'Delete entry',
+    'download.config.history.actions.delete_confirm':
+      'Delete this entry? It only removes the record; no file is touched.',
+    'download.config.history.errors.still_running':
+      'This grab is still running. Cancel it from the queue first.',
     'download.config.history.actions.clear': 'Clear history',
     'download.config.history.actions.clear_confirm':
       'Delete every finished, failed and warned entry? Downloads still running are kept.',
@@ -849,6 +875,7 @@ export const I18N = {
     'download.config.history.filters.status_label': 'Statut',
     'download.config.history.filters.status_all': 'Tous les statuts',
     'download.config.history.filters.status_grabbed': 'Récupéré',
+    'download.config.history.states.missing': 'Absent du client',
     'download.config.history.filters.status_completed': 'Terminé',
     'download.config.history.filters.status_failed': 'Échoué',
     'download.config.history.filters.status_warning': 'Avertissement',
@@ -912,7 +939,9 @@ export const I18N = {
     'download.grab.errors.no_download_client': 'Aucun client de téléchargement actif n’est configuré',
     'download.grab.errors.unprofiled': 'Ce titre n’a pas de profil de qualité — rien à télécharger',
     'download.grab.errors.blocklisted': 'Cette release est sur liste de blocage',
-    'download.queue.removed_by_user': "Retiré de la file d'attente par un opérateur",
+    'download.grab.errors.releases_unobtainable':
+      'Aucune release n’a pu être récupérée. Dernière raison : {{detail}}',
+    'download.queue.removed_by_user': "Retiré de la file d'attente par un utilisateur",
     'download.queue.errors.not_controllable': 'Ce téléchargement ne peut plus être piloté',
     'download.queue.errors.no_torrent': 'Aucun client de téléchargement ne détient encore cette release',
     'download.grab.errors.quality_not_allowed': 'La qualité de cette release n’est pas autorisée par le profil',
@@ -921,7 +950,8 @@ export const I18N = {
     'download.http.errors.not_ready': 'Le plugin est encore en cours de démarrage',
     'download.http.errors.bad_param': 'Paramètre d’URL invalide ou manquant',
     'download.http.errors.bad_body': 'Champ invalide ou manquant dans le corps de la requête',
-    'download.http.errors.internal': 'Une erreur est survenue lors du traitement de cette requête',
+    'download.http.errors.internal': 'Une erreur est survenue lors du traitement de cette requête : {{detail}}',
+    'download.http.errors.download_client': 'Le client de téléchargement a retourné : {{detail}}',
     'download.config.indexers.title': 'Indexeurs',
     'download.config.indexers.implementations.torznab': 'Torznab',
     'download.config.indexers.fields.base_url': 'URL de base',
@@ -981,12 +1011,17 @@ export const I18N = {
     'download.config.history.grab_source.manual': 'Manuelle',
     'download.config.queue.actions.pause': 'Mettre en pause',
     'download.config.queue.actions.resume': 'Reprendre',
-    'download.config.queue.actions.remove': 'Supprimer',
-    'download.config.queue.actions.remove_confirm':
-      "Retirer ce téléchargement de son client ? Il s'arrêtera et quittera la file d'attente.",
-    'download.config.queue.actions.remove_delete_files': 'Supprimer aussi les fichiers téléchargés',
-    'download.config.history.actions.delete': 'Supprimer',
-    'download.config.history.actions.delete_confirm': 'Supprimer cette entrée de l’historique ?',
+    'download.config.queue.actions.cancel': 'Annuler le téléchargement',
+    'download.config.queue.actions.cancel_confirm':
+      "Arrêter ce téléchargement et le retirer de son client ? Il quitte la file d'attente dans tous les cas.",
+    'download.config.queue.actions.cancel_delete_files': 'Supprimer aussi les fichiers détenus par le client de téléchargement',
+    'download.config.queue.actions.cancel_delete_files_hint':
+      'Ce qui est déjà importé dans votre bibliothèque est conservé.',
+    'download.config.history.actions.delete': "Supprimer l'entrée",
+    'download.config.history.actions.delete_confirm':
+      "Supprimer cette entrée ? Cela retire seulement l'enregistrement, aucun fichier n'est touché.",
+    'download.config.history.errors.still_running':
+      "Ce téléchargement est encore en cours. Annulez-le depuis la file d'attente d'abord.",
     'download.config.history.actions.clear': 'Vider l’historique',
     'download.config.history.actions.clear_confirm':
       'Supprimer toutes les entrées terminées, échouées et en avertissement ? Les téléchargements en cours sont conservés.',

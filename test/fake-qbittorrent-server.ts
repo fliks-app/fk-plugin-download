@@ -77,6 +77,11 @@ export class FakeQbitServer {
    *  `pause`/`resume` to `stop`/`start`; whichever pair is not this generation's 404s,
    *  as a real one does. `none` answers neither — a client too old or too broken for both. */
   controlGeneration: 'v5' | 'v4' | 'none' = 'v5';
+  /** Categories the server knows. `setCategory` answers 409 for anything else, as qBittorrent
+   *  does, until `createCategory` adds it. */
+  readonly categories = new Set<string>();
+  /** Category each torrent currently sits in, by hash. */
+  readonly categoryByHash = new Map<string, string>();
 
   private readonly sessions = new Set<string>();
 
@@ -133,6 +138,22 @@ export class FakeQbitServer {
     }
     if (req.method === 'POST' && url.pathname === '/api/v2/torrents/delete') {
       return this.handleDelete(body, res);
+    }
+    if (req.method === 'POST' && url.pathname === '/api/v2/torrents/createCategory') {
+      this.categories.add(new URLSearchParams(body.toString('utf8')).get('category') ?? '');
+      res.writeHead(200).end();
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/v2/torrents/setCategory') {
+      const params = new URLSearchParams(body.toString('utf8'));
+      const category = params.get('category') ?? '';
+      if (!this.categories.has(category)) {
+        res.writeHead(409).end();
+        return;
+      }
+      for (const hash of (params.get('hashes') ?? '').split('|')) this.categoryByHash.set(hash, category);
+      res.writeHead(200).end();
+      return;
     }
     if (req.method === 'POST' && url.pathname.startsWith('/api/v2/torrents/')) {
       const known = CONTROL_NAMES[this.controlGeneration];

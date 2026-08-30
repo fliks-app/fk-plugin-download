@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildBaseUrl, QbittorrentDriver } from '../src/download-clients/qbittorrent-driver';
-import { TorrentAlreadyPresentError, TorrentHashUnresolvedError } from '../src/download-clients/types';
+import {
+  DownloadClientHttpError,
+  ReleaseUnobtainableError,
+  TorrentAlreadyPresentError,
+  TorrentHashUnresolvedError,
+} from '../src/download-clients/types';
 import type { DownloadClientRow } from '../src/db/rows';
 import { log } from '../src/log';
 import { FakeQbitServer, makeTorrent } from './fake-qbittorrent-server';
@@ -446,6 +451,88 @@ test('a refusal neither spelling answers is reported, never swallowed as success
   server.controlGeneration = 'none';
   try {
     await assert.rejects(() => new QbittorrentDriver().pauseTorrent(clientFor(server.url), 'a'.repeat(40)));
+  } finally {
+    await server.close();
+  }
+});
+
+test('VERDICT: a torrent the client already holds is reused, not re-added', async () => {
+  const held = makeTorrent({ hash: 'a'.repeat(40) });
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [held] });
+  try {
+    const hash = await new QbittorrentDriver().addTorrentUrl(
+      clientFor(server.url),
+      `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+    );
+    assert.equal(hash, 'a'.repeat(40));
+    // The add is what qBittorrent answers 409 to; not making it is the fix.
+    assert.equal(server.requests.some((r) => r.path === '/api/v2/torrents/add'), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a torrent it does not hold is added as before', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [] });
+  try {
+    await new QbittorrentDriver().addTorrentUrl(clientFor(server.url), `magnet:?xt=urn:btih:${'b'.repeat(40)}`);
+    assert.ok(server.requests.some((r) => r.path === '/api/v2/torrents/add'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('an unattended grab still refuses a torrent already held, without adding it', async () => {
+  const held = makeTorrent({ hash: 'a'.repeat(40) });
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [held] });
+  try {
+    await assert.rejects(
+      () =>
+        new QbittorrentDriver().addTorrentUrl(
+          clientFor(server.url),
+          `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+          undefined,
+          true,
+        ),
+      TorrentAlreadyPresentError,
+    );
+    assert.equal(server.requests.some((r) => r.path === '/api/v2/torrents/add'), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('VERDICT: a torrent held in the managed category is reused; one held outside it is not touched', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent({ hash: 'a'.repeat(40) })] });
+  server.categoryByHash.set('a'.repeat(40), 'someone-elses');
+  try {
+    // The snapshot is scoped to the client's own category, so this torrent is not "held" to us.
+    // qBittorrent then answers the add with 409, and that is a release we cannot have.
+    server.addStatus = 409;
+    await assert.rejects(
+      () =>
+        new QbittorrentDriver().addTorrentUrl(
+          clientFor(server.url, { category: 'fliks' }),
+          `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+        ),
+      ReleaseUnobtainableError,
+    );
+    // Never recategorised: it is a download the user arranged themselves.
+    assert.equal(server.categoryByHash.get('a'.repeat(40)), 'someone-elses');
+    assert.equal(server.requests.some((r) => r.path.endsWith('/setCategory')), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a client refusal that is not a duplicate stays a client error, so no other release is tried', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [] });
+  server.addStatus = 415;
+  try {
+    await assert.rejects(
+      () => new QbittorrentDriver().addTorrentUrl(clientFor(server.url), `magnet:?xt=urn:btih:${'b'.repeat(40)}`),
+      DownloadClientHttpError,
+    );
   } finally {
     await server.close();
   }

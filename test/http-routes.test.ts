@@ -14,7 +14,7 @@ import {
   type QueueItemDto,
 } from '../src/seams/http-routes';
 import { IndexerNotFoundError } from '../src/indexers/types';
-import { DownloadClientNotFoundError } from '../src/download-clients/types';
+import { DownloadClientHttpError, DownloadClientNotFoundError, DownloadClientUnreachableError } from '../src/download-clients/types';
 import type { DownloadClientDriver } from '../src/download-clients/contract';
 import type { DownloadClientRow, DownloadHistoryRow, DownloadHistoryStatus } from '../src/db/rows';
 import { CONFIG_PAGES } from '../scripts/manifest-template';
@@ -1279,5 +1279,150 @@ describe('a queue control states the media set at once', () => {
       throw new Error('boom');
     };
     assert.equal((await run(deps, 'POST', '/queue/3/pause')).status, 200);
+  });
+});
+
+describe('history entries are records, not queue state', () => {
+  /** One enabled client, holding the row's torrent or not. */
+  function deps(holds: boolean, row = historyRow({ id: 7, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 })) {
+    const removed: number[] = [];
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: holds
+          ? [{ hash: 'abcd', name: 'x', size: 1, downloaded: 0, progress: 0.5, dlspeed: 0, upspeed: 0,
+               ratio: 0, eta: 0, state: 'downloading', category: '', num_seeds: 0, num_leechs: 0, added_on: 0 }]
+          : [],
+      }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    return {
+      removed,
+      deps: fakeDeps({
+        downloadHistory: { findById: async () => row, remove: async (id: number) => void removed.push(id) },
+        downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+        downloadClientDrivers: { qbittorrent: driver },
+      }),
+    };
+  }
+
+  const run = async (d: RouteDeps) => {
+    const resolved = createRouteTable(d).resolve('DELETE', '/history/7')!;
+    return (await resolved.handler(req({ method: 'DELETE', path: '/history/7' }), resolved.params)).status;
+  };
+
+  test('VERDICT: refused while a client is positively still holding the torrent', async () => {
+    const { deps: d, removed } = deps(true);
+    assert.equal(await run(d), 409);
+    assert.deepEqual(removed, []);
+  });
+
+  test("VERDICT: a row reading `grabbed` with nothing behind it is deletable, or it is stuck for good", async () => {
+    // Not in the queue (no torrent to show) and not terminal: gating on the status left it with
+    // no way to cancel and no way to delete.
+    const { deps: d, removed } = deps(false);
+    assert.equal(await run(d), 200);
+    assert.deepEqual(removed, [7]);
+  });
+
+  test('a finished row is deletable whatever the client holds', async () => {
+    const { deps: d } = deps(true, historyRow({ id: 7, status: 'completed' }));
+    assert.equal(await run(d), 200);
+  });
+});
+
+describe('the history status column reads like the queue while a row runs', () => {
+  async function displayStatus(status: DownloadHistoryStatus, torrentState: string | null, clientOk = true) {
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: clientOk,
+        torrents: torrentState
+          ? [{ hash: 'abcd', name: 'x', size: 1, downloaded: 0, progress: 0.5, dlspeed: 0, upspeed: 0,
+               ratio: 0, eta: 0, state: torrentState, category: '', num_seeds: 0, num_leechs: 0, added_on: 0 }]
+          : [],
+      }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    const deps = fakeDeps({
+      downloadHistory: {
+        listPage: async () => ({ rows: [historyRow({ id: 1, status, torrentHash: 'abcd', downloadClientId: 1 })], total: 1 }),
+      },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/history')!;
+    const res = await resolved.handler(req({ path: '/history' }), resolved.params);
+    return (res.body as { data: { status: string; displayStatus: string }[] }).data[0]!;
+  }
+
+  test('VERDICT: a paused grab reads "paused" here too, not "grabbed"', async () => {
+    const row = await displayStatus('grabbed', 'pausedDL');
+    assert.equal(row.displayStatus, 'paused');
+    // The filter still queries the recorded status, so it is left alone.
+    assert.equal(row.status, 'grabbed');
+  });
+
+  test('a terminal row reads what was recorded', async () => {
+    assert.equal((await displayStatus('failed', null)).displayStatus, 'failed');
+  });
+
+  test('VERDICT: a running row every client answered without reads as gone, not as grabbed', async () => {
+    // The record waits out the orphan grace before being stamped failed; the badge has no reason
+    // to keep saying "grabbed" about something nothing is downloading.
+    assert.equal((await displayStatus('grabbed', null)).displayStatus, 'missing');
+  });
+
+  test('VERDICT: a client that could not be asked is not evidence — the row keeps its record', async () => {
+    assert.equal((await displayStatus('grabbed', null, false)).displayStatus, 'grabbed');
+  });
+});
+
+describe('an error from the download client says what the client said', () => {
+  const grabFailing = async (err: Error) => {
+    const deps = fakeDeps({
+      grabPipeline: {
+        searchReleases: async () => [],
+        grabRelease: async () => {
+          throw err;
+        },
+      } as unknown as RouteDeps['grabPipeline'],
+    });
+    const resolved = createRouteTable(deps).resolve('POST', '/5/grab')!;
+    const res = await resolved.handler(req({ method: 'POST', path: '/5/grab', body: {} }), resolved.params);
+    return res as { status: number; body: { error: { key: string; detail: string } } };
+  };
+
+  test('VERDICT: a refusal from the client is a 502 naming it, not a generic internal error', async () => {
+    const res = await grabFailing(new DownloadClientHttpError(409, 'the download client refused the torrent (HTTP 409)'));
+    assert.equal(res.status, 502);
+    assert.equal(res.body.error.key, 'download.http.errors.download_client');
+    assert.equal(res.body.error.detail, 'the download client refused the torrent (HTTP 409)');
+  });
+
+  test('an unreachable client reads the same way', async () => {
+    const res = await grabFailing(new DownloadClientUnreachableError('no host configured'));
+    assert.equal(res.status, 502);
+    assert.equal(res.body.error.detail, 'no host configured');
+  });
+
+  test('anything else stays internal, and still carries its message', async () => {
+    const res = await grabFailing(new Error('boom'));
+    assert.equal(res.status, 500);
+    assert.equal(res.body.error.key, 'download.http.errors.internal');
+    assert.equal(res.body.error.detail, 'boom');
   });
 });

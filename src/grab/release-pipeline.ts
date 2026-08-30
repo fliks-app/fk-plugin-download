@@ -1,5 +1,6 @@
 import type { IndexerDriver } from '../seams/indexers';
 import type { DownloadClientDriver } from '../download-clients/contract';
+import { ReleaseUnobtainableError } from '../download-clients/types';
 import type { IndexersRepository, DownloadClientsRepository, DownloadHistoryRepository, BlocklistRepository } from '../db/repositories';
 import type { DownloadClientRow, IndexerRow } from '../db/rows';
 import type { IndexerRelease } from '../indexers/types';
@@ -9,6 +10,7 @@ import {
   buildScoreRequest,
   joinScored,
   pickRelease,
+  pickReleases,
   toWireRelease,
   type RankedRelease,
 } from './release-scoring';
@@ -42,7 +44,7 @@ export interface ReleasePipelineDeps {
   driver: DownloadClientDriver;
   indexersRepo: Pick<IndexersRepository, 'listEnabled'>;
   clientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
-  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab'>;
+  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab' | 'findLatestByTorrentHash'>;
   /** The plugin's own `blocklist` table — core cannot see it, so every
    *  `releases.score` call declares `blocked` per release itself
    *  (`src/host-methods.ts`'s doc-comment on that field). */
@@ -324,16 +326,31 @@ export async function grabRelease(
   }
 
   if (!pick) throw new GrabError('download.grab.errors.no_eligible_release');
-  return grabAndRecord(execDeps(deps), {
-    ...grabCommon,
-    sourceTitle: pick.title,
-    downloadUrl: pick.downloadUrl,
-    quality: pick.qualityName,
-    size: pick.size,
-    infoUrl: pick.infoUrl,
-    indexerId: pick.indexerId,
-    grabSource: 'auto',
-  });
+
+  // A release the indexer cannot hand over is unobtainable, not a reason to abandon the grab:
+  // the next candidate is a different file from a possibly different tracker. A download client
+  // that refuses is not retried, since it would refuse the next one for the same reason.
+  const candidates = pickReleases(scored, target.want);
+  let lastFailure: Error | undefined;
+  for (const candidate of candidates) {
+    try {
+      return await grabAndRecord(execDeps(deps), {
+        ...grabCommon,
+        sourceTitle: candidate.title,
+        downloadUrl: candidate.downloadUrl,
+        quality: candidate.qualityName,
+        size: candidate.size,
+        infoUrl: candidate.infoUrl,
+        indexerId: candidate.indexerId,
+        grabSource: 'auto',
+      });
+    } catch (e) {
+      if (!(e instanceof ReleaseUnobtainableError)) throw e;
+      lastFailure = e as Error;
+      log.warn(`Grab #${mediaId}: "${candidate.title}" is unobtainable (${(e as Error).message}) — trying the next release`);
+    }
+  }
+  throw new GrabError('download.grab.errors.releases_unobtainable', lastFailure?.message);
 }
 
 /** Every episode of `target`'s season core still lists as needing a grab,
