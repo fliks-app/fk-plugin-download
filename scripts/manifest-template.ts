@@ -55,7 +55,7 @@ const DETAIL_ACTION = {
     { key: 'source', labelKey: 'download.config.queue.detail.indexer' },
     {
       key: 'grabSource',
-      labelKey: 'download.config.history.columns.grab_source',
+      labelKey: 'download.config.queue.detail.grab_source',
       labelKeys: {
         auto: 'download.config.history.grab_source.auto',
         manual: 'download.config.history.grab_source.manual',
@@ -808,6 +808,7 @@ export const I18N = {
     'download.config.queue.detail.indexer': 'Indexer',
     'download.config.queue.detail.indexer_page': 'Torrent page',
     'download.config.queue.detail.indexer_page_open': 'Open on the indexer',
+    'download.config.queue.detail.grab_source': 'Grab method',
     'download.config.history.columns.quality': 'Quality',
     'download.config.history.grab_source.auto': 'Automatic',
     'download.config.history.grab_source.manual': 'Manual',
@@ -974,6 +975,7 @@ export const I18N = {
     'download.config.queue.detail.indexer': 'Indexeur',
     'download.config.queue.detail.indexer_page': 'Page du torrent',
     'download.config.queue.detail.indexer_page_open': "Ouvrir sur l'indexeur",
+    'download.config.queue.detail.grab_source': 'Méthode de récupération',
     'download.config.history.columns.quality': 'Qualité',
     'download.config.history.grab_source.auto': 'Automatique',
     'download.config.history.grab_source.manual': 'Manuelle',
