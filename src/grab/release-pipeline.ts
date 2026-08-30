@@ -221,6 +221,9 @@ export interface ManualGrabInput {
   downloadUrl: string;
   sourceTitle?: string;
   indexerId?: number;
+  /** The tracker's page for this release, echoed back by the picker — the plugin cannot
+   *  recover it from `downloadUrl`, which is the indexer's API endpoint. */
+  infoUrl?: string;
   /** Bypasses the quality-not-allowed refusal only; a blocklisted release is never forceable. */
   force?: boolean;
 }
@@ -304,6 +307,7 @@ export async function grabRelease(
       downloadUrl: manual.downloadUrl,
       quality: scored.qualityName,
       size: scored.size,
+      infoUrl: manual.infoUrl,
       indexerId: manual.indexerId,
       grabSource: 'manual',
     });

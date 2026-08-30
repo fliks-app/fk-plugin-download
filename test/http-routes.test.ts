@@ -201,7 +201,7 @@ describe('route table — shape matching', () => {
       resolved.params,
     );
     assert.equal(res.status, 200);
-    assert.deepEqual(seen, [{ mediaId: 5, seasonId: undefined, episodeId: undefined, manual: { downloadUrl: 'magnet:?xt=x', sourceTitle: 'A Title', indexerId: undefined, force: false } }]);
+    assert.deepEqual(seen, [{ mediaId: 5, seasonId: undefined, episodeId: undefined, manual: { downloadUrl: 'magnet:?xt=x', sourceTitle: 'A Title', indexerId: undefined, infoUrl: undefined, force: false } }]);
   });
 
   test('a POST grab body with force: true threads force through to grabRelease', async () => {
@@ -219,7 +219,7 @@ describe('route table — shape matching', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('POST', '/5/grab')!;
     await resolved.handler(req({ method: 'POST', path: '/5/grab', body: { downloadUrl: 'magnet:?xt=x', force: true } }), resolved.params);
-    assert.deepEqual(seen, [{ downloadUrl: 'magnet:?xt=x', sourceTitle: undefined, indexerId: undefined, force: true }]);
+    assert.deepEqual(seen, [{ downloadUrl: 'magnet:?xt=x', sourceTitle: undefined, indexerId: undefined, infoUrl: undefined, force: true }]);
   });
 });
 
@@ -1245,5 +1245,42 @@ describe('an unknown size is not a zero', () => {
     const resolved = createRouteTable(deps).resolve('GET', '/history')!;
     const res = await resolved.handler(req({ path: '/history' }), resolved.params);
     assert.equal((res.body as { data: { size: number | null }[] }).data[0]!.size, null);
+  });
+});
+
+describe('a manual grab keeps the tracker page', () => {
+  function grabDeps() {
+    const calls: unknown[] = [];
+    return {
+      calls,
+      deps: fakeDeps({
+        grabPipeline: {
+          searchReleases: async () => [],
+          grabRelease: async (_m: number, _s?: number, _e?: number, manual?: unknown) => {
+            calls.push(manual);
+            return { torrentHash: 'h' };
+          },
+        } as unknown as RouteDeps['grabPipeline'],
+      }),
+    };
+  }
+
+  const grab = async (deps: RouteDeps, body: unknown) => {
+    const resolved = createRouteTable(deps).resolve('POST', '/5/grab')!;
+    return resolved.handler(req({ method: 'POST', path: '/5/grab', body }), resolved.params);
+  };
+
+  test('forwards an http tracker page', async () => {
+    const { deps, calls } = grabDeps();
+    await grab(deps, { downloadUrl: 'https://x/dl', infoUrl: 'https://tracker.example/details/42' });
+    assert.equal((calls[0] as { infoUrl?: string }).infoUrl, 'https://tracker.example/details/42');
+  });
+
+  test('VERDICT: drops anything that is not an http url — the sender is not who produced it', async () => {
+    for (const bad of ['javascript:alert(1)', 'not a url', 'ftp://x/y', '']) {
+      const { deps, calls } = grabDeps();
+      await grab(deps, { downloadUrl: 'https://x/dl', infoUrl: bad });
+      assert.equal((calls[0] as { infoUrl?: string }).infoUrl, undefined, `refused ${bad || '(empty)'}`);
+    }
   });
 });

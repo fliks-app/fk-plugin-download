@@ -233,6 +233,19 @@ async function handleSearchReleases(deps: RouteDeps, params: Record<string, stri
 }
 
 /** Core names the release source `sourceId`; inside this plugin that source is an indexer row. */
+/** The picker echoes back the release's own tracker page, which came from a feed and reaches a
+ *  browser as an anchor. Anything that is not an absolute http(s) URL is dropped rather than
+ *  stored — the client that sent it is not the one that produced it. */
+function readInfoUrl(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function readManualGrabInput(body: unknown): ManualGrabInput | undefined {
   const b = (body ?? {}) as Record<string, unknown>;
   const downloadUrl = b['downloadUrl'];
@@ -241,6 +254,7 @@ function readManualGrabInput(body: unknown): ManualGrabInput | undefined {
     downloadUrl,
     sourceTitle: typeof b['sourceTitle'] === 'string' ? b['sourceTitle'] : undefined,
     indexerId: typeof b['sourceId'] === 'number' ? b['sourceId'] : undefined,
+    infoUrl: readInfoUrl(b['infoUrl']),
     force: b['force'] === true,
   };
 }
