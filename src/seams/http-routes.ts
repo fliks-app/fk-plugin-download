@@ -397,6 +397,44 @@ function isHttpResponse(v: unknown): v is PluginHttpResponse {
   return typeof v === 'object' && v !== null && 'status' in v && 'headers' in v;
 }
 
+/**
+ * qBittorrent answers a stop/start before libtorrent has flipped the torrent's own state:
+ * measured at up to ~2s against a real client. Answering straight away made the caller's
+ * immediate re-read report the state it had just changed, and nothing corrected it until the
+ * queue's next poll tick ten seconds later.
+ */
+const CONTROL_SETTLE_TIMEOUT_MS = 4_000;
+const CONTROL_SETTLE_INTERVAL_MS = 300;
+
+/** Just this row's own client, not every enabled one — a settle loop must stay cheap. */
+async function torrentOfRow(deps: RouteDeps, row: DownloadHistoryRow): Promise<ClientTorrent | undefined> {
+  if (row.downloadClientId == null || !row.torrentHash) return undefined;
+  const client = (await deps.downloadClientsRepo.listEnabled()).find((c) => c.id === row.downloadClientId);
+  const driver = client ? deps.downloadClientDrivers[client.implementation] : undefined;
+  if (!client || !driver || !driver.supports(client)) return undefined;
+  const result = await driver.getTorrentsResult(client);
+  if (!result.ok) return undefined;
+  const hash = row.torrentHash.toLowerCase();
+  return result.torrents.find((t) => t.hash.toLowerCase() === hash);
+}
+
+/** Returns once the client agrees, or once the budget runs out: the command itself succeeded,
+ *  so a slow client delays the confirmation rather than turning it into an error. A torrent that
+ *  is gone, or a client that stopped answering, is nothing to wait for. */
+async function settleState(
+  deps: RouteDeps,
+  row: DownloadHistoryRow,
+  reached: (state: ReturnType<typeof torrentProgressState>) => boolean,
+): Promise<void> {
+  const deadline = Date.now() + CONTROL_SETTLE_TIMEOUT_MS;
+  for (;;) {
+    const torrent = await torrentOfRow(deps, row);
+    if (!torrent || reached(torrentProgressState(torrent))) return;
+    if (Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, CONTROL_SETTLE_INTERVAL_MS));
+  }
+}
+
 async function handleQueueControl(
   deps: RouteDeps,
   params: Record<string, string>,
@@ -404,8 +442,13 @@ async function handleQueueControl(
 ): Promise<PluginHttpResponse> {
   const resolved = await resolveControllable(deps, params);
   if (isHttpResponse(resolved)) return resolved;
-  if (action === 'pause') await deps.downloadClientsService.pauseTorrent(resolved.clientId, resolved.hash);
-  else await deps.downloadClientsService.resumeTorrent(resolved.clientId, resolved.hash);
+  if (action === 'pause') {
+    await deps.downloadClientsService.pauseTorrent(resolved.clientId, resolved.hash);
+    await settleState(deps, resolved.row, (state) => state === 'paused');
+  } else {
+    await deps.downloadClientsService.resumeTorrent(resolved.clientId, resolved.hash);
+    await settleState(deps, resolved.row, (state) => state !== 'paused');
+  }
   return jsonResponse(200, {});
 }
 

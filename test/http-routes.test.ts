@@ -1137,3 +1137,62 @@ describe('history live state', () => {
     assert.equal(item.progress, 100);
   });
 });
+
+describe('queue controls settle before answering', () => {
+  /** A client that keeps reporting the old state for `staleReads` polls after the command. */
+  function laggingDeps(staleReads: number) {
+    let commanded = false;
+    let reads = 0;
+    const torrent = (state: string) => ({
+      hash: 'abcd', name: 'x', size: 1000, downloaded: 0, progress: 0.5, dlspeed: 1,
+      upspeed: 0, ratio: 0, eta: 60, state, category: '', num_seeds: 1, num_leechs: 0, added_on: 0,
+    });
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => {
+        // Before the command it is downloading; after it, still downloading for `staleReads`
+        // polls, exactly like qBittorrent answering /stop before libtorrent has caught up.
+        const settled = commanded && reads++ >= staleReads;
+        return { ok: true, torrents: [torrent(settled ? 'pausedDL' : 'downloading')] };
+      },
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => { commanded = true; },
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    const service = {
+      pauseTorrent: async () => driver.pauseTorrent({} as DownloadClientRow, 'abcd'),
+      resumeTorrent: async () => {},
+      removeTorrent: async () => {},
+    };
+    const deps = fakeDeps({
+      downloadHistory: {
+        findById: async () => historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 }),
+      },
+      downloadClientsService: service as unknown as RouteDeps['downloadClientsService'],
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    return { deps, reads: () => reads };
+  }
+
+  const pause = async (deps: RouteDeps) => {
+    const resolved = createRouteTable(deps).resolve('POST', '/queue/3/pause')!;
+    return resolved.handler(req({ method: 'POST', path: '/queue/3/pause' }), resolved.params);
+  };
+
+  test('VERDICT: does not answer while the client still reports the old state', async () => {
+    const { deps, reads } = laggingDeps(2);
+    assert.equal((await pause(deps)).status, 200);
+    assert.ok(reads() > 2, `polled until the client agreed, saw ${reads()} reads`);
+  });
+
+  test('a client that agrees at once is not polled again', async () => {
+    const { deps, reads } = laggingDeps(0);
+    await pause(deps);
+    assert.equal(reads(), 1);
+  });
+});
