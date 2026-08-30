@@ -693,6 +693,27 @@ interface HistoryItemDto extends MediaLabelled {
   progress: number | null;
 }
 
+/**
+ * What the status column renders. A row still in flight reads as its client reports it, so the
+ * history and the queue agree; a terminal row reads as what was recorded.
+ *
+ * `missing` is the case in between: every client answered and none holds this row's torrent, so
+ * it is gone. The record waits out the orphan grace before being stamped failed — a torrent can
+ * be briefly absent across a client restart or a recheck — but the badge has no reason to keep
+ * saying "grabbed" about something nothing is downloading.
+ */
+function displayStatusOf(
+  row: DownloadHistoryRow,
+  live: ClientTorrent | undefined,
+  anyUnreachable: boolean,
+): string {
+  if (row.status === 'importing') return 'importing';
+  if (live) return torrentProgressState(live);
+  if (!QUEUE_STATUSES.includes(row.status)) return row.status;
+  // A client that could not be asked is not evidence that its torrents are gone.
+  return !anyUnreachable && row.torrentHash ? 'missing' : row.status;
+}
+
 /** Every grab ever recorded, newest first — the queue only shows what is still in flight.
  *  An unrecognised `status` is dropped, never forwarded to the repository. */
 async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
@@ -706,7 +727,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
   // The client sweep is what lets a still-running row here carry its live state, so the same
   // controls the queue offers can be state-gated here too. One pass per page view, where the
   // queue does one every refresh tick.
-  const [{ rows, total }, indexers, { byClientId }] = await Promise.all([
+  const [{ rows, total }, indexers, { byClientId, anyUnreachable }] = await Promise.all([
     deps.downloadHistory.listPage(pageSize, (page - 1) * pageSize, { ...(q ? { q } : {}), ...(status ? { status } : {}) }),
     deps.indexerService.findAll(),
     indexClientTorrents(deps),
@@ -726,7 +747,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
       quality: row.quality,
       size: row.size || null,
       status: row.status,
-      displayStatus: (row.status === 'importing' ? 'importing' : live ? torrentProgressState(live) : null) ?? row.status,
+      displayStatus: displayStatusOf(row, live, anyUnreachable),
       statusMessage: row.statusMessage,
       grabSource: row.grabSource,
       source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',

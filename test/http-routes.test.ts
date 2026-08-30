@@ -1339,13 +1339,13 @@ describe('history entries are records, not queue state', () => {
 });
 
 describe('the history status column reads like the queue while a row runs', () => {
-  async function displayStatus(status: DownloadHistoryStatus, torrentState: string | null) {
+  async function displayStatus(status: DownloadHistoryStatus, torrentState: string | null, clientOk = true) {
     const driver = {
       supports: (c: DownloadClientRow) => c.enabled,
       testConnection: async () => ({ ok: true, messageKey: 'ok' }),
       getTorrents: async () => [],
       getTorrentsResult: async () => ({
-        ok: true,
+        ok: clientOk,
         torrents: torrentState
           ? [{ hash: 'abcd', name: 'x', size: 1, downloaded: 0, progress: 0.5, dlspeed: 0, upspeed: 0,
                ratio: 0, eta: 0, state: torrentState, category: '', num_seeds: 0, num_leechs: 0, added_on: 0 }]
@@ -1380,8 +1380,14 @@ describe('the history status column reads like the queue while a row runs', () =
     assert.equal((await displayStatus('failed', null)).displayStatus, 'failed');
   });
 
-  test('a running row whose client no longer holds it falls back to the record', async () => {
-    assert.equal((await displayStatus('grabbed', null)).displayStatus, 'grabbed');
+  test('VERDICT: a running row every client answered without reads as gone, not as grabbed', async () => {
+    // The record waits out the orphan grace before being stamped failed; the badge has no reason
+    // to keep saying "grabbed" about something nothing is downloading.
+    assert.equal((await displayStatus('grabbed', null)).displayStatus, 'missing');
+  });
+
+  test('VERDICT: a client that could not be asked is not evidence — the row keeps its record', async () => {
+    assert.equal((await displayStatus('grabbed', null, false)).displayStatus, 'grabbed');
   });
 });
 
