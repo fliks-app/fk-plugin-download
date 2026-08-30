@@ -350,19 +350,40 @@ export class QbittorrentDriver implements DownloadClientDriver {
     // creating nothing) can be detected and rejected when asked to.
     const beforeHashes = await snapshotHashes(base, cookie);
 
+    /**
+     * An infohash identifies the content, so a torrent the client already holds *is* the release
+     * being grabbed: there is nothing to add and nothing to re-download. Deciding this before the
+     * add matters — qBittorrent answers a duplicate with 409, which used to surface as "the
+     * download client refused the torrent" on a release that was already there, sometimes
+     * already finished.
+     */
+    const alreadyHeld = (hash: string | undefined): string | undefined => {
+      if (!hash || !beforeHashes.has(hash.toLowerCase())) return undefined;
+      if (rejectIfAlreadyPresent) {
+        throw new TorrentAlreadyPresentError(`torrent ${hash} is already in the download client`);
+      }
+      return hash;
+    };
+
     let infoHash: string | undefined;
     let addRes: Response;
 
     if (url.startsWith('magnet:')) {
       infoHash = extractMagnetInfoHash(url);
+      const held = alreadyHeld(infoHash);
+      if (held) return held;
       addRes = await addMagnet(base, cookie, url, category);
     } else {
       const fetched = await fetchTorrentOrMagnet(url);
       if ('magnet' in fetched) {
         infoHash = extractMagnetInfoHash(fetched.magnet);
+        const held = alreadyHeld(infoHash);
+        if (held) return held;
         addRes = await addMagnet(base, cookie, fetched.magnet, category);
       } else {
         infoHash = computeInfoHash(fetched.buffer);
+        const held = alreadyHeld(infoHash);
+        if (held) return held;
         addRes = await addTorrentFile(base, cookie, fetched.buffer, category);
       }
     }
@@ -378,8 +399,9 @@ export class QbittorrentDriver implements DownloadClientDriver {
       throw new TorrentHashUnresolvedError('could not determine the hash of the torrent that was just added');
     }
 
-    // The add above created nothing when the torrent was already present (the
-    // client dedupes by hash), so refusing after the fact costs nothing.
+    // Only reachable when the hash could not be read before the add: the checks above return
+    // or throw otherwise. The add created nothing in that case (the client dedupes by hash),
+    // so refusing after the fact costs nothing.
     if (rejectIfAlreadyPresent && beforeHashes.has(infoHash.toLowerCase())) {
       throw new TorrentAlreadyPresentError(`torrent ${infoHash} is already in the download client`);
     }

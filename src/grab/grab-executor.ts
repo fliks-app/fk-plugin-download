@@ -8,7 +8,7 @@ import { log } from '../log';
 export interface GrabExecutorDeps {
   host: HostCaller;
   driver: DownloadClientDriver;
-  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab'>;
+  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab' | 'findLatestByTorrentHash'>;
 }
 
 export interface GrabArgs {
@@ -62,6 +62,16 @@ export async function grabAndRecord(deps: GrabExecutorDeps, args: GrabArgs): Pro
     args.mediaType,
     args.rejectIfAlreadyPresent,
   );
+
+  // The client may already have held this torrent, in which case `addTorrentUrl` returned the one
+  // it holds rather than adding a second. Recording another row against it would put the same
+  // download in the queue twice, and leave whichever row loses the completion race to be swept
+  // as an orphan.
+  const existing = await deps.historyRepo.findLatestByTorrentHash(torrentHash);
+  if (existing && existing.mediaId === args.mediaId && (existing.status === 'grabbed' || existing.status === 'importing')) {
+    log.info(`AutoGrab[${args.mediaType}]: "${args.sourceTitle}" is already in flight as history #${existing.id}`);
+    return { torrentHash };
+  }
 
   await deps.historyRepo.insertGrab(
     buildGrabHistoryRow({
