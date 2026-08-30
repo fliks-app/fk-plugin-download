@@ -96,7 +96,11 @@ const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
     method: 'DELETE' as const,
     path: '/queue/:id',
     confirmKey: 'download.config.queue.actions.cancel_confirm',
-    confirmToggle: { labelKey: 'download.config.queue.actions.cancel_delete_files', param: 'deleteFiles' },
+    confirmToggle: {
+      labelKey: 'download.config.queue.actions.cancel_delete_files',
+      hintKey: 'download.config.queue.actions.cancel_delete_files_hint',
+      param: 'deleteFiles',
+    },
     tone: 'danger' as const,
     when: WHEN_QUEUE_CONTROL,
     visibleWhen: { key: stateKey, in: ['queued', 'active', 'stalled', 'paused'] },
@@ -756,7 +760,7 @@ export const I18N = {
     'download.grab.errors.no_download_client': 'No enabled download client is configured',
     'download.grab.errors.unprofiled': 'This title has no quality profile — nothing to grab',
     'download.grab.errors.blocklisted': 'This release is blocklisted',
-    'download.queue.removed_by_user': 'Removed from the queue by an operator',
+    'download.queue.removed_by_user': 'Removed from the queue by a user',
     'download.queue.errors.not_controllable': 'This download can no longer be controlled',
     'download.queue.errors.no_torrent': 'No download client holds this release yet',
     'download.grab.errors.quality_not_allowed': "This release's quality is not allowed by the profile",
@@ -830,8 +834,9 @@ export const I18N = {
     'download.config.queue.actions.cancel': 'Cancel download',
     'download.config.queue.actions.cancel_confirm':
       'Stop this download and remove it from its download client? It leaves the queue either way.',
-    'download.config.queue.actions.cancel_delete_files':
-      'Also delete the files held by the download client. Anything already imported into your library is kept.',
+    'download.config.queue.actions.cancel_delete_files': 'Also delete the files held by the download client',
+    'download.config.queue.actions.cancel_delete_files_hint':
+      'Anything already imported into your library is kept.',
     'download.config.history.actions.delete': 'Delete entry',
     'download.config.history.actions.delete_confirm':
       'Delete this entry? It only removes the record; no file is touched.',
@@ -929,7 +934,7 @@ export const I18N = {
     'download.grab.errors.no_download_client': 'Aucun client de téléchargement actif n’est configuré',
     'download.grab.errors.unprofiled': 'Ce titre n’a pas de profil de qualité — rien à télécharger',
     'download.grab.errors.blocklisted': 'Cette release est sur liste de blocage',
-    'download.queue.removed_by_user': "Retiré de la file d'attente par un opérateur",
+    'download.queue.removed_by_user': "Retiré de la file d'attente par un utilisateur",
     'download.queue.errors.not_controllable': 'Ce téléchargement ne peut plus être piloté',
     'download.queue.errors.no_torrent': 'Aucun client de téléchargement ne détient encore cette release',
     'download.grab.errors.quality_not_allowed': 'La qualité de cette release n’est pas autorisée par le profil',
@@ -1001,8 +1006,9 @@ export const I18N = {
     'download.config.queue.actions.cancel': 'Annuler le téléchargement',
     'download.config.queue.actions.cancel_confirm':
       "Arrêter ce téléchargement et le retirer de son client ? Il quitte la file d'attente dans tous les cas.",
-    'download.config.queue.actions.cancel_delete_files':
-      'Supprimer aussi les fichiers détenus par le client de téléchargement. Ce qui est déjà importé dans votre bibliothèque est conservé.',
+    'download.config.queue.actions.cancel_delete_files': 'Supprimer aussi les fichiers détenus par le client de téléchargement',
+    'download.config.queue.actions.cancel_delete_files_hint':
+      'Ce qui est déjà importé dans votre bibliothèque est conservé.',
     'download.config.history.actions.delete': "Supprimer l'entrée",
     'download.config.history.actions.delete_confirm':
       "Supprimer cette entrée ? Cela retire seulement l'enregistrement, aucun fichier n'est touché.",
