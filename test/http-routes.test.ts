@@ -1206,3 +1206,44 @@ describe('queue controls settle before answering', () => {
     assert.equal(reads(), 1);
   });
 });
+
+describe('an unknown size is not a zero', () => {
+  test('VERDICT: a client that has not fetched the metadata yet reports no size, not 0 B', async () => {
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: [{
+          hash: 'abcd', name: 'x', size: 0, downloaded: 0, progress: 0, dlspeed: 0, upspeed: 0,
+          ratio: 0, eta: 60, state: 'metaDL', category: '', num_seeds: 0, num_leechs: 0, added_on: 0,
+        }],
+      }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 1, torrentHash: 'abcd', downloadClientId: 1 })],
+      },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    assert.equal((res.body as { data: QueueItemDto[] }).data[0]!.size, null);
+  });
+
+  test('a history row stored with 0 reads the same way', async () => {
+    const deps = fakeDeps({
+      downloadHistory: { listPage: async () => ({ rows: [historyRow({ id: 1, size: 0 })], total: 1 }) },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/history')!;
+    const res = await resolved.handler(req({ path: '/history' }), resolved.params);
+    assert.equal((res.body as { data: { size: number | null }[] }).data[0]!.size, null);
+  });
+});

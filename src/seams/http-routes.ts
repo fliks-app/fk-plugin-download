@@ -648,7 +648,9 @@ function toQueueItem(
       state: torrentProgressState(torrent),
       progress: torrent.progress * 100,
       bytesPerSecond: torrent.dlspeed,
-      size: torrent.size,
+      // A client reports 0 until it has the torrent's metadata. That is "not known yet",
+      // not an empty file, and the detail dialog renders a 0 as "0 B".
+      size: torrent.size || null,
       clientReachable: true,
     };
   }
@@ -713,7 +715,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
       title: row.sourceTitle,
       sourceTitle: row.sourceTitle,
       quality: row.quality,
-      size: row.size,
+      size: row.size || null,
       status: row.status,
       statusMessage: row.statusMessage,
       grabSource: row.grabSource,
