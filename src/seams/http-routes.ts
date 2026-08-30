@@ -62,11 +62,17 @@ export interface RouteDeps {
     IndexerService,
     'findAll' | 'create' | 'update' | 'remove' | 'testConnection' | 'clearCooldown' | 'clearAllCooldowns'
   >;
-  downloadClientsService: Pick<DownloadClientsService, 'findAll' | 'create' | 'update' | 'remove' | 'testConnection'>;
+  downloadClientsService: Pick<
+    DownloadClientsService,
+    'findAll' | 'create' | 'update' | 'remove' | 'testConnection' | 'pauseTorrent' | 'resumeTorrent' | 'removeTorrent'
+  >;
   grabPipeline: Pick<DownloadGrabPipeline, 'searchReleases' | 'grabRelease'>;
   indexerStats: Pick<IndexerStatsRepository, 'dailyStats'>;
   blocklist: Pick<BlocklistRepository, 'list' | 'findById' | 'remove' | 'clear'>;
-  downloadHistory: Pick<DownloadHistoryRepository, 'findByStatuses' | 'listPage'>;
+  downloadHistory: Pick<
+    DownloadHistoryRepository,
+    'findByStatuses' | 'listPage' | 'findById' | 'remove' | 'clearTerminal' | 'markFailed'
+  >;
   /** Raw rows (credentials included) — unlike `downloadClientsService`, which redacts
    *  them before a driver call ever happens. */
   downloadClientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
@@ -355,6 +361,79 @@ async function handleRemoveBlocklistEntry(deps: RouteDeps, params: Record<string
   if (!existing) return notFoundResponse(String(id));
   await deps.blocklist.remove(id);
   return jsonResponse(200, {});
+}
+
+/** Stored on the row it removes, so the history says who ended the download rather than
+ *  leaving the orphan sweep to guess minutes later. A key, not prose — core translates it. */
+const REMOVED_BY_USER_KEY = 'download.queue.removed_by_user';
+
+/** Rows the client can still be asked about. An `importing` row's download is already finished
+ *  and its files are being moved; reaching into the client then races the import. */
+const CONTROLLABLE_STATUSES: DownloadHistoryStatus[] = ['grabbed'];
+
+/**
+ * Resolves a queue row down to the client and torrent a control can act on. Every "cannot"
+ * answers 409 rather than 404 — the row exists, it just has nothing actionable behind it,
+ * which is a different fix for whoever reads the error.
+ */
+async function resolveControllable(
+  deps: RouteDeps,
+  params: Record<string, string>,
+): Promise<{ row: DownloadHistoryRow; clientId: number; hash: string } | PluginHttpResponse> {
+  const id = requireIntParam(params, 'id');
+  if (id === null) return badRequest('id');
+  const row = await deps.downloadHistory.findById(id);
+  if (!row) return notFoundResponse(String(id));
+  if (!CONTROLLABLE_STATUSES.includes(row.status)) {
+    return jsonResponse(409, { error: { key: 'download.queue.errors.not_controllable', detail: row.status } });
+  }
+  if (row.downloadClientId == null || !row.torrentHash) {
+    return jsonResponse(409, { error: { key: 'download.queue.errors.no_torrent', detail: String(id) } });
+  }
+  return { row, clientId: row.downloadClientId, hash: row.torrentHash };
+}
+
+function isHttpResponse(v: unknown): v is PluginHttpResponse {
+  return typeof v === 'object' && v !== null && 'status' in v && 'headers' in v;
+}
+
+async function handleQueueControl(
+  deps: RouteDeps,
+  params: Record<string, string>,
+  action: 'pause' | 'resume',
+): Promise<PluginHttpResponse> {
+  const resolved = await resolveControllable(deps, params);
+  if (isHttpResponse(resolved)) return resolved;
+  if (action === 'pause') await deps.downloadClientsService.pauseTorrent(resolved.clientId, resolved.hash);
+  else await deps.downloadClientsService.resumeTorrent(resolved.clientId, resolved.hash);
+  return jsonResponse(200, {});
+}
+
+/**
+ * Removes the torrent from its client and retires the row. The row is marked failed rather than
+ * deleted: the queue drops it either way (a reachable client that no longer holds the torrent
+ * answers for that), and history is the only place a removal can still be read afterwards.
+ */
+async function handleQueueRemove(deps: RouteDeps, req: PluginHttpRequest, params: Record<string, string>): Promise<PluginHttpResponse> {
+  const resolved = await resolveControllable(deps, params);
+  if (isHttpResponse(resolved)) return resolved;
+  await deps.downloadClientsService.removeTorrent(resolved.clientId, resolved.hash, req.query['deleteFiles'] === 'true');
+  await deps.downloadHistory.markFailed(resolved.row.id, REMOVED_BY_USER_KEY);
+  return jsonResponse(200, {});
+}
+
+/** Deletes one history row outright — the operator asked for the record itself to go. */
+async function handleDeleteHistoryEntry(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
+  const id = requireIntParam(params, 'id');
+  if (id === null) return badRequest('id');
+  if (!(await deps.downloadHistory.findById(id))) return notFoundResponse(String(id));
+  await deps.downloadHistory.remove(id);
+  return jsonResponse(200, {});
+}
+
+/** Terminal rows only: a grab still in flight is queue state, not history to be cleared. */
+async function handleClearHistory(deps: RouteDeps): Promise<PluginHttpResponse> {
+  return jsonResponse(200, { removed: await deps.downloadHistory.clearTerminal() });
 }
 
 /** What the queue table page renders per row — `state` is always one of core's closed
@@ -721,6 +800,11 @@ function canonicalRoutes(deps: RouteDeps): { method: string; path: string; handl
     { method: 'GET', path: '/download-clients/implementations', handler: () => handleDownloadClientImplementations() },
     { method: 'PUT', path: '/download-clients/:id', handler: (req, params) => handleUpdateDownloadClient(deps, params, req) },
     { method: 'DELETE', path: '/download-clients/:id', handler: (_req, params) => handleDeleteDownloadClient(deps, params) },
+    { method: 'POST', path: '/queue/:id/pause', handler: (_req, params) => handleQueueControl(deps, params, 'pause') },
+    { method: 'POST', path: '/queue/:id/resume', handler: (_req, params) => handleQueueControl(deps, params, 'resume') },
+    { method: 'DELETE', path: '/queue/:id', handler: (req, params) => handleQueueRemove(deps, req, params) },
+    { method: 'DELETE', path: '/history/all', handler: () => handleClearHistory(deps) },
+    { method: 'DELETE', path: '/history/:id', handler: (_req, params) => handleDeleteHistoryEntry(deps, params) },
     { method: 'GET', path: '/blocklist', handler: (req) => handleListBlocklist(deps, req) },
     { method: 'DELETE', path: '/blocklist/all', handler: () => handleClearBlocklist(deps) },
     { method: 'DELETE', path: '/blocklist/:id', handler: (_req, params) => handleRemoveBlocklistEntry(deps, params) },

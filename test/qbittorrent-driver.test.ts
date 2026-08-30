@@ -8,6 +8,11 @@ import { FakeQbitServer, makeTorrent } from './fake-qbittorrent-server';
 
 const CREDS = { username: 'admin', password: 'S3cr3t-Pw!' };
 
+/** Only the stop/start/pause/resume calls, in order — login and info are noise here. */
+function controlPaths(server: FakeQbitServer): string[] {
+  return server.requests.filter((r) => /\/(stop|start|pause|resume)$/.test(r.path)).map((r) => r.path);
+}
+
 function clientFor(url: string, over: Partial<Record<string, unknown>> = {}): DownloadClientRow {
   const u = new URL(url);
   return {
@@ -407,4 +412,41 @@ test('a connection failure with a password in settings never logs the password',
     false,
     `password leaked into testConnection's own result: ${JSON.stringify(testConnectionResult)}`,
   );
+});
+
+test('pause and resume speak qBittorrent 5.x first', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent()] });
+  try {
+    const driver = new QbittorrentDriver();
+    await driver.pauseTorrent(clientFor(server.url), 'a'.repeat(40));
+    await driver.resumeTorrent(clientFor(server.url), 'a'.repeat(40));
+    assert.deepEqual(
+      controlPaths(server),
+      ['/api/v2/torrents/stop', '/api/v2/torrents/start'],
+      'no wasted round trip against a 5.x client',
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test('VERDICT: a 4.x client that 404s the new spelling still pauses, via the old one', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent()] });
+  server.controlGeneration = 'v4';
+  try {
+    await new QbittorrentDriver().pauseTorrent(clientFor(server.url), 'a'.repeat(40));
+    assert.deepEqual(controlPaths(server), ['/api/v2/torrents/stop', '/api/v2/torrents/pause']);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a refusal neither spelling answers is reported, never swallowed as success', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent()] });
+  server.controlGeneration = 'none';
+  try {
+    await assert.rejects(() => new QbittorrentDriver().pauseTorrent(clientFor(server.url), 'a'.repeat(40)));
+  } finally {
+    await server.close();
+  }
 });

@@ -26,6 +26,10 @@ export const PERMISSIONS = {
   downloadClients: 'download-clients',
   delayProfiles: 'delay-profiles',
   queue: 'queue',
+  /** Separate from `queue`: reading what is downloading and reaching into the download client
+   *  to stop or delete it are different powers, and core grants `Manage` on any plugin
+   *  permission a user holds — so sharing one name would hand control to every queue viewer. */
+  queueControl: 'queue-control',
   blocklist: 'blocklist',
 } as const;
 
@@ -44,6 +48,7 @@ export const POLICY = {
   downloadClientsManage: `manage:${subjectFor(PERMISSIONS.downloadClients)}`,
   delayProfilesRead: `read:${subjectFor(PERMISSIONS.delayProfiles)}`,
   queueRead: `read:${subjectFor(PERMISSIONS.queue)}`,
+  queueControl: `manage:${subjectFor(PERMISSIONS.queueControl)}`,
   blocklistRead: `read:${subjectFor(PERMISSIONS.blocklist)}`,
   blocklistManage: `manage:${subjectFor(PERMISSIONS.blocklist)}`,
 } as const;
@@ -107,6 +112,11 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
   { method: 'GET', path: '/download-clients/implementations', policy: POLICY.downloadClientsRead },
   { method: 'PUT', path: '/download-clients/:id', policy: POLICY.downloadClientsManage },
   { method: 'DELETE', path: '/download-clients/:id', policy: POLICY.downloadClientsManage },
+  { method: 'POST', path: '/queue/:id/pause', policy: POLICY.queueControl },
+  { method: 'POST', path: '/queue/:id/resume', policy: POLICY.queueControl },
+  { method: 'DELETE', path: '/queue/:id', policy: POLICY.queueControl },
+  { method: 'DELETE', path: '/history/all', policy: POLICY.queueControl },
+  { method: 'DELETE', path: '/history/:id', policy: POLICY.queueControl },
   { method: 'GET', path: '/blocklist', policy: POLICY.blocklistRead },
   { method: 'DELETE', path: '/blocklist/all', policy: POLICY.blocklistManage },
   { method: 'DELETE', path: '/blocklist/:id', policy: POLICY.blocklistManage },
@@ -638,6 +648,9 @@ export const I18N = {
     'download.grab.errors.no_download_client': 'No enabled download client is configured',
     'download.grab.errors.unprofiled': 'This title has no quality profile — nothing to grab',
     'download.grab.errors.blocklisted': 'This release is blocklisted',
+    'download.queue.removed_by_user': 'Removed from the queue by an operator',
+    'download.queue.errors.not_controllable': 'This download can no longer be controlled',
+    'download.queue.errors.no_torrent': 'No download client holds this release yet',
     'download.grab.errors.quality_not_allowed': "This release's quality is not allowed by the profile",
     'download.grab.errors.no_eligible_release': 'No eligible release was found',
     // The HTTP route table's own errors — unmatched path/resource, a malformed param or
@@ -785,6 +798,9 @@ export const I18N = {
     'download.grab.errors.no_download_client': 'Aucun client de téléchargement actif n’est configuré',
     'download.grab.errors.unprofiled': 'Ce titre n’a pas de profil de qualité — rien à télécharger',
     'download.grab.errors.blocklisted': 'Cette release est sur liste de blocage',
+    'download.queue.removed_by_user': "Retiré de la file d'attente par un opérateur",
+    'download.queue.errors.not_controllable': 'Ce téléchargement ne peut plus être piloté',
+    'download.queue.errors.no_torrent': 'Aucun client de téléchargement ne détient encore cette release',
     'download.grab.errors.quality_not_allowed': 'La qualité de cette release n’est pas autorisée par le profil',
     'download.grab.errors.no_eligible_release': 'Aucune release éligible n’a été trouvée',
     'download.http.errors.not_found': 'Introuvable',

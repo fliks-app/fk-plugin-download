@@ -273,6 +273,44 @@ export class QbittorrentDriver implements DownloadClientDriver {
     }
   }
 
+  /**
+   * qBittorrent 5.x spells these `/stop` and `/start`; 4.x spells them `/pause` and `/resume`.
+   * Both are in the wild — `progress-state.ts` already maps both state vocabularies — so the
+   * modern name is tried first and the older one only on a refusal, which costs one extra
+   * round trip exactly once per 4.x client.
+   */
+  async pauseTorrent(client: DownloadClientRow, hash: string): Promise<void> {
+    await this.command(client, hash, 'stop', 'pause');
+  }
+
+  async resumeTorrent(client: DownloadClientRow, hash: string): Promise<void> {
+    await this.command(client, hash, 'start', 'resume');
+  }
+
+  private async command(
+    client: DownloadClientRow,
+    hash: string,
+    action: string,
+    legacyAction: string,
+  ): Promise<void> {
+    const s = client.settings as QbittorrentSettings;
+    const base = buildBaseUrl(s);
+    if (!base) throw new DownloadClientUnreachableError('download client has no host configured');
+    const cookie = await login(base, s, 15_000);
+    const post = (name: string) =>
+      httpRequest(`${base}/api/v2/torrents/${name}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
+        body: new URLSearchParams({ hashes: hash }),
+        timeoutMs: 15_000,
+      });
+    let res = await post(action);
+    if (res.status === 404) res = await post(legacyAction);
+    if (res.status !== 200) {
+      throw new DownloadClientHttpError(res.status, `the download client refused ${action} (HTTP ${res.status})`);
+    }
+  }
+
   async deleteTorrent(client: DownloadClientRow, hash: string, deleteFiles = false): Promise<void> {
     const s = client.settings as QbittorrentSettings;
     const base = buildBaseUrl(s);

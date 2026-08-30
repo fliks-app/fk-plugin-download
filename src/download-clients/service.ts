@@ -128,6 +128,16 @@ export class DownloadClientsService {
     await driver.deleteTorrent(client, hash, deleteFiles);
   }
 
+  async pauseTorrent(clientId: number, hash: string): Promise<void> {
+    const client = await this.findOne(clientId);
+    await this.resolveDriver(client).pauseTorrent(client, hash);
+  }
+
+  async resumeTorrent(clientId: number, hash: string): Promise<void> {
+    const client = await this.findOne(clientId);
+    await this.resolveDriver(client).resumeTorrent(client, hash);
+  }
+
   /**
    * Blocklist the release behind this torrent so it can't be grabbed again,
    * remove it (with its files) from the client, and mark the history row

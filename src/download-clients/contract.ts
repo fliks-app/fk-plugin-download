@@ -95,4 +95,8 @@ export interface DownloadClientDriver {
     hash: string,
     deleteFiles?: boolean,
   ): Promise<void>;
+  /** Both reject rather than resolving quietly: a control the operator pressed that
+   *  silently did nothing is worse than an error they can read. */
+  pauseTorrent(client: DownloadClientRow, hash: string): Promise<void>;
+  resumeTorrent(client: DownloadClientRow, hash: string): Promise<void>;
 }

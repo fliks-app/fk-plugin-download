@@ -55,7 +55,9 @@ function clientRow(over: Partial<DownloadClientRow> = {}): DownloadClientRow {
   };
 }
 
-function fakeDeps(over: Partial<RouteDeps> = {}): RouteDeps {
+/** Each dep is itself partial: a test overriding one repository method should not have to
+ *  restate the five it does not care about. */
+function fakeDeps(over: { [K in keyof RouteDeps]?: Partial<RouteDeps[K]> } = {}): RouteDeps {
   return {
     indexerService: {
       findAll: async () => [],
@@ -72,6 +74,9 @@ function fakeDeps(over: Partial<RouteDeps> = {}): RouteDeps {
       update: async (id: number, patch: unknown) => ({ id, ...(patch as object) }),
       remove: async () => {},
       testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' as const }),
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+      removeTorrent: async () => {},
     },
     grabPipeline: {
       searchReleases: async (mediaId: number, seasonId?: number, episodeId?: number) => [{ probe: 'releases', mediaId, seasonId, episodeId }],
@@ -84,7 +89,14 @@ function fakeDeps(over: Partial<RouteDeps> = {}): RouteDeps {
       remove: async () => {},
       clear: async () => {},
     },
-    downloadHistory: { findByStatuses: async () => [], listPage: async () => ({ rows: [], total: 0 }) },
+    downloadHistory: {
+      findByStatuses: async () => [],
+      listPage: async () => ({ rows: [], total: 0 }),
+      findById: async () => null,
+      remove: async () => {},
+      clearTerminal: async () => 0,
+      markFailed: async () => {},
+    },
     downloadClientsRepo: { listEnabled: async () => [] },
     downloadClientDrivers: {},
     host: { call: async () => ({}) },
@@ -402,6 +414,8 @@ describe('route table — GET /queue', () => {
       getTorrentFilesResult: async () => ({ ok: true, files: [] }),
       addTorrentUrl: async () => 'x',
       deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
     };
     const deps = fakeDeps({
       downloadHistory: {
@@ -430,6 +444,8 @@ describe('route table — GET /queue', () => {
       getTorrentFilesResult: async () => ({ ok: false, files: [] }),
       addTorrentUrl: async () => 'x',
       deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
     };
     const deps = fakeDeps({
       downloadHistory: {
@@ -478,6 +494,8 @@ describe('route table — GET /queue', () => {
       getTorrentFilesResult: async () => ({ ok: true, files: [] }),
       addTorrentUrl: async () => 'x',
       deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
     };
     const deps = fakeDeps({
       downloadHistory: {
@@ -519,6 +537,8 @@ describe('route table — GET /queue', () => {
       getTorrentFilesResult: async () => ({ ok: true, files: [] }),
       addTorrentUrl: async () => 'x',
       deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
     };
     const deps = fakeDeps({
       downloadHistory: {
@@ -846,5 +866,110 @@ describe('route table — download history', () => {
     const resolved = table.resolve('GET', '/history')!;
     await resolved.handler(req({ path: '/history' }), resolved.params);
     assert.deepEqual(seen, [{}]);
+  });
+});
+
+describe('queue controls', () => {
+  const live = () => historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 });
+
+  function controlDeps(row: DownloadHistoryRow | null) {
+    const calls: { fn: string; args: unknown[] }[] = [];
+    const failed: { id: number; message: string }[] = [];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findById: async () => row,
+        markFailed: async (id: number, message: string) => {
+          failed.push({ id, message });
+        },
+      },
+      downloadClientsService: {
+        pauseTorrent: async (...args: unknown[]) => {
+          calls.push({ fn: 'pause', args });
+        },
+        resumeTorrent: async (...args: unknown[]) => {
+          calls.push({ fn: 'resume', args });
+        },
+        removeTorrent: async (...args: unknown[]) => {
+          calls.push({ fn: 'remove', args });
+        },
+      } as unknown as RouteDeps['downloadClientsService'],
+    });
+    return { deps, calls, failed };
+  }
+
+  async function run(deps: RouteDeps, method: string, path: string, query: Record<string, string> = {}) {
+    const resolved = createRouteTable(deps).resolve(method, path)!;
+    assert.ok(resolved, `${method} ${path} did not resolve`);
+    return resolved.handler(req({ method, path, query }), resolved.params);
+  }
+
+  test('pause reaches the client that holds the row’s torrent', async () => {
+    const { deps, calls } = controlDeps(live());
+    assert.equal((await run(deps, 'POST', '/queue/3/pause')).status, 200);
+    assert.deepEqual(calls, [{ fn: 'pause', args: [1, 'abcd'] }]);
+  });
+
+  test('resume is a separate route, not a toggle — a stale row would flip the wrong way', async () => {
+    const { deps, calls } = controlDeps(live());
+    assert.equal((await run(deps, 'POST', '/queue/3/resume')).status, 200);
+    assert.deepEqual(calls, [{ fn: 'resume', args: [1, 'abcd'] }]);
+  });
+
+  test('VERDICT: removal forwards the deleteFiles answer, and defaults to keeping them', async () => {
+    const { deps, calls } = controlDeps(live());
+    await run(deps, 'DELETE', '/queue/3', { deleteFiles: 'true' });
+    assert.deepEqual(calls, [{ fn: 'remove', args: [1, 'abcd', true] }]);
+
+    const bare = controlDeps(live());
+    await run(bare.deps, 'DELETE', '/queue/3');
+    assert.deepEqual(bare.calls, [{ fn: 'remove', args: [1, 'abcd', false] }]);
+  });
+
+  test('VERDICT: removal retires the history row, so the removal is readable afterwards', async () => {
+    const { deps, failed } = controlDeps(live());
+    await run(deps, 'DELETE', '/queue/3');
+    assert.deepEqual(failed, [{ id: 3, message: 'download.queue.removed_by_user' }]);
+  });
+
+  test('an importing row is refused: its files are already being moved', async () => {
+    const { deps, calls } = controlDeps(historyRow({ id: 3, status: 'importing', torrentHash: 'abcd', downloadClientId: 1 }));
+    const res = await run(deps, 'POST', '/queue/3/pause');
+    assert.equal(res.status, 409);
+    assert.deepEqual(calls, []);
+  });
+
+  test('a row with no client or hash answers 409, not 404 — the row exists', async () => {
+    const { deps } = controlDeps(historyRow({ id: 3, status: 'grabbed' }));
+    assert.equal((await run(deps, 'POST', '/queue/3/pause')).status, 409);
+  });
+
+  test('an unknown row is a 404', async () => {
+    const { deps } = controlDeps(null);
+    assert.equal((await run(deps, 'DELETE', '/queue/3')).status, 404);
+  });
+});
+
+describe('history pruning', () => {
+  test('/history/all resolves before /history/:id — the literal segment must win', () => {
+    const table = createRouteTable(fakeDeps());
+    assert.equal(table.resolve('DELETE', '/history/all')!.params['id'], undefined);
+    assert.equal(table.resolve('DELETE', '/history/7')!.params['id'], '7');
+  });
+
+  test('deleting one row refuses an id that is not there', async () => {
+    const removed: number[] = [];
+    const deps = fakeDeps({
+      downloadHistory: { findById: async () => null, remove: async (id: number) => void removed.push(id) },
+    });
+    const resolved = createRouteTable(deps).resolve('DELETE', '/history/7')!;
+    assert.equal((await resolved.handler(req({ method: 'DELETE', path: '/history/7' }), resolved.params)).status, 404);
+    assert.deepEqual(removed, []);
+  });
+
+  test('clearing reports how many rows went', async () => {
+    const deps = fakeDeps({ downloadHistory: { clearTerminal: async () => 12 } });
+    const resolved = createRouteTable(deps).resolve('DELETE', '/history/all')!;
+    const res = await resolved.handler(req({ method: 'DELETE', path: '/history/all' }), resolved.params);
+    assert.deepEqual(res.body, { removed: 12 });
   });
 });

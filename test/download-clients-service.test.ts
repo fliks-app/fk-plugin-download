@@ -28,6 +28,8 @@ function fakeDriver(over: Partial<DownloadClientDriver> = {}): DownloadClientDri
     getTorrentFilesResult: async () => ({ ok: true, files: [] }),
     addTorrentUrl: async () => 'a'.repeat(40),
     deleteTorrent: async () => {},
+    pauseTorrent: async () => {},
+    resumeTorrent: async () => {},
     ...over,
   };
 }

@@ -175,6 +175,29 @@ export class DownloadHistoryRepository {
     return rows;
   }
 
+  /** The queue and history row actions address a row by its own id. */
+  async findById(id: number): Promise<DownloadHistoryRow | null> {
+    const { rows } = await this.pool.query<DownloadHistoryRow>(
+      `SELECT ${COLUMNS} FROM "download_history" WHERE "id" = $1`,
+      [id],
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Operator-driven history pruning. Nothing else deletes from this table: every automatic
+   *  path marks a status instead, so the record of what was attempted survives. */
+  async remove(id: number): Promise<void> {
+    await this.pool.query(`DELETE FROM "download_history" WHERE "id" = $1`, [id]);
+  }
+
+  /** Terminal rows only — a row still in flight is in the queue, not in what "clear" means. */
+  async clearTerminal(): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM "download_history" WHERE "status" IN ('completed', 'failed', 'warning')`,
+    );
+    return rowCount ?? 0;
+  }
+
   /** `download-clients.service.ts:245,327` — latest row for an exact hash. */
   async findLatestByTorrentHash(torrentHash: string): Promise<DownloadHistoryRow | null> {
     const { rows } = await this.pool.query<DownloadHistoryRow>(
