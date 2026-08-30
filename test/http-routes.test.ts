@@ -1065,3 +1065,75 @@ describe('queue and history row titles', () => {
     assert.equal(data[0]!.title, 'Harbour Lights - S12E07');
   });
 });
+
+describe('history live state', () => {
+  /** One enabled client still holding the torrent, whatever the row's own status says. */
+  function depsHolding(row: DownloadHistoryRow) {
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: [
+          {
+            hash: 'abcd',
+            name: 'x',
+            size: 1000,
+            downloaded: 500,
+            progress: 0.5,
+            dlspeed: 1,
+            upspeed: 0,
+            ratio: 0,
+            eta: 60,
+            state: 'downloading',
+            category: '',
+            num_seeds: 1,
+            num_leechs: 0,
+            added_on: 0,
+          },
+        ],
+      }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    return fakeDeps({
+      downloadHistory: { listPage: async () => ({ rows: [row], total: 1 }) },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+  }
+
+  async function historyRowOf(deps: RouteDeps) {
+    const resolved = createRouteTable(deps).resolve('GET', '/history')!;
+    const res = await resolved.handler(req({ path: '/history' }), resolved.params);
+    return (res.body as { data: { state: string | null; progress: number | null }[] }).data[0]!;
+  }
+
+  const stateOf = async (status: DownloadHistoryStatus) => {
+    const row = historyRow({ id: 1, status, torrentHash: 'abcd', downloadClientId: 1 });
+    const item = await historyRowOf(depsHolding(row));
+    return { state: item.state, progress: item.progress };
+  };
+
+  test('a running row reports what its client says', async () => {
+    assert.deepEqual(await stateOf('grabbed'), { state: 'active', progress: 50 });
+  });
+
+  test('VERDICT: a terminal row reports no live state, even while its client still holds the torrent', async () => {
+    // Seeding on, or left behind by an import that failed. Reporting `active` offered a Pause
+    // button on a dead row, for a route that answers 409.
+    assert.deepEqual(await stateOf('failed'), { state: null, progress: null });
+    assert.deepEqual(await stateOf('completed'), { state: null, progress: null });
+  });
+
+  test('an importing row is definitive whatever the client reports', async () => {
+    const row = historyRow({ id: 1, status: 'importing', torrentHash: 'abcd', downloadClientId: 1 });
+    const item = await historyRowOf(depsHolding(row));
+    assert.equal(item.state, 'importing');
+    assert.equal(item.progress, 100);
+  });
+});

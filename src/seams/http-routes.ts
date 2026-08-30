@@ -650,7 +650,10 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
   const indexerNames = new Map(indexers.map((ix: { id: number; name: string }) => [ix.id, ix.name]));
 
   const items: HistoryItemDto[] = rows.map((row) => {
-    const torrent = liveTorrentFor(row, byClientId);
+    // Only a row still in flight has a live state. A terminal row can still have its torrent
+    // sitting in the client — seeding, or left behind by a failed import — and reporting that
+    // as `active` offered a Pause button on a failed grab, for a route that answers 409.
+    const live = QUEUE_STATUSES.includes(row.status) ? liveTorrentFor(row, byClientId) : undefined;
     return {
       id: row.id,
       date: row.createdAt,
@@ -662,8 +665,10 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
       statusMessage: row.statusMessage,
       grabSource: row.grabSource,
       source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
-      state: torrent ? torrentProgressState(torrent) : null,
-      progress: torrent ? torrent.progress * 100 : null,
+      // `importing` is definitive whatever the client says: the download is done, the files
+      // are being moved. Same rule as the queue's own `toQueueItem`.
+      state: row.status === 'importing' ? 'importing' : live ? torrentProgressState(live) : null,
+      progress: row.status === 'importing' ? 100 : live ? live.progress * 100 : null,
       mediaId: row.mediaId,
       seasonId: row.seasonId,
       episodeId: row.episodeId,
