@@ -310,12 +310,19 @@ export class FakeDriver implements DownloadClientDriver {
   /** Set false to simulate a client that could not be asked for its files. */
   filesOk = true;
   deleted: { clientId: number; hash: string; deleteFiles?: boolean }[] = [];
+  controlled: { clientId: number; hash: string; action: 'pause' | 'resume' }[] = [];
   added: { downloadUrl: string; rejectIfAlreadyPresent?: boolean }[] = [];
   nextHash = 'added-hash';
   addShouldReject = false;
 
   supports(client: DownloadClientRow): boolean {
     return client.enabled;
+  }
+  async pauseTorrent(client: DownloadClientRow, hash: string): Promise<void> {
+    this.controlled.push({ clientId: client.id, hash, action: 'pause' });
+  }
+  async resumeTorrent(client: DownloadClientRow, hash: string): Promise<void> {
+    this.controlled.push({ clientId: client.id, hash, action: 'resume' });
   }
   async testConnection() {
     return { ok: true, messageKey: 'ok' };

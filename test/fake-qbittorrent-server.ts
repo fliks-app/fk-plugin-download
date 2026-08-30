@@ -38,6 +38,12 @@ export interface RecordedRequest {
   cookie?: string;
 }
 
+const CONTROL_NAMES: Record<'v5' | 'v4' | 'none', string[]> = {
+  v5: ['stop', 'start'],
+  v4: ['pause', 'resume'],
+  none: [],
+};
+
 export function makeTorrent(over: Partial<FakeTorrent> = {}): FakeTorrent {
   return {
     hash: 'a'.repeat(40),
@@ -67,6 +73,10 @@ export class FakeQbitServer {
   files: { name: string; size: number; progress: number; priority: number }[] = [];
   addStatus = 200;
   deleteStatus = 200;
+  /** Which spelling of stop/resume this server answers. qBittorrent 5.x renamed
+   *  `pause`/`resume` to `stop`/`start`; whichever pair is not this generation's 404s,
+   *  as a real one does. `none` answers neither — a client too old or too broken for both. */
+  controlGeneration: 'v5' | 'v4' | 'none' = 'v5';
 
   private readonly sessions = new Set<string>();
 
@@ -123,6 +133,13 @@ export class FakeQbitServer {
     }
     if (req.method === 'POST' && url.pathname === '/api/v2/torrents/delete') {
       return this.handleDelete(body, res);
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/v2/torrents/')) {
+      const known = CONTROL_NAMES[this.controlGeneration];
+      if (known.includes(url.pathname.split('/').pop() ?? '')) {
+        res.writeHead(200).end();
+        return;
+      }
     }
     if (req.method === 'GET' && url.pathname === '/indexer/magnet-redirect') {
       res.writeHead(302, { Location: `magnet:?xt=urn:btih:${'b'.repeat(40)}` });
