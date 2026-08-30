@@ -25,6 +25,9 @@ export interface GrabArgs {
   quality: string;
   /** Release size in bytes as the indexer reported it; 0/undefined stores null. */
   size?: number | null;
+  /** The tracker's page for this release, when the feed named one. Never `downloadUrl`,
+   *  which carries the API key. */
+  infoUrl?: string | null;
   indexerId?: number | null;
   grabSource: GrabSource;
   seasonNumber?: number;
@@ -67,6 +70,7 @@ export async function grabAndRecord(deps: GrabExecutorDeps, args: GrabArgs): Pro
       sourceTitle: args.sourceTitle,
       torrentHash,
       size: args.size,
+      infoUrl: args.infoUrl,
       quality: args.quality,
       grabSource: args.grabSource,
       indexerId: args.indexerId,

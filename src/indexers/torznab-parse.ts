@@ -113,6 +113,14 @@ export function parseTorznabItems(xml: string, indexer: IndexerRow): IndexerRele
     const downloadVolumeFactor = dvfStr !== null ? parseFloat(dvfStr) : 1;
     const freeleech = downloadVolumeFactor === 0;
 
+    // The tracker's own page for this release. Torznab puts it in <comments>; Jackett and
+    // Prowlarr also repeat it as a permalink <guid>, which is the fallback. Never the
+    // download URL, which carries the API key.
+    const commentsRaw = extractInnerXml(block, 'comments');
+    const guidRaw = extractInnerXml(block, 'guid');
+    const infoCandidate = commentsRaw || (guidRaw?.startsWith('http') ? guidRaw : undefined);
+    const infoUrl = infoCandidate ? decodeHtmlEntities(infoCandidate.trim()) : undefined;
+
     const pubDateRaw = extractInnerXml(block, 'pubDate');
     let publishDate: string | null = null;
     if (pubDateRaw) {
@@ -123,6 +131,7 @@ export function parseTorznabItems(xml: string, indexer: IndexerRow): IndexerRele
     out.push({
       title,
       downloadUrl: ensureApiKey(url, apiKey),
+      ...(infoUrl ? { infoUrl } : {}),
       indexerId: indexer.id,
       indexerName: indexer.name,
       size,

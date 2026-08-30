@@ -326,6 +326,7 @@ export async function grabRelease(
     downloadUrl: pick.downloadUrl,
     quality: pick.qualityName,
     size: pick.size,
+    infoUrl: pick.infoUrl,
     indexerId: pick.indexerId,
     grabSource: 'auto',
   });

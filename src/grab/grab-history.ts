@@ -18,6 +18,7 @@ export function buildGrabHistoryRow(args: {
   sourceTitle: string;
   torrentHash: string | null | undefined;
   size?: number | null;
+  infoUrl?: string | null;
   quality: string;
   grabSource: GrabSource;
   indexerId?: number | null;
@@ -34,6 +35,7 @@ export function buildGrabHistoryRow(args: {
     sourceTitle: decodeHtmlEntities(args.sourceTitle),
     torrentHash: args.torrentHash || null,
     size: args.size || null,
+    infoUrl: args.infoUrl || null,
     quality: args.quality,
     grabSource: args.grabSource,
     indexerId: args.indexerId ?? null,

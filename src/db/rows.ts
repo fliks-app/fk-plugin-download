@@ -69,6 +69,9 @@ export interface DownloadHistoryRow {
   torrentHash: string | null;
   /** `bigint` — see `pool.ts`'s OID 20 parser. Null on rows grabbed before it was recorded. */
   size: number | null;
+  /** The tracker's own page for this release. Null when the feed named none, or on rows
+   *  grabbed before the column existed. Never the download URL, which carries the API key. */
+  infoUrl: string | null;
   status: DownloadHistoryStatus;
   statusMessage: string | null;
   grabSource: GrabSource;

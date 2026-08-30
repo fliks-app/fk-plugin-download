@@ -5,6 +5,9 @@ import type { IndexerRow, IndexerStatRow } from '../db/rows';
 export interface IndexerRelease {
   title: string;
   downloadUrl: string;
+  /** The tracker's own page for this release, when the feed named one. Distinct from
+   *  `downloadUrl`, which carries the API key and must never be shown to a user. */
+  infoUrl?: string;
   indexerId: number;
   indexerName: string;
   size: number;

@@ -41,6 +41,36 @@ function subjectFor(name: string): string {
  *  CASL-guarded, so this is presentation, not the boundary. */
 const WHEN_QUEUE_CONTROL = [`hasPermission:${subjectFor(PERMISSIONS.queueControl)}`];
 
+/** Shared by both tables. Every value is already on the row, so this needs no route — and a row
+ *  that carries none of a field simply omits the line, which is what lets one declaration serve a
+ *  running queue row and a finished history one. */
+const DETAIL_ACTION = {
+  kind: 'detail' as const,
+  labelKey: 'download.config.queue.actions.info',
+  titleKey: 'download.config.queue.detail_title',
+  fields: [
+    { key: 'sourceTitle', labelKey: 'download.config.queue.detail.release' },
+    { key: 'quality', labelKey: 'download.config.history.columns.quality' },
+    { key: 'size', labelKey: 'download.config.queue.columns.size', format: 'bytes' as const },
+    { key: 'source', labelKey: 'download.config.queue.detail.indexer' },
+    {
+      key: 'grabSource',
+      labelKey: 'download.config.history.columns.grab_source',
+      labelKeys: {
+        auto: 'download.config.history.grab_source.auto',
+        manual: 'download.config.history.grab_source.manual',
+      },
+    },
+    { key: 'date', labelKey: 'download.config.history.columns.date', format: 'date' as const },
+    {
+      kind: 'link' as const,
+      key: 'infoUrl',
+      labelKey: 'download.config.queue.detail.indexer_page',
+      textKey: 'download.config.queue.detail.indexer_page_open',
+    },
+  ],
+};
+
 /** Shared by both tables: the same three controls, gated on the row's live state. `importing`
  *  appears in none of them — its files are already being moved. */
 const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
@@ -486,10 +516,10 @@ export const CONFIG_PAGES = [
       {
         key: 'title',
         labelKey: 'download.config.queue.columns.title',
-        // The media, not the release name — the queue is read to see which film is downloading.
-        // The release name is one click away rather than gone.
-        detailField: 'sourceTitle',
-        detailTitleKey: 'download.config.queue.detail_release',
+        // The media, not the release name: the queue is read to see which film is downloading,
+        // and the title is what you click to reach it. Everything else about the row, the
+        // release name included, is one button away in the detail dialog.
+        linkActionId: 'table.open-media' as const,
         // Which tracker the release came from, badged under the name rather than costing a column.
         subValues: [{ key: 'source', badges: { '*': 'neutral' as const } }],
       },
@@ -525,10 +555,7 @@ export const CONFIG_PAGES = [
     refreshMs: 10_000,
     // Reads mediaId/mediaType straight off each row — core's own resolver renders no
     // button when either is null, so an unresolved row is simply inert, not broken.
-    rowActions: [
-      { kind: 'action' as const, labelKey: 'download.config.queue.actions.open_media', actionId: 'table.open-media' },
-      ...QUEUE_CONTROL_ACTIONS('state'),
-    ],
+    rowActions: [DETAIL_ACTION, ...QUEUE_CONTROL_ACTIONS('state')],
   },
   {
     // The queue holds what is in flight; a row that completes or fails leaves it immediately.
@@ -562,9 +589,8 @@ export const CONFIG_PAGES = [
       {
         key: 'title',
         labelKey: 'download.config.history.columns.title',
-        // Same as the queue: the media, with its release name a click away.
-        detailField: 'sourceTitle',
-        detailTitleKey: 'download.config.queue.detail_release',
+        // Same as the queue: the media, and the title is the way to it.
+        linkActionId: 'table.open-media' as const,
         // Quality and tracker belong with the release's name; as columns of their own they
         // spent the width the title needed. Every quality value is worth badging: `*`.
         subValues: [
@@ -603,7 +629,7 @@ export const CONFIG_PAGES = [
     // a row read here is often the one an operator wants to stop, and sending them to another
     // page to do it is the kind of gap that makes a feature go unused.
     rowActions: [
-      { kind: 'action' as const, labelKey: 'download.config.queue.actions.open_media', actionId: 'table.open-media' },
+      DETAIL_ACTION,
       ...QUEUE_CONTROL_ACTIONS('state'),
       {
         kind: 'proxy' as const,
@@ -776,7 +802,15 @@ export const I18N = {
     'download.config.queue.title': 'Queue',
     'download.config.queue.columns.title': 'Title',
     'download.config.queue.columns.state': 'State',
-    'download.config.queue.detail_release': 'Release',
+    'download.config.queue.actions.info': 'Info',
+    'download.config.queue.detail_title': 'Download details',
+    'download.config.queue.detail.release': 'Release',
+    'download.config.queue.detail.indexer': 'Indexer',
+    'download.config.queue.detail.indexer_page': 'Torrent page',
+    'download.config.queue.detail.indexer_page_open': 'Open on the indexer',
+    'download.config.history.columns.quality': 'Quality',
+    'download.config.history.grab_source.auto': 'Automatic',
+    'download.config.history.grab_source.manual': 'Manual',
     'download.config.queue.actions.pause': 'Pause',
     'download.config.queue.actions.resume': 'Resume',
     'download.config.queue.actions.remove': 'Remove',
@@ -790,7 +824,6 @@ export const I18N = {
       'Delete every finished, failed and warned entry? Downloads still running are kept.',
     'download.config.queue.columns.speed': 'Speed',
     'download.config.queue.columns.size': 'Size',
-    'download.config.queue.actions.open_media': 'Open',
   },
   // Vocabulary matches Fliks' own fr.json for the same ideas (priorité, tester la connexion,
   // clé API, client de téléchargement, profil de qualité) rather than inventing new terms.
@@ -935,7 +968,15 @@ export const I18N = {
     'download.config.queue.title': 'File d’attente',
     'download.config.queue.columns.title': 'Titre',
     'download.config.queue.columns.state': 'État',
-    'download.config.queue.detail_release': 'Release',
+    'download.config.queue.actions.info': 'Info',
+    'download.config.queue.detail_title': 'Détails du téléchargement',
+    'download.config.queue.detail.release': 'Release',
+    'download.config.queue.detail.indexer': 'Indexeur',
+    'download.config.queue.detail.indexer_page': 'Page du torrent',
+    'download.config.queue.detail.indexer_page_open': "Ouvrir sur l'indexeur",
+    'download.config.history.columns.quality': 'Qualité',
+    'download.config.history.grab_source.auto': 'Automatique',
+    'download.config.history.grab_source.manual': 'Manuelle',
     'download.config.queue.actions.pause': 'Mettre en pause',
     'download.config.queue.actions.resume': 'Reprendre',
     'download.config.queue.actions.remove': 'Supprimer',
@@ -949,7 +990,6 @@ export const I18N = {
       'Supprimer toutes les entrées terminées, échouées et en avertissement ? Les téléchargements en cours sont conservés.',
     'download.config.queue.columns.speed': 'Vitesse',
     'download.config.queue.columns.size': 'Taille',
-    'download.config.queue.actions.open_media': 'Ouvrir',
   },
 };
 

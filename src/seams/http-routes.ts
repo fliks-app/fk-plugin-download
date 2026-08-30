@@ -484,6 +484,12 @@ async function handleClearHistory(deps: RouteDeps): Promise<PluginHttpResponse> 
 export interface QueueItemDto extends MediaLabelled {
   id: number;
   quality: string;
+  /** Both read only by the detail dialog, which is why neither is a column. */
+  grabSource: GrabSource;
+  date: string;
+  /** The tracker's page for this release; null when the feed named none, or on a row grabbed
+   *  before the column existed. Never the download URL, which carries the API key. */
+  infoUrl: string | null;
   state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
   /** Percent, 0-100 — the table renders it verbatim. Clients report a 0-1 fraction, which
    *  rounded to 0% for everything short of a finished download. */
@@ -622,6 +628,9 @@ function toQueueItem(
     title: row.sourceTitle,
     sourceTitle: row.sourceTitle,
     quality: row.quality,
+    grabSource: row.grabSource,
+    date: row.createdAt,
+    infoUrl: row.infoUrl,
     source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
     mediaId: row.mediaId,
     seasonId: row.seasonId,
@@ -665,6 +674,7 @@ interface HistoryItemDto extends MediaLabelled {
   statusMessage: string | null;
   grabSource: GrabSource;
   source: string;
+  infoUrl: string | null;
   /** Live client state, for a row still running. Null on every terminal row, and on a running
    *  one whose client did not answer — which is what gates the controls: an unknown state
    *  offers none, rather than a Pause that cannot know whether it applies. */
@@ -708,6 +718,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
       statusMessage: row.statusMessage,
       grabSource: row.grabSource,
       source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
+      infoUrl: row.infoUrl,
       // `importing` is definitive whatever the client says: the download is done, the files
       // are being moved. Same rule as the queue's own `toQueueItem`.
       state: row.status === 'importing' ? 'importing' : live ? torrentProgressState(live) : null,

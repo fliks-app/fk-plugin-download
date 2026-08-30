@@ -66,6 +66,7 @@ export async function tryAutoGrab(
     downloadUrl: pick.downloadUrl,
     quality: pick.qualityName,
     size: pick.size,
+    infoUrl: pick.infoUrl,
     indexerId: pick.indexerId,
     grabSource: 'auto',
     seasonNumber: target.season?.number,

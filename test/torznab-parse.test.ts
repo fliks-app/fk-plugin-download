@@ -163,3 +163,40 @@ test('describeTorznabQuery never echoes the apikey', () => {
   assert.ok(!desc.includes('super-secret'));
   assert.equal(desc, 'search q="foo"');
 });
+
+const withInfo = (extra: string) =>
+  parseTorznabItems(
+    `<rss><channel><item>
+      <title>Some.Movie.2024.1080p</title>
+      <link>https://tracker.example/dl/abc</link>
+      ${extra}
+    </item></channel></rss>`,
+    indexer({ apiKey: 'k1' }),
+  )[0];
+
+test('takes the tracker page from <comments>', () => {
+  assert.equal(withInfo('<comments>https://tracker.example/details/42</comments>')?.infoUrl, 'https://tracker.example/details/42');
+});
+
+test('falls back to a permalink <guid> when there is no <comments>', () => {
+  assert.equal(withInfo('<guid isPermaLink="true">https://tracker.example/t/42</guid>')?.infoUrl, 'https://tracker.example/t/42');
+});
+
+test('<comments> wins over <guid> — it is the one Torznab defines for this', () => {
+  const r = withInfo('<comments>https://tracker.example/details/42</comments><guid>abc-123</guid>');
+  assert.equal(r?.infoUrl, 'https://tracker.example/details/42');
+});
+
+test('VERDICT: a non-http <guid> is an opaque id, not a page — no link rather than a broken one', () => {
+  assert.equal(withInfo('<guid isPermaLink="false">abc-123-def</guid>')?.infoUrl, undefined);
+});
+
+test('an item naming neither carries no page at all', () => {
+  assert.equal(withInfo('')?.infoUrl, undefined);
+});
+
+test('VERDICT: the tracker page is never the download url — that one carries the API key', () => {
+  const r = withInfo('<comments>https://tracker.example/details/42</comments>');
+  assert.ok(r?.downloadUrl.includes('k1'), 'the download url is still api-keyed');
+  assert.ok(!r?.infoUrl?.includes('k1'), 'the page url must not leak it');
+});
