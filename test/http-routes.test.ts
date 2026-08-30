@@ -1281,3 +1281,79 @@ describe('a queue control states the media set at once', () => {
     assert.equal((await run(deps, 'POST', '/queue/3/pause')).status, 200);
   });
 });
+
+describe('history entries are records, not queue state', () => {
+  const deleteRow = async (status: DownloadHistoryStatus) => {
+    const removed: number[] = [];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findById: async () => historyRow({ id: 7, status }),
+        remove: async (id: number) => void removed.push(id),
+      },
+    });
+    const resolved = createRouteTable(deps).resolve('DELETE', '/history/7')!;
+    const res = await resolved.handler(req({ method: 'DELETE', path: '/history/7' }), resolved.params);
+    return { status: res.status, removed };
+  };
+
+  test('a finished grab can be deleted, whatever the outcome was', async () => {
+    for (const s of ['completed', 'failed', 'warning'] as DownloadHistoryStatus[]) {
+      assert.deepEqual(await deleteRow(s), { status: 200, removed: [7] }, s);
+    }
+  });
+
+  test('VERDICT: a running grab is refused — deleting the row orphans the download, it does not stop it', async () => {
+    for (const s of ['grabbed', 'importing'] as DownloadHistoryStatus[]) {
+      const { status, removed } = await deleteRow(s);
+      assert.equal(status, 409, s);
+      assert.deepEqual(removed, [], s);
+    }
+  });
+});
+
+describe('the history status column reads like the queue while a row runs', () => {
+  async function displayStatus(status: DownloadHistoryStatus, torrentState: string | null) {
+    const driver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: torrentState
+          ? [{ hash: 'abcd', name: 'x', size: 1, downloaded: 0, progress: 0.5, dlspeed: 0, upspeed: 0,
+               ratio: 0, eta: 0, state: torrentState, category: '', num_seeds: 0, num_leechs: 0, added_on: 0 }]
+          : [],
+      }),
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    } as unknown as DownloadClientDriver;
+    const deps = fakeDeps({
+      downloadHistory: {
+        listPage: async () => ({ rows: [historyRow({ id: 1, status, torrentHash: 'abcd', downloadClientId: 1 })], total: 1 }),
+      },
+      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/history')!;
+    const res = await resolved.handler(req({ path: '/history' }), resolved.params);
+    return (res.body as { data: { status: string; displayStatus: string }[] }).data[0]!;
+  }
+
+  test('VERDICT: a paused grab reads "paused" here too, not "grabbed"', async () => {
+    const row = await displayStatus('grabbed', 'pausedDL');
+    assert.equal(row.displayStatus, 'paused');
+    // The filter still queries the recorded status, so it is left alone.
+    assert.equal(row.status, 'grabbed');
+  });
+
+  test('a terminal row reads what was recorded', async () => {
+    assert.equal((await displayStatus('failed', null)).displayStatus, 'failed');
+  });
+
+  test('a running row whose client no longer holds it falls back to the record', async () => {
+    assert.equal((await displayStatus('grabbed', null)).displayStatus, 'grabbed');
+  });
+});

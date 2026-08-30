@@ -92,11 +92,11 @@ const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
   },
   {
     kind: 'proxy' as const,
-    labelKey: 'download.config.queue.actions.remove',
+    labelKey: 'download.config.queue.actions.cancel',
     method: 'DELETE' as const,
     path: '/queue/:id',
-    confirmKey: 'download.config.queue.actions.remove_confirm',
-    confirmToggle: { labelKey: 'download.config.queue.actions.remove_delete_files', param: 'deleteFiles' },
+    confirmKey: 'download.config.queue.actions.cancel_confirm',
+    confirmToggle: { labelKey: 'download.config.queue.actions.cancel_delete_files', param: 'deleteFiles' },
     tone: 'danger' as const,
     when: WHEN_QUEUE_CONTROL,
     visibleWhen: { key: stateKey, in: ['queued', 'active', 'stalled', 'paused'] },
@@ -601,9 +601,15 @@ export const CONFIG_PAGES = [
       },
       { key: 'grabSource', labelKey: 'download.config.history.columns.grab_source', nowrap: true },
       {
-        key: 'status',
+        key: 'displayStatus',
         labelKey: 'download.config.history.columns.status',
+        // Both vocabularies: a running row reads exactly as it does in the queue, a finished one
+        // reads as what was recorded.
         labelKeys: {
+          queued: 'download.config.queue.states.queued',
+          active: 'download.config.queue.states.active',
+          stalled: 'download.config.queue.states.stalled',
+          paused: 'download.config.queue.states.paused',
           grabbed: 'download.config.history.filters.status_grabbed',
           importing: 'download.status.importing',
           completed: 'download.config.history.filters.status_completed',
@@ -611,6 +617,10 @@ export const CONFIG_PAGES = [
           warning: 'download.config.history.filters.status_warning',
         },
         badges: {
+          queued: 'neutral' as const,
+          active: 'info' as const,
+          stalled: 'warning' as const,
+          paused: 'ghost' as const,
           grabbed: 'info' as const,
           importing: 'primary' as const,
           completed: 'success' as const,
@@ -639,6 +649,9 @@ export const CONFIG_PAGES = [
         confirmKey: 'download.config.history.actions.delete_confirm',
         tone: 'danger' as const,
         when: WHEN_QUEUE_CONTROL,
+        // A row still in flight is queue state: deleting it would orphan the download rather
+        // than stop it, and the route refuses it anyway.
+        visibleWhen: { key: 'status', in: ['completed', 'failed', 'warning'] },
       },
     ],
     listActions: [
@@ -814,12 +827,16 @@ export const I18N = {
     'download.config.history.grab_source.manual': 'Manual',
     'download.config.queue.actions.pause': 'Pause',
     'download.config.queue.actions.resume': 'Resume',
-    'download.config.queue.actions.remove': 'Remove',
-    'download.config.queue.actions.remove_confirm':
-      'Remove this download from its client? It will stop and leave the queue.',
-    'download.config.queue.actions.remove_delete_files': 'Also delete the downloaded files',
-    'download.config.history.actions.delete': 'Delete',
-    'download.config.history.actions.delete_confirm': 'Delete this history entry?',
+    'download.config.queue.actions.cancel': 'Cancel download',
+    'download.config.queue.actions.cancel_confirm':
+      'Stop this download and remove it from its download client? It leaves the queue either way.',
+    'download.config.queue.actions.cancel_delete_files':
+      'Also delete the files held by the download client. Anything already imported into your library is kept.',
+    'download.config.history.actions.delete': 'Delete entry',
+    'download.config.history.actions.delete_confirm':
+      'Delete this entry? It only removes the record; no file is touched.',
+    'download.config.history.errors.still_running':
+      'This grab is still running. Cancel it from the queue first.',
     'download.config.history.actions.clear': 'Clear history',
     'download.config.history.actions.clear_confirm':
       'Delete every finished, failed and warned entry? Downloads still running are kept.',
@@ -981,12 +998,16 @@ export const I18N = {
     'download.config.history.grab_source.manual': 'Manuelle',
     'download.config.queue.actions.pause': 'Mettre en pause',
     'download.config.queue.actions.resume': 'Reprendre',
-    'download.config.queue.actions.remove': 'Supprimer',
-    'download.config.queue.actions.remove_confirm':
-      "Retirer ce téléchargement de son client ? Il s'arrêtera et quittera la file d'attente.",
-    'download.config.queue.actions.remove_delete_files': 'Supprimer aussi les fichiers téléchargés',
-    'download.config.history.actions.delete': 'Supprimer',
-    'download.config.history.actions.delete_confirm': 'Supprimer cette entrée de l’historique ?',
+    'download.config.queue.actions.cancel': 'Annuler le téléchargement',
+    'download.config.queue.actions.cancel_confirm':
+      "Arrêter ce téléchargement et le retirer de son client ? Il quitte la file d'attente dans tous les cas.",
+    'download.config.queue.actions.cancel_delete_files':
+      'Supprimer aussi les fichiers détenus par le client de téléchargement. Ce qui est déjà importé dans votre bibliothèque est conservé.',
+    'download.config.history.actions.delete': "Supprimer l'entrée",
+    'download.config.history.actions.delete_confirm':
+      "Supprimer cette entrée ? Cela retire seulement l'enregistrement, aucun fichier n'est touché.",
+    'download.config.history.errors.still_running':
+      "Ce téléchargement est encore en cours. Annulez-le depuis la file d'attente d'abord.",
     'download.config.history.actions.clear': 'Vider l’historique',
     'download.config.history.actions.clear_confirm':
       'Supprimer toutes les entrées terminées, échouées et en avertissement ? Les téléchargements en cours sont conservés.',

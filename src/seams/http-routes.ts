@@ -450,11 +450,23 @@ async function handleQueueRemove(deps: RouteDeps, req: PluginHttpRequest, params
   return jsonResponse(200, {});
 }
 
-/** Deletes one history row outright — the operator asked for the record itself to go. */
+/** A grab that has finished, one way or another. A row outside this set is still queue state. */
+const DELETABLE_STATUSES: DownloadHistoryStatus[] = ['completed', 'failed', 'warning'];
+
+/**
+ * Deletes one history row outright. Refused while the grab is still in flight: the row is the
+ * only link between the torrent and the media, so dropping it would not stop the download, it
+ * would orphan it — and `autoMatchOrphanTorrents` recreates a row for a torrent it still finds
+ * in the client, so the deletion would not even stick. Stopping it belongs to the queue.
+ */
 async function handleDeleteHistoryEntry(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
   const id = requireIntParam(params, 'id');
   if (id === null) return badRequest('id');
-  if (!(await deps.downloadHistory.findById(id))) return notFoundResponse(String(id));
+  const row = await deps.downloadHistory.findById(id);
+  if (!row) return notFoundResponse(String(id));
+  if (!DELETABLE_STATUSES.includes(row.status)) {
+    return jsonResponse(409, { error: { key: 'download.config.history.errors.still_running', detail: row.status } });
+  }
   await deps.downloadHistory.remove(id);
   return jsonResponse(200, {});
 }
@@ -658,6 +670,9 @@ interface HistoryItemDto extends MediaLabelled {
   /** Null on rows grabbed before the column existed — the view omits it then. */
   size: number | null;
   status: DownloadHistoryStatus;
+  /** What the status column renders: the live client state while the row is running, the
+   *  recorded status once it is not. `status` stays what it was, since the filter queries it. */
+  displayStatus: string;
   statusMessage: string | null;
   grabSource: GrabSource;
   source: string;
@@ -702,6 +717,7 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
       quality: row.quality,
       size: row.size || null,
       status: row.status,
+      displayStatus: (row.status === 'importing' ? 'importing' : live ? torrentProgressState(live) : null) ?? row.status,
       statusMessage: row.statusMessage,
       grabSource: row.grabSource,
       source: (row.indexerId != null ? indexerNames.get(row.indexerId) : undefined) ?? '',
