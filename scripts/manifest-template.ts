@@ -653,9 +653,9 @@ export const CONFIG_PAGES = [
         confirmKey: 'download.config.history.actions.delete_confirm',
         tone: 'danger' as const,
         when: WHEN_QUEUE_CONTROL,
-        // A row still in flight is queue state: deleting it would orphan the download rather
-        // than stop it, and the route refuses it anyway.
-        visibleWhen: { key: 'status', in: ['completed', 'failed', 'warning'] },
+        // Not gated on the status: a row can read `grabbed` with no torrent behind it, and
+        // hiding the button then left it with no way out at all. The route refuses on a
+        // sighting instead.
       },
     ],
     listActions: [

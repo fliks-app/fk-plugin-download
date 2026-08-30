@@ -496,3 +496,45 @@ test('an unattended grab still refuses a torrent already held, without adding it
     await server.close();
   }
 });
+
+test('VERDICT: a reused torrent is moved into the category the queue reads, or it stays invisible', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent({ hash: 'a'.repeat(40) })] });
+  server.categories.add('fliks');
+  try {
+    await new QbittorrentDriver().addTorrentUrl(
+      clientFor(server.url, { category: 'fliks' }),
+      `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+    );
+    assert.equal(server.categoryByHash.get('a'.repeat(40)), 'fliks');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a category the client does not know yet is created, then used', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent({ hash: 'a'.repeat(40) })] });
+  try {
+    await new QbittorrentDriver().addTorrentUrl(
+      clientFor(server.url, { category: 'brand-new' }),
+      `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+    );
+    assert.ok(server.categories.has('brand-new'));
+    assert.equal(server.categoryByHash.get('a'.repeat(40)), 'brand-new');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a client with no category configured needs no adoption', async () => {
+  const server = await FakeQbitServer.start({ ...CREDS, torrents: [makeTorrent({ hash: 'a'.repeat(40) })] });
+  try {
+    const hash = await new QbittorrentDriver().addTorrentUrl(
+      clientFor(server.url),
+      `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+    );
+    assert.equal(hash, 'a'.repeat(40));
+    assert.equal(server.requests.some((r) => r.path.endsWith('/setCategory')), false);
+  } finally {
+    await server.close();
+  }
+});

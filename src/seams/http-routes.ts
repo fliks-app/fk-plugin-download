@@ -453,22 +453,28 @@ async function handleQueueRemove(deps: RouteDeps, req: PluginHttpRequest, params
   return jsonResponse(200, {});
 }
 
-/** A grab that has finished, one way or another. A row outside this set is still queue state. */
-const DELETABLE_STATUSES: DownloadHistoryStatus[] = ['completed', 'failed', 'warning'];
-
 /**
- * Deletes one history row outright. Refused while the grab is still in flight: the row is the
- * only link between the torrent and the media, so dropping it would not stop the download, it
- * would orphan it — and `autoMatchOrphanTorrents` recreates a row for a torrent it still finds
- * in the client, so the deletion would not even stick. Stopping it belongs to the queue.
+ * Deletes one history row outright. Refused only while a client is positively still holding its
+ * torrent: the row is the only link between that torrent and its media, so dropping it would not
+ * stop the download, it would orphan it — and `autoMatchOrphanTorrents` recreates a row for a
+ * torrent it still finds, so the deletion would not even stick. Cancelling belongs to the queue.
+ *
+ * The test is a sighting, never the recorded status. A row can read `grabbed` with nothing behind
+ * it — a torrent deleted outside Fliks, or one the queue cannot show — and gating on the status
+ * left such a row impossible to cancel (it is not in the queue) and impossible to delete (it does
+ * not read as finished). A record with nothing running behind it is just a record.
  */
 async function handleDeleteHistoryEntry(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
   const id = requireIntParam(params, 'id');
   if (id === null) return badRequest('id');
   const row = await deps.downloadHistory.findById(id);
   if (!row) return notFoundResponse(String(id));
-  if (!DELETABLE_STATUSES.includes(row.status)) {
-    return jsonResponse(409, { error: { key: 'download.config.history.errors.still_running', detail: row.status } });
+
+  if (row.torrentHash) {
+    const { byClientId } = await indexClientTorrents(deps);
+    if (liveTorrentFor(row, byClientId)) {
+      return jsonResponse(409, { error: { key: 'download.config.history.errors.still_running', detail: row.status } });
+    }
   }
   await deps.downloadHistory.remove(id);
   return jsonResponse(200, {});

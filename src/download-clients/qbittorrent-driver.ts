@@ -172,6 +172,40 @@ async function addMagnet(base: string, cookie: string, magnetUrl: string, catego
 
 /** Native `FormData`/`Blob` encode the multipart body `fetch` needs — no
  *  extra dependency for what one file field and one text field require. */
+function form(base: string, cookie: string, path: string, fields: Record<string, string>): Promise<Response> {
+  return httpRequest(`${base}/api/v2/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
+    body: new URLSearchParams(fields),
+    timeoutMs: 15_000,
+  });
+}
+
+/**
+ * Moves a torrent the client already held into the category this client manages. Without it a
+ * reused torrent stays invisible: `getTorrentsResult` lists one category, so a torrent sitting
+ * outside it reads as "the client answered and does not hold this", and its queue row vanishes
+ * while the grab reports success.
+ *
+ * `setCategory` answers 409 for a category that does not exist yet — `add` creates one on the
+ * fly, this does not — so a first miss creates it and retries. Failing after that throws: a
+ * torrent we cannot put where the queue looks is not one we can claim to have reused.
+ */
+async function adoptIntoCategory(base: string, cookie: string, hash: string, category: string): Promise<void> {
+  if (!category) return;
+  let res = await form(base, cookie, 'torrents/setCategory', { hashes: hash, category });
+  if (res.status === 409) {
+    await form(base, cookie, 'torrents/createCategory', { category, savePath: '' });
+    res = await form(base, cookie, 'torrents/setCategory', { hashes: hash, category });
+  }
+  if (res.status !== 200) {
+    throw new DownloadClientHttpError(
+      res.status,
+      `the torrent is already in the download client but could not be moved to the "${category}" category (HTTP ${res.status})`,
+    );
+  }
+}
+
 async function addTorrentFile(base: string, cookie: string, buffer: Buffer, category: string): Promise<Response> {
   const fd = new FormData();
   fd.append('torrents', new Blob([buffer], { type: 'application/x-bittorrent' }), 'download.torrent');
@@ -357,11 +391,14 @@ export class QbittorrentDriver implements DownloadClientDriver {
      * download client refused the torrent" on a release that was already there, sometimes
      * already finished.
      */
-    const alreadyHeld = (hash: string | undefined): string | undefined => {
+    const alreadyHeld = async (hash: string | undefined): Promise<string | undefined> => {
       if (!hash || !beforeHashes.has(hash.toLowerCase())) return undefined;
       if (rejectIfAlreadyPresent) {
         throw new TorrentAlreadyPresentError(`torrent ${hash} is already in the download client`);
       }
+      // The snapshot spans every category; the queue reads one. Adopting it is what makes the
+      // reuse real rather than a grab that succeeds into thin air.
+      await adoptIntoCategory(base, cookie, hash, category);
       return hash;
     };
 
@@ -370,19 +407,19 @@ export class QbittorrentDriver implements DownloadClientDriver {
 
     if (url.startsWith('magnet:')) {
       infoHash = extractMagnetInfoHash(url);
-      const held = alreadyHeld(infoHash);
+      const held = await alreadyHeld(infoHash);
       if (held) return held;
       addRes = await addMagnet(base, cookie, url, category);
     } else {
       const fetched = await fetchTorrentOrMagnet(url);
       if ('magnet' in fetched) {
         infoHash = extractMagnetInfoHash(fetched.magnet);
-        const held = alreadyHeld(infoHash);
+        const held = await alreadyHeld(infoHash);
         if (held) return held;
         addRes = await addMagnet(base, cookie, fetched.magnet, category);
       } else {
         infoHash = computeInfoHash(fetched.buffer);
-        const held = alreadyHeld(infoHash);
+        const held = await alreadyHeld(infoHash);
         if (held) return held;
         addRes = await addTorrentFile(base, cookie, fetched.buffer, category);
       }
