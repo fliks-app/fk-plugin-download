@@ -36,8 +36,6 @@ export interface AcquisitionTarget {
     decision: 'missing' | 'upgrade' | 'skip';
     allowedQualityIds: number[];
     allowedLanguageIds: number[];
-    minRankExclusive: number;
-    maxRankInclusive: number;
     minResolution: number;
     resolutionUpgradeOnly: boolean;
   } | null;
