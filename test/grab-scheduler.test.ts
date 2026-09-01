@@ -37,14 +37,14 @@ function target(over: Partial<AcquisitionTarget> = {}): AcquisitionTarget {
     tmdbId: null,
     tvdbId: null,
     libraryId: 1,
-    want: { decision: 'missing', allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false },
+    want: { decision: 'missing', allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false },
     expectedTitles: ['Movie'],
     searchTitle: 'Movie',
     ...over,
   };
 }
 
-const skipWant = { decision: 'skip' as const, allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false };
+const skipWant = { decision: 'skip' as const, allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false };
 
 const indexerRow = { id: 1, name: 'ix', implementation: 'torznab', settings: {}, enableRss: true, enableSearch: true, priority: 1, enabled: true, capsSearchFallback: false, capsMovieSearch: false, capsTvSearch: false, requestDelay: 2, createdAt: '', updatedAt: '' };
 

@@ -1,9 +1,8 @@
 /**
- * Release-selection-given-a-scored-list: the pick predicate ported from
- * `AutoGrabExecutorService.tryAutoGrab` (`auto-grab-pipeline.service.ts`) —
- * first release with no rejections whose rank falls inside
- * `(minRankExclusive, maxRankInclusive]`. Also covers `joinScored`, the
- * re-attachment of raw indexer fields onto `releases.score`'s response.
+ * Release-selection-given-a-scored-list: the first release core did not reject. The upgrade
+ * window used to be reapplied here from `want`; core decides it now and reports it as a
+ * rejection like every other profile rule. Also covers `joinScored`, the re-attachment of raw
+ * indexer fields onto `releases.score`'s response.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,7 +31,7 @@ function scored(over: Partial<ScoredRelease>): ScoredRelease {
 }
 
 describe('pickRelease', () => {
-  const want = { decision: 'missing' as const, allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false };
+  const want = { decision: 'missing' as const, allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false };
 
   test('picks the first release with no rejections inside the rank window — matching upstream order', () => {
     const sorted = [
@@ -45,16 +44,16 @@ describe('pickRelease', () => {
     assert.equal(pickRelease(sorted, want)?.id, '1');
   });
 
-  test('rejects a release below the exclusive floor (already on disk at that rank)', () => {
-    const upgradeWant = { ...want, minRankExclusive: 40 };
-    const sorted = [scored({ id: '0', rank: 40, rejections: [] }), scored({ id: '1', rank: 50, rejections: [] })];
-    assert.equal(pickRelease(sorted, upgradeWant)?.id, '1');
-  });
-
-  test('rejects a release above the inclusive ceiling', () => {
-    const cappedWant = { ...want, maxRankInclusive: 45 };
-    const sorted = [scored({ id: '0', rank: 50, rejections: [] })];
-    assert.equal(pickRelease(sorted, cappedWant), undefined);
+  test('VERDICT: trusts core on the upgrade window instead of reapplying it', () => {
+    // Core reports an out-of-window release as rejected. Re-deriving the bound here is what
+    // let the resolution-upgrade rule end up enforced by neither side.
+    const outOfWindow = scored({
+      id: '0',
+      rank: 95,
+      rejections: [{ code: 'RANK_ABOVE_CUTOFF', params: { actual: 95, max: 68 } }],
+    });
+    const inWindow = scored({ id: '1', rank: 30, rejections: [] });
+    assert.equal(pickRelease([outOfWindow, inWindow], want)?.id, '1');
   });
 
   test('skips every release with a rejection, even a high-rank one', () => {

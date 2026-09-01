@@ -28,7 +28,7 @@ function target(): AcquisitionTarget {
     tmdbId: null,
     tvdbId: null,
     libraryId: 1,
-    want: { decision: 'missing', allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false },
+    want: { decision: 'missing', allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false },
     expectedTitles: ['Movie'],
     searchTitle: 'Movie',
   } as AcquisitionTarget;

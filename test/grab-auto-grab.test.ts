@@ -25,7 +25,7 @@ function target(over: Partial<AcquisitionTarget>): AcquisitionTarget {
     tmdbId: null,
     tvdbId: null,
     libraryId: 1,
-    want: { decision: 'missing', allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false },
+    want: { decision: 'missing', allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false },
     expectedTitles: ['Movie'],
     searchTitle: 'Movie',
     ...over,
@@ -93,7 +93,7 @@ describe('tryAutoGrab', () => {
   test('skips a skip-decision target (already satisfies its profile) without searching — never grabbed unattended', async () => {
     const { deps } = buildDeps();
     let searched = false;
-    const skipWant = { decision: 'skip' as const, allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false };
+    const skipWant = { decision: 'skip' as const, allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false };
     const ok = await tryAutoGrab(deps, target({ want: skipWant }), makeClient(), async () => {
       searched = true;
       return [release({})];

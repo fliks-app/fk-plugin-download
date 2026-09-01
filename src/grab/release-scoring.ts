@@ -68,14 +68,13 @@ export function joinScored(raw: IndexerRelease[], scored: ScoredRelease[]): Rank
 }
 
 /**
- * First release with no rejections whose rank falls inside the profile's window.
- * `releases.score`'s response is already sorted by relevance (see its doc-comment in
- * `src/host-methods.ts`), so this is a plain `find`.
+ * First release core did not reject. Its response is already sorted by relevance (see the
+ * doc-comment in `src/host-methods.ts`), so this is a plain `find`.
  *
- * Core folds the whole profile into `rejections` — the resolution-upgrade rule, the
- * custom-format floor and the rank window itself. The window is still checked here so a
- * build running against a core that predates that stays as strict as this one; when both
- * agree the filter is redundant, never contradictory.
+ * Every profile rule arrives as a rejection — the allowed qualities, the resolution-upgrade
+ * rule, the custom-format floor and the upgrade window. Reapplying one here is what left the
+ * resolution rule enforced by neither side; the manifest's `fliks` floor is what makes trusting
+ * the rejections safe, since a core that decided less would refuse to load this build.
  */
 export function pickRelease<T extends Pick<ScoredRelease, 'rank' | 'rejections'>>(
   sorted: T[],
@@ -101,9 +100,7 @@ export function pickReleases<T extends Pick<ScoredRelease, 'rank' | 'rejections'
   if (!want) return [];
   // A title that already satisfies its profile is searchable by hand, never picked for the user.
   if (want.decision === 'skip') return [];
-  return sorted
-    .filter((r) => r.rejections.length === 0 && r.rank > want.minRankExclusive && r.rank <= want.maxRankInclusive)
-    .slice(0, limit);
+  return sorted.filter((r) => r.rejections.length === 0).slice(0, limit);
 }
 
 /** Core names the release source `sourceId`/`sourceName`; inside this plugin it is an

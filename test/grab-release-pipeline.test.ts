@@ -26,7 +26,7 @@ function target(over: Partial<AcquisitionTarget> = {}): AcquisitionTarget {
     tmdbId: null,
     tvdbId: null,
     libraryId: 1,
-    want: { decision: 'missing', allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false },
+    want: { decision: 'missing', allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false },
     expectedTitles: ['Movie'],
     searchTitle: 'Movie',
     ...over,
@@ -78,7 +78,7 @@ describe('searchReleases', () => {
 
   test('a skip-decision target still searches and returns scored releases — a manual search always searches', async () => {
     const { deps } = buildDeps({
-      target: target({ want: { decision: 'skip', allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 0, maxRankInclusive: 100, minResolution: 0, resolutionUpgradeOnly: false } }),
+      target: target({ want: { decision: 'skip', allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false } }),
       releases: [{ title: 'Movie.2020.1080p', downloadUrl: 'u1', indexerId: 1 }],
     });
     const result = await searchReleases(deps, 1);
@@ -154,7 +154,7 @@ describe('grabRelease — auto-pick', () => {
   });
 
   test('VERDICT: never auto-picks for a title that already satisfies its profile', async () => {
-    const skipWant = { decision: 'skip' as const, allowedQualityIds: [], allowedLanguageIds: [], minRankExclusive: 40, maxRankInclusive: 62, minResolution: 0, resolutionUpgradeOnly: false };
+    const skipWant = { decision: 'skip' as const, allowedQualityIds: [], allowedLanguageIds: [], minResolution: 0, resolutionUpgradeOnly: false };
     const { deps, driver } = buildDeps({
       target: target({ want: skipWant }),
       releases: [{ title: 'Some.Release.1080p', downloadUrl: 'magnet:?xt=urn:btih:aaa', indexerId: 1 }],

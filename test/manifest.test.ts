@@ -73,7 +73,7 @@ test('manifest carries the required process-tier shape', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'plugin.json'), 'utf8')) as Record<string, unknown>;
   assert.equal(manifest.id, PLUGIN_ID);
   assert.equal(manifest.kind, 'process');
-  assert.equal(manifest.pluginApi, 0);
+  assert.equal(manifest.pluginApi, 1);
   assert.equal(manifest.runtime, 'node');
   assert.deepEqual(manifest.database, { schema: true, coreRefs: [...CORE_REFS] });
   assert.deepEqual(manifest.scopes, [...SCOPES]);
