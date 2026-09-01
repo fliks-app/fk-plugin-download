@@ -68,18 +68,14 @@ export function joinScored(raw: IndexerRelease[], scored: ScoredRelease[]): Rank
 }
 
 /**
- * Ported pick predicate from `AutoGrabExecutorService.tryAutoGrab` in
- * `auto-grab-pipeline.service.ts` (there named inline, not a standalone
- * function): first release with no rejections whose rank falls inside the
- * profile's window. `releases.score`'s response is already sorted by
- * relevance (see its doc-comment in `src/host-methods.ts`), so this is a
- * plain `find`, matching upstream exactly.
+ * First release with no rejections whose rank falls inside the profile's window.
+ * `releases.score`'s response is already sorted by relevance (see its doc-comment in
+ * `src/host-methods.ts`), so this is a plain `find`.
  *
- * Upstream additionally re-checked `resolutionUpgradeOnly` against
- * `parseReleaseQuality(title).quality.resolution` — `ScoredRelease` carries no
- * per-release resolution field to reapply that here, so it is assumed folded
- * into `rejections` server-side (`want.resolutionUpgradeOnly` is otherwise
- * unused by this function). Flagged in the port report, not invented.
+ * Core folds the whole profile into `rejections` — the resolution-upgrade rule, the
+ * custom-format floor and the rank window itself. The window is still checked here so a
+ * build running against a core that predates that stays as strict as this one; when both
+ * agree the filter is redundant, never contradictory.
  */
 export function pickRelease<T extends Pick<ScoredRelease, 'rank' | 'rejections'>>(
   sorted: T[],
@@ -108,12 +104,6 @@ export function pickReleases<T extends Pick<ScoredRelease, 'rank' | 'rejections'
   return sorted
     .filter((r) => r.rejections.length === 0 && r.rank > want.minRankExclusive && r.rank <= want.maxRankInclusive)
     .slice(0, limit);
-}
-
-/** `${code}: ${detail}` when present, else just the code — matches
- *  `formatRejectionForLog` in the original `common/release-scoring`. */
-export function formatRejectionForLog(r: { code: string; detail?: string }): string {
-  return r.detail ? `${r.code}: ${r.detail}` : r.code;
 }
 
 /** Core names the release source `sourceId`/`sourceName`; inside this plugin it is an
