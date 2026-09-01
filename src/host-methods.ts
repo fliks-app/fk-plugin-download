@@ -154,6 +154,10 @@ export interface PluginHostApi {
       seeders: number;
       leechers: number;
       publishDate: string;
+      /** Source-declared markers, matched by name by a `release_flag` custom format and by
+       *  core's ordering rule. `freeleech`/`downloadVolumeFactor` are the torrent spelling of
+       *  the same thing and are folded into it, so either form works. */
+      flags?: string[];
       freeleech?: boolean;
       downloadVolumeFactor?: number;
       sourceRef: string;
