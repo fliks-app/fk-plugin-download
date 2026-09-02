@@ -1,4 +1,5 @@
 import type { IndexerRow, IndexerStatRow } from '../db/rows';
+import type { UseFor } from './use-for';
 
 /** Torznab search hit as parsed off the wire — mirrors Fliks core's `ReleaseCandidate`,
  *  restated here since this plugin imports nothing from that repo. */
@@ -27,6 +28,8 @@ export interface IndexerCooldown {
 }
 
 export type IndexerWithCooldown = IndexerRow & {
+  /** The two gates as the one choice the editor renders. Derived on read, never stored. */
+  useFor: UseFor;
   cooldown: {
     reason: 'rate-limit' | 'failures';
     remainingMs: number;

@@ -863,7 +863,12 @@ export const I18N = {
     'download.config.indexers.fields.request_delay': 'Request delay (seconds)',
     'download.config.indexers.fields.request_delay_hint':
       'Minimum time between two search requests sent to this indexer.',
-    'download.config.indexers.fields.enable_search': 'Enable in search',
+    'download.config.indexers.fields.use_for': 'Use for',
+    'download.config.indexers.fields.use_for_hint':
+      'An indexer kept out of searches is still polled by the RSS sync, which costs one call per cycle instead of one per missing item. Worth it on a tracker with a daily API quota.',
+    'download.config.indexers.fields.use_for_both': 'Searches and RSS sync',
+    'download.config.indexers.fields.use_for_search': 'Searches only',
+    'download.config.indexers.fields.use_for_rss': 'RSS sync only',
     'download.config.indexers.fields.min_seeders': 'Minimum seeders',
     'download.config.indexers.fields.seed_ratio': 'Seed ratio target',
     'download.config.indexers.fields.seed_ratio_hint':
@@ -1065,7 +1070,12 @@ export const I18N = {
     'download.config.indexers.fields.request_delay': 'Délai entre requêtes (secondes)',
     'download.config.indexers.fields.request_delay_hint':
       'Délai minimum entre deux requêtes de recherche envoyées à cet indexeur.',
-    'download.config.indexers.fields.enable_search': 'Activer dans la recherche',
+    'download.config.indexers.fields.use_for': 'Utiliser pour',
+    'download.config.indexers.fields.use_for_hint':
+      'Un indexeur écarté des recherches reste interrogé par la synchro RSS, qui coûte un appel par cycle au lieu d’un par média manquant. Utile sur un tracker qui plafonne son API à la journée.',
+    'download.config.indexers.fields.use_for_both': 'Recherches et synchro RSS',
+    'download.config.indexers.fields.use_for_search': 'Recherches uniquement',
+    'download.config.indexers.fields.use_for_rss': 'Synchro RSS uniquement',
     'download.config.indexers.fields.min_seeders': 'Nombre minimum de seeders',
     'download.config.indexers.fields.seed_ratio': 'Ratio de partage cible',
     'download.config.indexers.fields.seed_ratio_hint':

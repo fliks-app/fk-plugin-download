@@ -8,6 +8,8 @@ import type { ControlOutcome } from '../grab/completion-poller';
 import {
   IndexerNotFoundError,
   UnknownIndexerImplementationError,
+  gatesFor,
+  isUseFor,
   type CreateIndexerInput,
   type IndexerService,
   type TestIndexerConnectionInput,
@@ -153,6 +155,19 @@ function optionalIntParam(params: Record<string, string>, name: string): number 
 }
 
 /** Returns the field name that failed a required check, or a fully-typed input. */
+/**
+ * `useFor` is what the editor renders, `enableRss`/`enableSearch` are what the row stores. It wins
+ * over the booleans on purpose: a save body is built by spreading the row the client last read,
+ * so the booleans travelling beside a changed choice are the stale ones.
+ */
+function readGates(body: Record<string, unknown>): { enableRss?: boolean; enableSearch?: boolean } {
+  if (isUseFor(body['useFor'])) return gatesFor(body['useFor']);
+  return {
+    enableRss: typeof body['enableRss'] === 'boolean' ? body['enableRss'] : undefined,
+    enableSearch: typeof body['enableSearch'] === 'boolean' ? body['enableSearch'] : undefined,
+  };
+}
+
 function readCreateIndexerInput(body: unknown): CreateIndexerInput | 'name' | 'implementation' {
   const b = (body ?? {}) as Partial<CreateIndexerInput>;
   if (typeof b.name !== 'string' || !b.name.trim()) return 'name';
@@ -161,8 +176,7 @@ function readCreateIndexerInput(body: unknown): CreateIndexerInput | 'name' | 'i
     name: b.name,
     implementation: b.implementation,
     settings: typeof b.settings === 'object' && b.settings !== null ? (b.settings as Record<string, unknown>) : undefined,
-    enableRss: typeof b.enableRss === 'boolean' ? b.enableRss : undefined,
-    enableSearch: typeof b.enableSearch === 'boolean' ? b.enableSearch : undefined,
+    ...readGates((body ?? {}) as Record<string, unknown>),
     priority: typeof b.priority === 'number' ? b.priority : undefined,
     requestDelay: typeof b.requestDelay === 'number' ? b.requestDelay : undefined,
     enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
@@ -176,8 +190,7 @@ function readUpdateIndexerInput(body: unknown): UpdateIndexerInput {
     name: typeof b.name === 'string' ? b.name : undefined,
     implementation: typeof b.implementation === 'string' ? b.implementation : undefined,
     settings: typeof b.settings === 'object' && b.settings !== null ? (b.settings as Record<string, unknown>) : undefined,
-    enableRss: typeof b.enableRss === 'boolean' ? b.enableRss : undefined,
-    enableSearch: typeof b.enableSearch === 'boolean' ? b.enableSearch : undefined,
+    ...readGates((body ?? {}) as Record<string, unknown>),
     priority: typeof b.priority === 'number' ? b.priority : undefined,
     requestDelay: typeof b.requestDelay === 'number' ? b.requestDelay : undefined,
     enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
@@ -912,8 +925,9 @@ interface ImplementationDef {
 }
 
 /** `name`/`priority`/`enabled` are generic to every provider row (handled by the page
- *  itself) — only implementation-specific settings are listed here. `requestDelay` and
- *  `enableSearch` are `topLevel`: real columns on `indexers`, not `settings` keys. */
+ *  itself): only implementation-specific settings are listed here. `requestDelay` is
+ *  `topLevel`, a real column on `indexers` rather than a `settings` key, and so is `useFor`,
+ *  which the readers above project onto the two columns that store it. */
 const INDEXER_IMPLEMENTATIONS: ImplementationDef[] = [
   {
     implementation: 'torznab',
@@ -930,11 +944,19 @@ const INDEXER_IMPLEMENTATIONS: ImplementationDef[] = [
         topLevel: true,
       },
       {
-        key: 'enableSearch',
-        type: 'toggle',
-        labelKey: 'download.config.indexers.fields.enable_search',
-        default: true,
+        // One choice rather than two toggles: "neither" is not a setting, it is an indexer that
+        // answers nothing while claiming to be enabled, and `enabled` already says off.
+        key: 'useFor',
+        type: 'select',
+        labelKey: 'download.config.indexers.fields.use_for',
+        hint: 'download.config.indexers.fields.use_for_hint',
+        default: 'both',
         topLevel: true,
+        options: [
+          { value: 'both', labelKey: 'download.config.indexers.fields.use_for_both' },
+          { value: 'search', labelKey: 'download.config.indexers.fields.use_for_search' },
+          { value: 'rss', labelKey: 'download.config.indexers.fields.use_for_rss' },
+        ],
       },
       { key: 'minSeeders', type: 'number', labelKey: 'download.config.indexers.fields.min_seeders', default: 0 },
       {
