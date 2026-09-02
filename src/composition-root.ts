@@ -15,6 +15,7 @@ import {
   type IndexerStatsRecorder,
 } from './seams/indexers';
 import { DOWNLOAD_CLIENT_DRIVERS, DownloadClientsService } from './seams/download-clients';
+import { INDEXER_SOURCE_DRIVERS, IndexerSourceService } from './seams/indexer-sources';
 import { createGrabPipeline, type DownloadGrabPipeline } from './seams/grab-pipeline';
 import { DownloadCompletionPoller } from './seams/completion';
 import { TorrentHistoryMatcher } from './grab/torrent-name-matcher';
@@ -55,6 +56,7 @@ function toIndexerStatsRecorder(repo: IndexerStatsRepository): IndexerStatsRecor
 
 export interface AppGraph {
   indexerService: IndexerService;
+  indexerSourceService: IndexerSourceService;
   downloadClientsService: DownloadClientsService;
   grabPipeline: DownloadGrabPipeline;
   completionPoller: DownloadCompletionPoller;
@@ -67,6 +69,18 @@ export function createAppGraph(repositories: Repositories, host: HostCaller): Ap
   const indexerRepo = toIndexerRepository(repositories.indexers);
   const torznabClient = new TorznabClient({ stats: toIndexerStatsRecorder(repositories.indexerStats), repo: indexerRepo, throttle });
   const indexerService = new IndexerService({ repo: indexerRepo, torznab: torznabClient, throttle });
+
+  // The import writes through `IndexerService.create`, not the repository: a freshly imported
+  // indexer needs its caps probed exactly like a hand-typed one.
+  const indexerSourceService = new IndexerSourceService({
+    repo: repositories.indexerSources,
+    drivers: INDEXER_SOURCE_DRIVERS,
+    indexers: {
+      findByBaseUrl: (baseUrl) => repositories.indexers.findByBaseUrl(baseUrl),
+      create: (input) => indexerService.create(input),
+      updateSettings: (id, settings) => repositories.indexers.updateSettings(id, settings),
+    },
+  });
 
   // The plugin drives exactly one implementation today (`seams/download-clients.ts`'s
   // single-entry map) — the grab/completion flow takes one driver, not a keyed registry.
@@ -110,12 +124,14 @@ export function createAppGraph(repositories: Repositories, host: HostCaller): Ap
 
   return {
     indexerService,
+    indexerSourceService,
     downloadClientsService,
     grabPipeline,
     completionPoller,
     jobHandlers: createJobHandlers({ grabPipeline, completionPoller }),
     routeTable: createRouteTable({
       indexerService,
+      indexerSourceService,
       downloadClientsService,
       grabPipeline,
       indexerStats: repositories.indexerStats,

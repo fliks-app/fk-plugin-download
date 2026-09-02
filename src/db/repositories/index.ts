@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 import { IndexersRepository } from './indexers.repository';
 import { IndexerStatsRepository } from './indexer-stats.repository';
+import { IndexerSourcesRepository } from './indexer-sources.repository';
 import { DownloadClientsRepository } from './download-clients.repository';
 import { DownloadHistoryRepository } from './download-history.repository';
 import { BlocklistRepository } from './blocklist.repository';
@@ -8,6 +9,7 @@ import { StalledChecksRepository } from './stalled-checks.repository';
 
 export * from './indexers.repository';
 export * from './indexer-stats.repository';
+export * from './indexer-sources.repository';
 export * from './download-clients.repository';
 export * from './download-history.repository';
 export * from './blocklist.repository';
@@ -16,6 +18,7 @@ export * from './stalled-checks.repository';
 export interface Repositories {
   indexers: IndexersRepository;
   indexerStats: IndexerStatsRepository;
+  indexerSources: IndexerSourcesRepository;
   downloadClients: DownloadClientsRepository;
   downloadHistory: DownloadHistoryRepository;
   blocklist: BlocklistRepository;
@@ -28,6 +31,7 @@ export function createRepositories(pool: Pool): Repositories {
   return {
     indexers: new IndexersRepository(pool),
     indexerStats: new IndexerStatsRepository(pool),
+    indexerSources: new IndexerSourcesRepository(pool),
     downloadClients: new DownloadClientsRepository(pool),
     downloadHistory: new DownloadHistoryRepository(pool),
     blocklist: new BlocklistRepository(pool),

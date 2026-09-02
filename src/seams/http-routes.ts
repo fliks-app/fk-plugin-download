@@ -26,6 +26,16 @@ import {
   type TestDownloadClientInput,
   type UpdateDownloadClientInput,
 } from './download-clients';
+import {
+  IndexerSourceDisabledError,
+  IndexerSourceNotFoundError,
+  SourceUnreachableError,
+  UnknownIndexerSourceImplementationError,
+  type CreateIndexerSourceInput,
+  type IndexerSourceService,
+  type TestIndexerSourceInput,
+  type UpdateIndexerSourceInput,
+} from './indexer-sources';
 import type { DownloadGrabPipeline } from './grab-pipeline';
 import type {
   BlocklistRepository,
@@ -69,6 +79,10 @@ export interface RouteDeps {
   downloadClientsService: Pick<
     DownloadClientsService,
     'findAll' | 'create' | 'update' | 'remove' | 'testConnection' | 'pauseTorrent' | 'resumeTorrent' | 'removeTorrent'
+  >;
+  indexerSourceService: Pick<
+    IndexerSourceService,
+    'findAll' | 'create' | 'update' | 'remove' | 'testConnection' | 'importFrom'
   >;
   grabPipeline: Pick<DownloadGrabPipeline, 'searchReleases' | 'grabRelease'>;
   indexerStats: Pick<IndexerStatsRepository, 'dailyStats'>;
@@ -172,6 +186,42 @@ function readUpdateIndexerInput(body: unknown): UpdateIndexerInput {
 
 function readTestIndexerConnectionInput(body: unknown): TestIndexerConnectionInput | null {
   const b = (body ?? {}) as Partial<TestIndexerConnectionInput>;
+  if (typeof b.implementation !== 'string') return null;
+  const settings = typeof b.settings === 'object' && b.settings !== null ? b.settings : {};
+  return {
+    implementation: b.implementation,
+    settings: settings as Record<string, unknown>,
+    ...(Number.isInteger(b.id) ? { id: b.id as number } : {}),
+  };
+}
+
+function readCreateIndexerSourceInput(body: unknown): CreateIndexerSourceInput | 'name' | 'implementation' {
+  const b = (body ?? {}) as Partial<CreateIndexerSourceInput>;
+  if (typeof b.name !== 'string' || !b.name.trim()) return 'name';
+  if (typeof b.implementation !== 'string' || !b.implementation) return 'implementation';
+  return {
+    name: b.name,
+    implementation: b.implementation,
+    settings: typeof b.settings === 'object' && b.settings !== null ? (b.settings as Record<string, unknown>) : undefined,
+    priority: typeof b.priority === 'number' ? b.priority : undefined,
+    enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
+  };
+}
+
+/** Every field optional: `IndexerSourceService.update` only applies what is present. */
+function readUpdateIndexerSourceInput(body: unknown): UpdateIndexerSourceInput {
+  const b = (body ?? {}) as Partial<UpdateIndexerSourceInput>;
+  return {
+    name: typeof b.name === 'string' ? b.name : undefined,
+    implementation: typeof b.implementation === 'string' ? b.implementation : undefined,
+    settings: typeof b.settings === 'object' && b.settings !== null ? (b.settings as Record<string, unknown>) : undefined,
+    priority: typeof b.priority === 'number' ? b.priority : undefined,
+    enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
+  };
+}
+
+function readTestIndexerSourceInput(body: unknown): TestIndexerSourceInput | null {
+  const b = (body ?? {}) as Partial<TestIndexerSourceInput>;
   if (typeof b.implementation !== 'string') return null;
   const settings = typeof b.settings === 'object' && b.settings !== null ? b.settings : {};
   return {
@@ -333,6 +383,47 @@ async function handleClearIndexerCooldown(deps: RouteDeps, params: Record<string
 
 async function handleClearAllIndexerCooldowns(deps: RouteDeps): Promise<PluginHttpResponse> {
   return jsonResponse(200, deps.indexerService.clearAllCooldowns());
+}
+
+async function handleListIndexerSources(deps: RouteDeps): Promise<PluginHttpResponse> {
+  return jsonResponse(200, await deps.indexerSourceService.findAll());
+}
+
+async function handleCreateIndexerSource(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
+  const input = readCreateIndexerSourceInput(req.body);
+  if (typeof input === 'string') return badBody(input);
+  return jsonResponse(201, await deps.indexerSourceService.create(input));
+}
+
+async function handleUpdateIndexerSource(
+  deps: RouteDeps,
+  params: Record<string, string>,
+  req: PluginHttpRequest,
+): Promise<PluginHttpResponse> {
+  const id = requireIntParam(params, 'id');
+  if (id === null) return badRequest('id');
+  return jsonResponse(200, await deps.indexerSourceService.update(id, readUpdateIndexerSourceInput(req.body)));
+}
+
+async function handleDeleteIndexerSource(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
+  const id = requireIntParam(params, 'id');
+  if (id === null) return badRequest('id');
+  await deps.indexerSourceService.remove(id);
+  return jsonResponse(200, {});
+}
+
+async function handleTestIndexerSourceConnection(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
+  const input = readTestIndexerSourceInput(req.body);
+  if (!input) return badBody('implementation');
+  return jsonResponse(200, await deps.indexerSourceService.testConnection(input));
+}
+
+/** The one-click refresh. Answers the counts so a caller can report them; the page itself only
+ *  reloads the list, and a failure is what the admin needs to see (see `wrap`). */
+async function handleImportFromIndexerSource(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
+  const id = requireIntParam(params, 'id');
+  if (id === null) return badRequest('id');
+  return jsonResponse(200, await deps.indexerSourceService.importFrom(id));
 }
 
 async function handleCreateDownloadClient(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
@@ -869,6 +960,27 @@ const INDEXER_IMPLEMENTATIONS: ImplementationDef[] = [
   },
 ];
 
+/** The two sources an indexer list can be imported from. Both speak their own API over a base
+ *  URL plus an API key, which is the whole connection form the create dialog renders. */
+const INDEXER_SOURCE_IMPLEMENTATIONS: ImplementationDef[] = [
+  {
+    implementation: 'prowlarr',
+    labelKey: 'download.config.indexer_sources.implementations.prowlarr',
+    fields: [
+      { key: 'baseUrl', type: 'url', labelKey: 'download.config.indexer_sources.fields.base_url', required: true },
+      { key: 'apiKey', type: 'password', labelKey: 'download.config.indexer_sources.fields.api_key', secret: true, required: true },
+    ],
+  },
+  {
+    implementation: 'jackett',
+    labelKey: 'download.config.indexer_sources.implementations.jackett',
+    fields: [
+      { key: 'baseUrl', type: 'url', labelKey: 'download.config.indexer_sources.fields.base_url', required: true },
+      { key: 'apiKey', type: 'password', labelKey: 'download.config.indexer_sources.fields.api_key', secret: true, required: true },
+    ],
+  },
+];
+
 const DOWNLOAD_CLIENT_IMPLEMENTATIONS: ImplementationDef[] = [
   {
     implementation: 'qbittorrent',
@@ -896,6 +1008,10 @@ async function handleIndexerImplementations(): Promise<PluginHttpResponse> {
   return jsonResponse(200, INDEXER_IMPLEMENTATIONS);
 }
 
+async function handleIndexerSourceImplementations(): Promise<PluginHttpResponse> {
+  return jsonResponse(200, INDEXER_SOURCE_IMPLEMENTATIONS);
+}
+
 async function handleDownloadClientImplementations(): Promise<PluginHttpResponse> {
   return jsonResponse(200, DOWNLOAD_CLIENT_IMPLEMENTATIONS);
 }
@@ -908,11 +1024,31 @@ function wrap(handler: RouteHandler): RouteHandler {
       return await handler(req, params);
     } catch (err) {
       if (err instanceof GrabError) return grabErrorResponse(err);
-      if (err instanceof IndexerNotFoundError || err instanceof DownloadClientNotFoundError) {
+      if (
+        err instanceof IndexerNotFoundError ||
+        err instanceof DownloadClientNotFoundError ||
+        err instanceof IndexerSourceNotFoundError
+      ) {
         return notFoundResponse((err as Error).message);
       }
-      if (err instanceof UnknownIndexerImplementationError || err instanceof UnsupportedDownloadClientError) {
+      if (
+        err instanceof UnknownIndexerImplementationError ||
+        err instanceof UnsupportedDownloadClientError ||
+        err instanceof UnknownIndexerSourceImplementationError
+      ) {
         return badBody('implementation');
+      }
+      // 400, not the 502 the shape suggests: core only toasts 4xx, 500 and 503, and an import
+      // that fails without saying why is the whole complaint this feature exists to avoid. The
+      // detail carries what the source actually answered.
+      if (err instanceof SourceUnreachableError || err instanceof IndexerSourceDisabledError) {
+        log.error(`indexer source import refused: ${(err as Error).message}`);
+        return jsonResponse(400, {
+          error: {
+            key: err.messageKey,
+            detail: err instanceof SourceUnreachableError ? err.detail : undefined,
+          },
+        });
       }
       // The download client refusing, or not answering, is not this plugin going wrong: naming it
       // as internal buried what the client actually said behind a generic sentence.
@@ -963,6 +1099,17 @@ function canonicalRoutes(deps: RouteDeps): { method: string; path: string; handl
     { method: 'DELETE', path: '/indexers/:id', handler: (_req, params) => handleDeleteIndexer(deps, params) },
     { method: 'DELETE', path: '/indexers/:id/cooldown', handler: (_req, params) => handleClearIndexerCooldown(deps, params) },
     { method: 'GET', path: '/indexers/:id/stats', handler: (_req, params) => handleIndexerStats(deps, params) },
+    { method: 'GET', path: '/indexer-sources', handler: () => handleListIndexerSources(deps) },
+    { method: 'POST', path: '/indexer-sources', handler: (req) => handleCreateIndexerSource(deps, req) },
+    {
+      method: 'POST',
+      path: '/indexer-sources/test-connection',
+      handler: (req) => handleTestIndexerSourceConnection(deps, req),
+    },
+    { method: 'GET', path: '/indexer-sources/implementations', handler: () => handleIndexerSourceImplementations() },
+    { method: 'PUT', path: '/indexer-sources/:id', handler: (req, params) => handleUpdateIndexerSource(deps, params, req) },
+    { method: 'DELETE', path: '/indexer-sources/:id', handler: (_req, params) => handleDeleteIndexerSource(deps, params) },
+    { method: 'POST', path: '/indexer-sources/:id/import', handler: (_req, params) => handleImportFromIndexerSource(deps, params) },
     { method: 'GET', path: '/download-clients', handler: () => handleListDownloadClients(deps) },
     { method: 'POST', path: '/download-clients', handler: (req) => handleCreateDownloadClient(deps, req) },
     {

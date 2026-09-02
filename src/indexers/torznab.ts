@@ -39,7 +39,7 @@ function describeFetchError(e: unknown, timeoutMs: number): string {
   return `${err.message ?? 'request failed'}: ${cause.message}${code}`;
 }
 
-async function fetchText(url: string, opts: FetchOptions): Promise<{ status: number; body: string; headers: Headers }> {
+export async function fetchText(url: string, opts: FetchOptions): Promise<{ status: number; body: string; headers: Headers }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
   try {

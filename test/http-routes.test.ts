@@ -69,6 +69,14 @@ function fakeDeps(over: { [K in keyof RouteDeps]?: Partial<RouteDeps[K]> } = {})
       clearCooldown: async () => ({ cleared: true }),
       clearAllCooldowns: () => ({ cleared: 0 }),
     },
+    indexerSourceService: {
+      findAll: async () => [],
+      create: async (input: unknown) => ({ id: 1, ...(input as object) }),
+      update: async (id: number, patch: unknown) => ({ id, ...(patch as object) }),
+      remove: async () => {},
+      testConnection: async () => ({ ok: true, messageKey: 'download.indexer_sources.test.ok' }),
+      importFrom: async () => ({ created: 0, updated: 0, unchanged: 0, unsupported: 0 }),
+    },
     downloadClientsService: {
       findAll: async () => [],
       create: async (input: unknown) => ({ id: 1, ...(input as object) }),
@@ -298,7 +306,7 @@ describe('route table — config pages reference only declared, handled routes',
       }
     }
 
-    assert.equal(providersPagesChecked, 2, 'indexers and download-clients');
+    assert.equal(providersPagesChecked, 3, 'indexers, indexer-sources and download-clients');
     assert.equal(tablePagesChecked, 2, 'queue and history');
   });
 });
