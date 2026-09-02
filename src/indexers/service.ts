@@ -11,6 +11,7 @@ import {
   type UpdateIndexerInput,
 } from './types';
 import { mergeSecretSettings, redactSecretSettings } from '../secret-settings';
+import { useForOf } from './use-for';
 import type { IndexerThrottle } from './throttle';
 import type { TorznabClient } from './torznab';
 
@@ -110,6 +111,7 @@ export class IndexerService {
       const cd = this.deps.throttle.getCooldown(ix.id);
       return {
         ...this.redact(ix),
+        useFor: useForOf(ix),
         cooldown: cd
           ? {
               reason: cd.reason,

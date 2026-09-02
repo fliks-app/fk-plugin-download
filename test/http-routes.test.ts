@@ -701,8 +701,18 @@ describe('route table — implementations routes', () => {
     assert.equal(body[0]!.implementation, 'torznab');
     assert.deepEqual(
       body[0]!.fields.map((f) => f.key).sort(),
-      ['apiKey', 'baseUrl', 'enableSearch', 'maxRetentionDays', 'minSeeders', 'requestDelay', 'seedRatio', 'unknownLanguageIsoCode'],
+      ['apiKey', 'baseUrl', 'maxRetentionDays', 'minSeeders', 'requestDelay', 'seedRatio', 'unknownLanguageIsoCode', 'useFor'],
     );
+    const useFor = body[0]!.fields.find((f) => f.key === 'useFor') as unknown as {
+      type: string;
+      default: string;
+      topLevel: boolean;
+      options: { value: string }[];
+    };
+    assert.equal(useFor.type, 'select');
+    assert.equal(useFor.default, 'both');
+    assert.equal(useFor.topLevel, true, 'both gates it projects onto are columns, not settings keys');
+    assert.deepEqual(useFor.options.map((o) => o.value), ['both', 'search', 'rss']);
   });
 
   test('GET /download-clients/implementations answers a list with one entry, "qbittorrent", and its fields', async () => {
@@ -738,6 +748,71 @@ describe('route table — admin write handlers', () => {
       resolved.params,
     );
     assert.equal(res.status, 201);
+  });
+
+  test('VERDICT: `useFor` wins over the stale gates a spread row carries beside it', async () => {
+    // The editor builds a save body by spreading the row it last read, so a changed choice
+    // travels next to the booleans from before it. Trusting those would silently undo the edit.
+    const deps = fakeDeps();
+    let seen: unknown;
+    deps.indexerService.update = (async (_id: number, patch: unknown) => {
+      seen = patch;
+      return { id: 1, ...(patch as object) };
+    }) as typeof deps.indexerService.update;
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('PUT', '/indexers/1')!;
+    await resolved.handler(
+      req({
+        method: 'PUT',
+        path: '/indexers/1',
+        body: { name: 'X', useFor: 'rss', enableRss: true, enableSearch: true },
+      }),
+      resolved.params,
+    );
+    assert.deepEqual(seen, {
+      name: 'X',
+      implementation: undefined,
+      settings: undefined,
+      enableRss: true,
+      enableSearch: false,
+      priority: undefined,
+      requestDelay: undefined,
+      enabled: undefined,
+    });
+  });
+
+  test('a body with no `useFor` still honours the raw gates, so an API caller keeps them', async () => {
+    const deps = fakeDeps();
+    let seen: Record<string, unknown> = {};
+    deps.indexerService.update = (async (_id: number, patch: unknown) => {
+      seen = patch as Record<string, unknown>;
+      return { id: 1, ...(patch as object) };
+    }) as typeof deps.indexerService.update;
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('PUT', '/indexers/1')!;
+    await resolved.handler(
+      req({ method: 'PUT', path: '/indexers/1', body: { enableRss: false, enableSearch: true } }),
+      resolved.params,
+    );
+    assert.equal(seen['enableRss'], false);
+    assert.equal(seen['enableSearch'], true);
+  });
+
+  test('an unknown `useFor` value is ignored rather than trusted', async () => {
+    const deps = fakeDeps();
+    let seen: Record<string, unknown> = {};
+    deps.indexerService.update = (async (_id: number, patch: unknown) => {
+      seen = patch as Record<string, unknown>;
+      return { id: 1, ...(patch as object) };
+    }) as typeof deps.indexerService.update;
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('PUT', '/indexers/1')!;
+    await resolved.handler(
+      req({ method: 'PUT', path: '/indexers/1', body: { useFor: 'everything', enableRss: false, enableSearch: false } }),
+      resolved.params,
+    );
+    assert.equal(seen['enableRss'], false);
+    assert.equal(seen['enableSearch'], false);
   });
 
   test('DELETE /indexers/:id maps IndexerNotFoundError to a 404 with the not_found key', async () => {

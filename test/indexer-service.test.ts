@@ -265,3 +265,28 @@ test('sanitizeSettings floors and clamps minSeeders to a non-negative integer', 
   const stored2 = await repo.findOne(created2.id);
   assert.equal(stored2?.settings.minSeeders, 4);
 });
+
+test('findAll() reports the two gates as the single choice the editor renders', async () => {
+  const { service, repo } = makeService();
+  const base = {
+    implementation: 'torznab',
+    settings: { baseUrl: 'https://x.tld' },
+    priority: 25,
+    requestDelay: 2,
+    enabled: true,
+    capsMovieSearch: false,
+    capsTvSearch: false,
+    capsSearchFallback: false,
+    capsProbedAt: null,
+  };
+  await repo.insert({ ...base, name: 'both', enableRss: true, enableSearch: true });
+  await repo.insert({ ...base, name: 'rss only', enableRss: true, enableSearch: false });
+  await repo.insert({ ...base, name: 'search only', enableRss: false, enableSearch: true });
+
+  const byName = new Map((await service.findAll()).map((ix) => [ix.name, ix.useFor]));
+  assert.deepEqual([...byName], [
+    ['both', 'both'],
+    ['rss only', 'rss'],
+    ['search only', 'search'],
+  ]);
+});

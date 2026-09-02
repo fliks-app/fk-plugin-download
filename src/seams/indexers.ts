@@ -14,6 +14,7 @@ export { TorznabClient, TorznabHttpError, type TorznabClientDeps } from '../inde
 export { IndexerThrottle } from '../indexers/throttle';
 export { IndexerService, redactApiKey, type IndexerServiceDeps } from '../indexers/service';
 export { IndexerNotFoundError, UnknownIndexerImplementationError } from '../indexers/types';
+export { USE_FOR_VALUES, gatesFor, isUseFor, useForOf, type UseFor } from '../indexers/use-for';
 export type {
   CreateIndexerInput,
   IndexerConnectionMessageKey,
