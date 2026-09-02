@@ -453,6 +453,10 @@ export const CONFIG_PAGES = [
     testConnection: { route: '/indexers/test-connection' },
     showPriority: true,
     defaultPriority: 25,
+    // An imported list arrives a dozen rows at a time, and the first thing an admin does with it
+    // is disable or retune part of it. One row at a time is the reason this is on here and
+    // nowhere else.
+    bulkSelect: true,
     labels: {
       newKey: 'download.config.indexers.labels.new',
       emptyKey: 'download.config.indexers.labels.empty',
