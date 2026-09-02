@@ -279,6 +279,7 @@ describe('searchReleases — a special is searched by its title', () => {
     const driver = built.deps.indexer as unknown as Record<string, unknown>;
     driver.searchSeries = async (
       _ix: unknown,
+      _kind: unknown,
       query: string,
       season: number,
       episode: number,

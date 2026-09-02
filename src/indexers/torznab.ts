@@ -1,5 +1,5 @@
 import type { IndexerRow } from '../db/rows';
-import type { IndexerConnectionTestResult, IndexerRelease, IndexerRepository, IndexerStatsRecorder } from './types';
+import type { IndexerConnectionTestResult, IndexerRelease, IndexerRepository, IndexerStatsRecorder, SearchKind } from './types';
 import { buildTorznabQuery, describeTorznabQuery, parseTorznabItems } from './torznab-parse';
 import { IndexerThrottle } from './throttle';
 import { searchFetchTimeoutMs } from '../search-budget';
@@ -185,14 +185,19 @@ export class TorznabClient {
     return { baseUrl, apiKey: String(settings.apiKey || '') };
   }
 
-  /** Gates a search call on enabled/enableSearch, then resolves the endpoint. */
-  private resolveSearchTarget(indexer: IndexerRow): { baseUrl: string; apiKey: string } | null {
+  /** Gates a search call on enabled, then on the gate `kind` names: `enableSearch` for an
+   *  automatic search, `enableInteractiveSearch` for a manual one. */
+  private resolveSearchTarget(indexer: IndexerRow, kind: SearchKind): { baseUrl: string; apiKey: string } | null {
     if (!indexer.enabled) {
       log.info(`[${indexer.name}] skipped — indexer disabled`);
       return null;
     }
-    if (!indexer.enableSearch) {
-      log.info(`[${indexer.name}] skipped — search disabled`);
+    if (kind === 'auto' && !indexer.enableSearch) {
+      log.info(`[${indexer.name}] skipped: automatic search disabled`);
+      return null;
+    }
+    if (kind === 'manual' && !indexer.enableInteractiveSearch) {
+      log.info(`[${indexer.name}] skipped: manual search disabled`);
       return null;
     }
     return this.resolveEndpoint(indexer);
@@ -339,11 +344,12 @@ export class TorznabClient {
   /** Searches for a season pack (no episode number → indexer returns whole-season packs). */
   async searchSeasonPack(
     indexer: IndexerRow,
+    kind: SearchKind,
     showTitle: string,
     season: number,
     externalIds?: { tvdbId?: number | null; imdbId?: string | null },
   ): Promise<IndexerRelease[]> {
-    const target = this.resolveSearchTarget(indexer);
+    const target = this.resolveSearchTarget(indexer, kind);
     if (!target) return [];
     const { baseUrl, apiKey } = target;
 
@@ -379,12 +385,13 @@ export class TorznabClient {
 
   async searchSeries(
     indexer: IndexerRow,
+    kind: SearchKind,
     showTitle: string,
     season: number,
     episode: number,
     externalIds?: { tvdbId?: number | null; imdbId?: string | null },
   ): Promise<IndexerRelease[]> {
-    const target = this.resolveSearchTarget(indexer);
+    const target = this.resolveSearchTarget(indexer, kind);
     if (!target) return [];
     const { baseUrl, apiKey } = target;
 
@@ -428,10 +435,11 @@ export class TorznabClient {
 
   async searchMovie(
     indexer: IndexerRow,
+    kind: SearchKind,
     query: string,
     externalIds?: { imdbId?: string | null; tmdbId?: number | null },
   ): Promise<IndexerRelease[]> {
-    const target = this.resolveSearchTarget(indexer);
+    const target = this.resolveSearchTarget(indexer, kind);
     if (!target) return [];
     const { baseUrl, apiKey } = target;
 

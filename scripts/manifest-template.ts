@@ -865,10 +865,11 @@ export const I18N = {
       'Minimum time between two search requests sent to this indexer.',
     'download.config.indexers.fields.use_for': 'Use for',
     'download.config.indexers.fields.use_for_hint':
-      'An indexer kept out of searches is still polled by the RSS sync, which costs one call per cycle instead of one per missing item. Worth it on a tracker with a daily API quota.',
-    'download.config.indexers.fields.use_for_both': 'Searches and RSS sync',
-    'download.config.indexers.fields.use_for_search': 'Searches only',
-    'download.config.indexers.fields.use_for_rss': 'RSS sync only',
+      'Which of these this indexer is queried for. At least one usage is required.',
+    'download.config.indexers.fields.use_for_rss': 'RSS sync',
+    'download.config.indexers.fields.use_for_auto': 'Automatic searches',
+    'download.config.indexers.fields.use_for_manual': 'Manual searches',
+    'download.config.indexers.errors.no_usage': 'Pick at least one usage for this indexer',
     'download.config.indexers.fields.min_seeders': 'Minimum seeders',
     'download.config.indexers.fields.seed_ratio': 'Seed ratio target',
     'download.config.indexers.fields.seed_ratio_hint':
@@ -1072,10 +1073,11 @@ export const I18N = {
       'Délai minimum entre deux requêtes de recherche envoyées à cet indexeur.',
     'download.config.indexers.fields.use_for': 'Utiliser pour',
     'download.config.indexers.fields.use_for_hint':
-      'Un indexeur écarté des recherches reste interrogé par la synchro RSS, qui coûte un appel par cycle au lieu d’un par média manquant. Utile sur un tracker qui plafonne son API à la journée.',
-    'download.config.indexers.fields.use_for_both': 'Recherches et synchro RSS',
-    'download.config.indexers.fields.use_for_search': 'Recherches uniquement',
-    'download.config.indexers.fields.use_for_rss': 'Synchro RSS uniquement',
+      'Les usages pour lesquels cet indexeur est interrogé. Au moins un usage est requis.',
+    'download.config.indexers.fields.use_for_rss': 'Synchro RSS',
+    'download.config.indexers.fields.use_for_auto': 'Recherches automatiques',
+    'download.config.indexers.fields.use_for_manual': 'Recherches manuelles',
+    'download.config.indexers.errors.no_usage': 'Choisissez au moins un usage pour cet indexeur',
     'download.config.indexers.fields.min_seeders': 'Nombre minimum de seeders',
     'download.config.indexers.fields.seed_ratio': 'Ratio de partage cible',
     'download.config.indexers.fields.seed_ratio_hint':

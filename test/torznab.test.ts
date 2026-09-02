@@ -13,6 +13,7 @@ const indexer = (over: Partial<IndexerRow> = {}): IndexerRow =>
     settings: {},
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 0,
     enabled: true,
@@ -69,6 +70,7 @@ test('searchMovie probes caps first when they are unknown, then searches with wh
   try {
     const results = await client.searchMovie(
       indexer({ settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'probe-key' } }),
+      'auto',
       'Some Movie',
     );
     assert.deepEqual(results, []);
@@ -83,18 +85,59 @@ test('searchMovie probes caps first when they are unknown, then searches with wh
   }
 });
 
-test('searchMovie skips when enableSearch is false, even though the indexer is enabled', async () => {
+test('searchMovie skips an automatic search when enableSearch is false, even though the indexer is enabled', async () => {
   const { client } = makeClient();
   const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
   try {
     const results = await client.searchMovie(
       indexer({ enableSearch: false, settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } }),
+      'auto',
       'Some Movie',
     );
     assert.deepEqual(results, []);
     assert.equal(stub.calls.length, 0);
   } finally {
     stub.restore();
+  }
+});
+
+test('VERDICT: automatic and manual searches are gated independently, each skips only its own gate', async () => {
+  const { client: autoOnly } = makeClient();
+  const autoOnlyIx = indexer({
+    enableSearch: true,
+    enableInteractiveSearch: false,
+    settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
+  });
+  const autoStub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
+  try {
+    const manualResult = await autoOnly.searchMovie(autoOnlyIx, 'manual', 'Some Movie');
+    assert.deepEqual(manualResult, [], 'enableInteractiveSearch is false, manual is skipped');
+    assert.equal(autoStub.calls.length, 0);
+
+    const autoResult = await autoOnly.searchMovie(autoOnlyIx, 'auto', 'Some Movie');
+    assert.deepEqual(autoResult, [], 'still queried, just empty: enableSearch is true');
+    assert.ok(autoStub.calls.length > 0, 'an automatic search reaches the network');
+  } finally {
+    autoStub.restore();
+  }
+
+  const { client: manualOnly } = makeClient();
+  const manualOnlyIx = indexer({
+    enableSearch: false,
+    enableInteractiveSearch: true,
+    settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
+  });
+  const manualStub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
+  try {
+    const autoResult = await manualOnly.searchMovie(manualOnlyIx, 'auto', 'Some Movie');
+    assert.deepEqual(autoResult, [], 'enableSearch is false, the automatic search is skipped');
+    assert.equal(manualStub.calls.length, 0);
+
+    const manualResult = await manualOnly.searchMovie(manualOnlyIx, 'manual', 'Some Movie');
+    assert.deepEqual(manualResult, [], 'still queried, just empty: enableInteractiveSearch is true');
+    assert.ok(manualStub.calls.length > 0, 'a manual search reaches the network');
+  } finally {
+    manualStub.restore();
   }
 });
 
@@ -151,7 +194,7 @@ test('a 429 with Retry-After feeds the throttle, and the caller is not made to s
   });
   try {
     const ix = indexer({ settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
-    const results = await client.searchMovie(ix, 'Some Movie');
+    const results = await client.searchMovie(ix, 'auto', 'Some Movie');
     assert.deepEqual(results, []);
     const remaining = throttle.cooldownRemainingMs(ix.id);
     assert.ok(remaining > 55_000 && remaining <= 60_000, `expected ~60s cooldown from Retry-After, got ${remaining}ms`);
@@ -266,7 +309,7 @@ test('VERDICT: a probed indexer is never probed twice — the stamp is what stop
   const stub = stubFetch(() => ({ status: 200, body: emptyTorznabBody }));
   try {
     const ix = indexer({ capsProbedAt: '2026-01-01T00:00:00.000Z', settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
-    await client.searchMovie(ix, 'Some Movie');
+    await client.searchMovie(ix, 'auto', 'Some Movie');
     assert.equal(stub.calls.length, 1, 'one search, no caps call');
     assert.ok(!stub.calls[0]?.includes('t=caps'));
   } finally {
@@ -286,7 +329,7 @@ test('VERDICT: the search fallback is persisted through its own statement — `u
   });
   try {
     const ix = indexer({ settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' } });
-    await client.searchMovie(ix, 'Some Movie', { imdbId: 'tt1', tmdbId: 1 });
+    await client.searchMovie(ix, 'auto', 'Some Movie', { imdbId: 'tt1', tmdbId: 1 });
 
     assert.deepEqual(fallbackMarks, [ix.id], 'one dedicated write');
     assert.equal(ix.capsSearchFallback, true, 'and the in-memory row, so the same batch skips the typed attempt');
@@ -368,6 +411,7 @@ test('VERDICT: searchSeries queries a special as plain text, with no season/ep f
         capsProbedAt: '2026-01-01T00:00:00.000Z',
         settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
       }),
+      'auto',
       'Nova Skyline Behind the Scenes',
       0,
       3,
@@ -398,6 +442,7 @@ test('a numbered season still goes out as tvsearch with its season and episode',
         capsProbedAt: '2026-01-01T00:00:00.000Z',
         settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
       }),
+      'auto',
       'Nova Skyline',
       4,
       3,

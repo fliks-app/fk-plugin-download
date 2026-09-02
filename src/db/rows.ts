@@ -17,6 +17,7 @@ export interface IndexerRow {
   settings: Record<string, unknown>;
   enableRss: boolean;
   enableSearch: boolean;
+  enableInteractiveSearch: boolean;
   priority: number;
   enabled: boolean;
   capsSearchFallback: boolean;

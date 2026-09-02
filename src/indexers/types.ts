@@ -27,9 +27,12 @@ export interface IndexerCooldown {
   detail?: string;
 }
 
+/** Which gate a search call checks: a scheduled/auto-grab pass, or the manual release picker. */
+export type SearchKind = 'auto' | 'manual';
+
 export type IndexerWithCooldown = IndexerRow & {
-  /** The two gates as the one choice the editor renders. Derived on read, never stored. */
-  useFor: UseFor;
+  /** The three gates as the set the editor renders. Derived on read, never stored. */
+  useFor: UseFor[];
   cooldown: {
     reason: 'rate-limit' | 'failures';
     remainingMs: number;
@@ -89,6 +92,7 @@ export interface CreateIndexerInput {
   settings?: Record<string, unknown>;
   enableRss?: boolean;
   enableSearch?: boolean;
+  enableInteractiveSearch?: boolean;
   priority?: number;
   requestDelay?: number;
   enabled?: boolean;
@@ -100,6 +104,7 @@ export interface UpdateIndexerInput {
   settings?: Record<string, unknown>;
   enableRss?: boolean;
   enableSearch?: boolean;
+  enableInteractiveSearch?: boolean;
   priority?: number;
   requestDelay?: number;
   enabled?: boolean;

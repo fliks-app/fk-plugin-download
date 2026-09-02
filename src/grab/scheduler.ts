@@ -46,7 +46,7 @@ export async function searchMissing(deps: SchedulerDeps, mediaIds?: number[]): P
       count++;
       if (!target.want || target.want.decision === 'skip') continue;
       if (target.episode && target.season && seasonsGrabbedAsPack.has(target.season.id)) continue;
-      const grabbed = await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t), () => pendingCheck(deps.historyRepo, target));
+      const grabbed = await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t, 'auto'), () => pendingCheck(deps.historyRepo, target));
       if (grabbed && target.season && !target.episode) seasonsGrabbedAsPack.add(target.season.id);
     }
     cursor = page.cursor;
@@ -128,7 +128,7 @@ export async function rssSync(deps: SchedulerDeps): Promise<void> {
         continue;
       }
 
-      await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t), () => pendingCheck(deps.historyRepo, target));
+      await tryAutoGrab(deps, target, client, (t) => searchScored(deps, t, 'auto'), () => pendingCheck(deps.historyRepo, target));
     }
   }
 }
