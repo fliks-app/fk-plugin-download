@@ -808,6 +808,8 @@ export const I18N = {
     'download.indexer_sources.test.unexpected_response':
       'Unexpected response: not an indexer list. Check the base URL.',
     'download.indexer_sources.test.network_error': 'Could not reach the source',
+    'download.indexer_sources.test.login_required':
+      'The source asks for a login this import cannot provide. Remove its admin password, or add the indexers by hand.',
     'download.indexer_sources.test.unknown_implementation': 'Unknown source type',
     'download.indexers.test.ok': 'Capabilities read, connection OK',
     'download.indexers.test.base_url_missing': 'Base URL is empty',
@@ -1014,6 +1016,8 @@ export const I18N = {
     'download.indexer_sources.test.unexpected_response':
       'Réponse inattendue : ce n’est pas une liste d’indexeurs. Vérifiez l’URL de base.',
     'download.indexer_sources.test.network_error': 'Impossible de joindre la source',
+    'download.indexer_sources.test.login_required':
+      'La source demande une authentification que cet import ne peut pas fournir. Retirez son mot de passe admin, ou ajoutez les indexeurs à la main.',
     'download.indexer_sources.test.unknown_implementation': 'Type de source inconnu',
     'download.indexers.test.ok': 'Capacités lues, connexion OK',
     'download.indexers.test.base_url_missing': 'L’URL de base est vide',
