@@ -403,7 +403,6 @@ describe('route table — GET /queue', () => {
         infoUrl: null,
         source: 'Tracker A',
         state: 'importing',
-        stateReason: null,
         progress: 100,
         bytesPerSecond: null,
         size: null,
@@ -452,7 +451,7 @@ describe('route table — GET /queue', () => {
     assert.equal(body.clientsUnreachable, false, 'the client answered — the row is gone, not hidden behind an outage');
   });
 
-  test('the same row stays when its client could not be reached', async () => {
+  test('VERDICT: a row whose client could not be reached leaves the list, with a notice for it', async () => {
     const driver: DownloadClientDriver = {
       supports: (c) => c.enabled,
       testConnection: async () => ({ ok: false, messageKey: 'download.download_clients.test.ok' }),
@@ -475,16 +474,26 @@ describe('route table — GET /queue', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as { data: QueueItemDto[]; clientsUnreachable: boolean };
+    const body = res.body as {
+      data: QueueItemDto[];
+      clientsUnreachable: boolean;
+      notice?: { messageKey: string; tone: string; count: number };
+    };
 
-    assert.equal(body.data.length, 1);
-    assert.equal(body.data[0]!.clientReachable, false);
+    // A queue lists what the clients report. The row is still in history; the notice is what
+    // keeps a short list from reading as "nothing is downloading".
+    assert.deepEqual(body.data, []);
     assert.equal(body.clientsUnreachable, true);
+    assert.deepEqual(body.notice, {
+      messageKey: 'download.config.queue.notice.hidden_client_unreachable',
+      tone: 'warning',
+      count: 1,
+    });
   });
 
   /** The bug this fix answers: a disabled client's rows read `queued` with
    *  `clientsUnreachable: false`, nothing on screen saying the client was never asked. */
-  test('a disabled client: its rows read unknown, name the client as the reason, stay in the queue, and flag clientsUnreachable', async () => {
+  test('VERDICT: a disabled client is never consulted, and its rows leave the list behind an info notice', async () => {
     let asked = false;
     const driver: DownloadClientDriver = {
       supports: (c) => c.enabled,
@@ -511,17 +520,52 @@ describe('route table — GET /queue', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as { data: QueueItemDto[]; total: number; clientsUnreachable: boolean };
+    const body = res.body as { data: QueueItemDto[]; total: number; clientsUnreachable: boolean; notice?: unknown };
 
     assert.equal(asked, false, 'a disabled client is never consulted');
-    assert.equal(body.total, 1, 'the row is not dropped just because its client is unverified');
-    assert.equal(body.data[0]!.state, 'unknown');
-    assert.equal(body.data[0]!.stateReason, 'download.config.queue.state_reason.client_disabled');
-    assert.equal(body.data[0]!.clientReachable, false);
+    // A queue lists what the clients report; the row stays in history, and the notice is what
+    // tells the reader the list is short.
+    assert.deepEqual(body.data, []);
+    assert.equal(body.total, 0);
+    assert.deepEqual(body.notice, {
+      messageKey: 'download.config.queue.notice.hidden_client_disabled',
+      tone: 'info',
+      count: 1,
+    });
     assert.equal(body.clientsUnreachable, true, 'a row nobody could verify makes the whole page say so');
   });
 
-  test('a row with no download client or torrent hash yet: unknown, with its own reason, never queued', async () => {
+  test('VERDICT: a client that answered with an error hides its rows behind a warning, not an info', async () => {
+    const driver: DownloadClientDriver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({ ok: false, torrents: [] }),
+    } as unknown as DownloadClientDriver;
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [
+          historyRow({ id: 4, torrentHash: 'abcd', downloadClientId: 1 }),
+          historyRow({ id: 5, torrentHash: 'efgh', downloadClientId: 1 }),
+        ],
+        listPage: async () => ({ rows: [], total: 0 }),
+      },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; total: number; notice?: unknown };
+
+    assert.deepEqual(body.data, []);
+    assert.deepEqual(body.notice, {
+      messageKey: 'download.config.queue.notice.hidden_client_unreachable',
+      tone: 'warning',
+      count: 2,
+    });
+  });
+
+  test('a row with no client or hash yet is queued: no client was consulted, so nothing is contradicted', async () => {
     const deps = fakeDeps({
       downloadHistory: {
         findByStatuses: async () => [historyRow({ id: 6, downloadClientId: null, torrentHash: null })],
@@ -531,11 +575,39 @@ describe('route table — GET /queue', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as { data: QueueItemDto[] };
+    const body = res.body as { data: QueueItemDto[]; notice?: unknown };
 
-    assert.equal(body.data[0]!.state, 'unknown');
-    assert.equal(body.data[0]!.stateReason, 'download.config.queue.state_reason.client_unreachable');
-    assert.equal(body.data[0]!.clientReachable, false);
+    assert.equal(body.data[0]!.state, 'queued');
+    assert.equal('notice' in body, false, 'nothing was hidden, so nothing to explain');
+  });
+
+  test('no notice at all when every row could be verified: nothing to explain', async () => {
+    const driver: DownloadClientDriver = {
+      supports: (c: DownloadClientRow) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => ({
+        ok: true,
+        torrents: [
+          { hash: 'abcd', name: 'x', size: 10, downloaded: 5, progress: 0.5, dlspeed: 1, upspeed: 0, state: 'downloading', eta: 60, category: '', savePath: '/d', contentPath: '/d/x', ratio: 0, seedingTime: 0, completionOn: 0, numSeeds: 1, numLeechs: 0 },
+        ],
+      }),
+    } as unknown as DownloadClientDriver;
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 4, torrentHash: 'abcd', downloadClientId: 1 })],
+        listPage: async () => ({ rows: [], total: 0 }),
+      },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; notice?: unknown; clientsUnreachable: boolean };
+
+    assert.equal(body.data.length, 1);
+    assert.equal('notice' in body, false);
+    assert.equal(body.clientsUnreachable, false);
   });
 
   test('a grabbed row matched to a live torrent maps the client\'s own state through the closed vocabulary', async () => {
@@ -593,7 +665,6 @@ describe('route table — GET /queue', () => {
         infoUrl: null,
         source: '',
         state: 'stalled',
-        stateReason: null,
         // The client reports 0.5; the table renders this verbatim, so it must be a percent.
         progress: 50,
         bytesPerSecond: 12345,
@@ -631,29 +702,17 @@ describe('route table — GET /queue', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as { data: QueueItemDto[]; total: number; clientsUnreachable: boolean };
+    const body = res.body as {
+      data: QueueItemDto[];
+      total: number;
+      clientsUnreachable: boolean;
+      notice?: { messageKey: string; count: number };
+    };
     assert.equal(body.clientsUnreachable, true, 'the response must say the client could not be reached');
-    assert.equal(body.total, 1, 'the row still shows — it is not silently dropped to an empty page');
-    assert.deepEqual(body.data[0], {
-      id: 5,
-      title: 'A Title',
-      sourceTitle: 'A Title',
-      quality: '1080p',
-      grabSource: 'auto',
-      date: '2026-01-01T00:00:00.000Z',
-      infoUrl: null,
-      source: '',
-      state: 'unknown',
-      stateReason: 'download.config.queue.state_reason.client_unreachable',
-      progress: null,
-      bytesPerSecond: null,
-      size: null,
-      clientReachable: false,
-      mediaId: null,
-      seasonId: null,
-      episodeId: null,
-      mediaType: null,
-    });
+    assert.deepEqual(body.data, [], 'a row nothing can vouch for is not listed as if it were running');
+    assert.equal(body.total, 0);
+    assert.equal(body.notice?.messageKey, 'download.config.queue.notice.hidden_client_unreachable');
+    assert.equal(body.notice?.count, 1);
   });
 
   test('pagination: page/pageSize are read from the query and total reflects the unpaged count', async () => {
