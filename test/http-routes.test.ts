@@ -451,7 +451,7 @@ describe('route table — GET /queue', () => {
     assert.equal(body.clientsUnreachable, false, 'the client answered — the row is gone, not hidden behind an outage');
   });
 
-  test('VERDICT: a row whose client could not be reached leaves the list, with a notice for it', async () => {
+  test('VERDICT: a row whose client could not be reached leaves the list', async () => {
     const driver: DownloadClientDriver = {
       supports: (c) => c.enabled,
       testConnection: async () => ({ ok: false, messageKey: 'download.download_clients.test.ok' }),
@@ -474,26 +474,16 @@ describe('route table — GET /queue', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as {
-      data: QueueItemDto[];
-      clientsUnreachable: boolean;
-      notice?: { messageKey: string; tone: string; count: number };
-    };
+    const body = res.body as { data: QueueItemDto[]; clientsUnreachable: boolean };
 
-    // A queue lists what the clients report. The row is still in history; the notice is what
-    // keeps a short list from reading as "nothing is downloading".
+    // A queue lists what the clients report; the row is still readable in history.
     assert.deepEqual(body.data, []);
     assert.equal(body.clientsUnreachable, true);
-    assert.deepEqual(body.notice, {
-      messageKey: 'download.config.queue.notice.hidden_client_unreachable',
-      tone: 'warning',
-      count: 1,
-    });
   });
 
   /** The bug this fix answers: a disabled client's rows read `queued` with
    *  `clientsUnreachable: false`, nothing on screen saying the client was never asked. */
-  test('VERDICT: a disabled client is never consulted, and its rows leave the list behind an info notice', async () => {
+  test('VERDICT: a disabled client is never consulted, and its rows leave the list', async () => {
     let asked = false;
     const driver: DownloadClientDriver = {
       supports: (c) => c.enabled,
@@ -527,15 +517,10 @@ describe('route table — GET /queue', () => {
     // tells the reader the list is short.
     assert.deepEqual(body.data, []);
     assert.equal(body.total, 0);
-    assert.deepEqual(body.notice, {
-      messageKey: 'download.config.queue.notice.hidden_client_disabled',
-      tone: 'info',
-      count: 1,
-    });
     assert.equal(body.clientsUnreachable, true, 'a row nobody could verify makes the whole page say so');
   });
 
-  test('VERDICT: a client that answered with an error hides its rows behind a warning, not an info', async () => {
+  test('VERDICT: a client that answered with an error takes its rows out of the list too', async () => {
     const driver: DownloadClientDriver = {
       supports: (c: DownloadClientRow) => c.enabled,
       testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
@@ -555,14 +540,11 @@ describe('route table — GET /queue', () => {
     });
     const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as { data: QueueItemDto[]; total: number; notice?: unknown };
+    const body = res.body as { data: QueueItemDto[]; total: number; clientsUnreachable: boolean };
 
     assert.deepEqual(body.data, []);
-    assert.deepEqual(body.notice, {
-      messageKey: 'download.config.queue.notice.hidden_client_unreachable',
-      tone: 'warning',
-      count: 2,
-    });
+    assert.equal(body.total, 0);
+    assert.equal(body.clientsUnreachable, true);
   });
 
   test('a row with no client or hash yet is queued: no client was consulted, so nothing is contradicted', async () => {
@@ -575,13 +557,13 @@ describe('route table — GET /queue', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as { data: QueueItemDto[]; notice?: unknown };
+    const body = res.body as { data: QueueItemDto[]; clientsUnreachable: boolean };
 
     assert.equal(body.data[0]!.state, 'queued');
-    assert.equal('notice' in body, false, 'nothing was hidden, so nothing to explain');
+    assert.equal(body.clientsUnreachable, false, 'no client was consulted, and none had to be');
   });
 
-  test('no notice at all when every row could be verified: nothing to explain', async () => {
+  test('nothing is flagged when every row could be verified', async () => {
     const driver: DownloadClientDriver = {
       supports: (c: DownloadClientRow) => c.enabled,
       testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
@@ -603,10 +585,9 @@ describe('route table — GET /queue', () => {
     });
     const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as { data: QueueItemDto[]; notice?: unknown; clientsUnreachable: boolean };
+    const body = res.body as { data: QueueItemDto[]; clientsUnreachable: boolean };
 
     assert.equal(body.data.length, 1);
-    assert.equal('notice' in body, false);
     assert.equal(body.clientsUnreachable, false);
   });
 
@@ -702,17 +683,10 @@ describe('route table — GET /queue', () => {
     const table = createRouteTable(deps);
     const resolved = table.resolve('GET', '/queue')!;
     const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
-    const body = res.body as {
-      data: QueueItemDto[];
-      total: number;
-      clientsUnreachable: boolean;
-      notice?: { messageKey: string; count: number };
-    };
+    const body = res.body as { data: QueueItemDto[]; total: number; clientsUnreachable: boolean };
     assert.equal(body.clientsUnreachable, true, 'the response must say the client could not be reached');
     assert.deepEqual(body.data, [], 'a row nothing can vouch for is not listed as if it were running');
     assert.equal(body.total, 0);
-    assert.equal(body.notice?.messageKey, 'download.config.queue.notice.hidden_client_unreachable');
-    assert.equal(body.notice?.count, 1);
   });
 
   test('pagination: page/pageSize are read from the query and total reflects the unpaged count', async () => {
