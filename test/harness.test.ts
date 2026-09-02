@@ -351,7 +351,6 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
       data: QueueRowLike[];
       total: number;
       clientsUnreachable: boolean;
-      notice?: { messageKey: string; count?: number };
     };
   }>('http', { method: 'GET', path: '/queue', query: {}, body: null, principal: { kind: 'system' } });
   assert.equal(queueWithUnreachableClient.status, 200);
@@ -360,11 +359,7 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
   assert.deepEqual(queueWithUnreachableClient.body.data, []);
   assert.equal(queueWithUnreachableClient.body.total, 0);
   assert.equal(queueWithUnreachableClient.body.clientsUnreachable, true, 'the client-down case must be flagged, not hidden');
-  assert.equal(
-    queueWithUnreachableClient.body.notice?.messageKey,
-    'download.config.queue.notice.hidden_client_unreachable',
-  );
-  assert.equal(queueWithUnreachableClient.body.notice?.count, 1, 'the row it could not show is counted');
+  
 
   // A second in-flight row, this one linked to a real core media id via `download_history`'s
   // own FK into `public.media` — proves the queue resolves mediaId/mediaType for a real row,
@@ -384,7 +379,7 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
 
   const queueWithMedia = await channel.call<{
     status: number;
-    body: { data: QueueRowLike[]; total: number; notice?: { messageKey: string; count?: number } };
+    body: { data: QueueRowLike[]; total: number };
   }>('http', {
     method: 'GET',
     path: '/queue',
@@ -403,7 +398,6 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
     undefined,
     'the row behind an unreachable client is not listed as if it were running',
   );
-  assert.equal(queueWithMedia.body.notice?.count, 1, 'and the notice still accounts for it');
   assert.equal(resolvedRow!.title, 'Harness Media', 'a resolved row is titled by its media, not by the release');
   assert.equal(resolvedRow!.mediaId, resolvableMediaId, 'carries the real core media id straight off the row');
   assert.equal(resolvedRow!.mediaType, 'movie', 'resolved via media.resolve, over the real socket, keyed "media:<id>"');

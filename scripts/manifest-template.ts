@@ -738,10 +738,6 @@ export const I18N = {
     'download.config.queue.states.active': 'Downloading',
     'download.config.queue.states.stalled': 'Stalled',
     'download.config.queue.states.paused': 'Paused',
-    'download.config.queue.notice.hidden_client_disabled':
-      '{{count}} grab(s) are not listed: their download client is disabled, so nothing can say what became of them. They are still in the history.',
-    'download.config.queue.notice.hidden_client_unreachable':
-      '{{count}} grab(s) are not listed: their download client did not answer. They are still in the history.',
     'download.status.importing': 'Importing',
     'download.config.history.title': 'Download history',
     'download.config.history.detail_title': 'Reason',
@@ -959,10 +955,6 @@ export const I18N = {
     'download.config.queue.states.active': 'Téléchargement',
     'download.config.queue.states.stalled': 'Bloqué',
     'download.config.queue.states.paused': 'En pause',
-    'download.config.queue.notice.hidden_client_disabled':
-      '{{count}} téléchargement(s) ne sont pas listés : leur client est désactivé, donc rien ne peut dire ce qu’ils sont devenus. Ils restent dans l’historique.',
-    'download.config.queue.notice.hidden_client_unreachable':
-      '{{count}} téléchargement(s) ne sont pas listés : leur client n’a pas répondu. Ils restent dans l’historique.',
     'download.status.importing': 'Import en cours',
     'download.config.history.title': 'Historique des téléchargements',
     'download.config.history.detail_title': 'Raison',

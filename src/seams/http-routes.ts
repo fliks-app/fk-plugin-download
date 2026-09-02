@@ -790,8 +790,6 @@ function liveTorrentFor(
   return index && row.torrentHash ? index.byHash.get(row.torrentHash.toLowerCase()) : undefined;
 }
 
-const HIDDEN_DISABLED_KEY = 'download.config.queue.notice.hidden_client_disabled';
-const HIDDEN_UNREACHABLE_KEY = 'download.config.queue.notice.hidden_client_unreachable';
 
 /** Never consulted reads as "disabled" (the case the bug was filed against); a missing client
  *  id/hash or an error answer both read as "did not answer". */
@@ -850,8 +848,8 @@ function toQueueItem(
     return { ...base, state: 'queued', progress: null, bytesPerSecond: null, size: null, clientReachable: true };
   }
   // Otherwise its client was asked and could not vouch for the torrent, or was never asked at
-  // all. A queue is what the clients report, not a registry: the row is a record, `history` holds
-  // it, and `handleQueue` counts the gap into its notice.
+  // all. A queue is what the clients report, not a registry: the row is a record and history is
+  // where it stays readable.
   return null;
 }
 
@@ -970,7 +968,7 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
     .map((row) => toQueueItem(row, byClientId, indexerNames))
     .filter((item): item is QueueItemDto => item !== null)
     .sort((a, b) => b.id - a.id);
-  const hidden = rows.filter((row) => isUnverifiable(row, byClientId)).length;
+  const unverifiable = rows.filter((row) => isUnverifiable(row, byClientId)).length;
   const start = (page - 1) * pageSize;
   // Slice to the page first — attachMediaLabels's host call must only ever see this page's ids.
   const data = await attachMediaLabels(deps, items.slice(start, start + pageSize));
@@ -980,16 +978,9 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
     total: items.length,
     page,
     pageSize,
-    // The dropped rows are the whole reason for a notice: without it the list would just be
-    // short, and a client falling over mid-session would empty the queue without a word.
-    ...(hidden > 0
-      ? {
-          notice: anyUnreachable
-            ? { messageKey: HIDDEN_UNREACHABLE_KEY, tone: 'warning' as const, count: hidden }
-            : { messageKey: HIDDEN_DISABLED_KEY, tone: 'info' as const, count: hidden },
-        }
-      : {}),
-    clientsUnreachable: anyUnreachable || hidden > 0,
+    // Counts the rows left out for want of a client that could answer, not the ones a client
+    // answered about without holding: those are over, not unverifiable.
+    clientsUnreachable: anyUnreachable || unverifiable > 0,
   });
 }
 
