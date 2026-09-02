@@ -625,6 +625,9 @@ export const CONFIG_PAGES = [
     icon: 'history',
     list: '/history',
     paged: true,
+    // Cleaning up a history is the one thing done to several rows at once, and the page already
+    // has the filters to narrow down which.
+    bulkSelect: true,
     pageSize: 25,
     filters: [
       { kind: 'search' as const, key: 'q', placeholderKey: 'download.config.history.filters.search_placeholder' },
