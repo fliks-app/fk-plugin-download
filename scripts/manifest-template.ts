@@ -786,7 +786,7 @@ export const I18N = {
     // indexer's own text or an HTTP status — the `rejections[].code` split.
     // Import sources: a saved Prowlarr / Jackett connection, and the outcomes of reading it.
     'download.config.indexer_sources.title': 'Indexer sources',
-    'download.config.indexer_sources.subtitle': 'Sync the indexer list from configured providers',
+    'download.config.indexer_sources.subtitle': 'Sync the indexer list from configured providers.',
     'download.config.indexer_sources.implementations.prowlarr': 'Prowlarr',
     'download.config.indexer_sources.implementations.jackett': 'Jackett',
     'download.config.indexer_sources.fields.base_url': 'Base URL',
@@ -994,7 +994,7 @@ export const I18N = {
     'download.jobs.clean_seeded': 'Nettoyage des torrents seedés',
     'download.config.indexer_sources.title': 'Sources d’indexeurs',
     'download.config.indexer_sources.subtitle':
-      'Synchroniser la liste des indexeurs depuis des fournisseurs configurés',
+      'Synchroniser la liste des indexeurs depuis des fournisseurs configurés.',
     'download.config.indexer_sources.implementations.prowlarr': 'Prowlarr',
     'download.config.indexer_sources.implementations.jackett': 'Jackett',
     'download.config.indexer_sources.fields.base_url': 'URL de base',
