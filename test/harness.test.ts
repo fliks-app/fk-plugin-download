@@ -139,6 +139,8 @@ function cannedHostReply(method: string, payload: unknown): unknown {
 const PLUGIN_ID = 'fliks.download';
 const SCHEMA = pluginSchemaName(PLUGIN_ID);
 const SIX_TABLES = ['indexers', 'download_clients', 'indexer_stats', 'download_history', 'blocklist', 'stalled_checks'];
+/** Created by this plugin rather than ported from Fliks, so it is listed apart. */
+const OWN_TABLES = ['indexer_sources'];
 
 let runtimeDir: string;
 let coreSockPath: string;
@@ -260,8 +262,8 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
   );
   assert.deepEqual(
     tables.map((r) => r.table_name),
-    ['_migrations', ...SIX_TABLES].sort(),
-    'hello must not reply until migrateUp has actually created the six tables',
+    ['_migrations', ...SIX_TABLES, ...OWN_TABLES].sort(),
+    'hello must not reply until migrateUp has actually created every table',
   );
 
   const health = await channel.call<{ ok: boolean }>('health', {});

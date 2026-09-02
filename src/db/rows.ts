@@ -29,6 +29,18 @@ export interface IndexerRow {
   updatedAt: IsoTimestamp;
 }
 
+/** A saved Prowlarr / Jackett instance indexers are imported from. */
+export interface IndexerSourceRow {
+  id: number;
+  name: string;
+  implementation: string;
+  settings: Record<string, unknown>;
+  priority: number;
+  enabled: boolean;
+  createdAt: IsoTimestamp;
+  updatedAt: IsoTimestamp;
+}
+
 export interface IndexerStatRow {
   id: number;
   indexerId: number | null;

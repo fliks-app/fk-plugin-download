@@ -176,6 +176,13 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
   { method: 'DELETE', path: '/indexers/:id', policy: POLICY.indexersManage },
   { method: 'DELETE', path: '/indexers/:id/cooldown', policy: POLICY.indexersManage },
   { method: 'GET', path: '/indexers/:id/stats', policy: POLICY.indexersRead },
+  { method: 'GET', path: '/indexer-sources', policy: POLICY.indexersRead },
+  { method: 'POST', path: '/indexer-sources', policy: POLICY.indexersManage },
+  { method: 'POST', path: '/indexer-sources/test-connection', policy: POLICY.indexersManage },
+  { method: 'GET', path: '/indexer-sources/implementations', policy: POLICY.indexersRead },
+  { method: 'PUT', path: '/indexer-sources/:id', policy: POLICY.indexersManage },
+  { method: 'DELETE', path: '/indexer-sources/:id', policy: POLICY.indexersManage },
+  { method: 'POST', path: '/indexer-sources/:id/import', policy: POLICY.indexersManage },
   { method: 'GET', path: '/download-clients', policy: POLICY.downloadClientsRead },
   { method: 'POST', path: '/download-clients', policy: POLICY.downloadClientsManage },
   { method: 'POST', path: '/download-clients/test-connection', policy: POLICY.downloadClientsManage },
@@ -280,6 +287,14 @@ export const UI_CONTRIBUTIONS = [
     labelKey: 'download.config.indexers.title',
     icon: 'search',
     action: { kind: 'route' as const, path: settingsPagePath('indexers') },
+  },
+  {
+    id: 'fliks-download.settings.indexer-sources',
+    slot: 'settings.page',
+    weight: 115,
+    labelKey: 'download.config.indexer_sources.title',
+    icon: 'server',
+    action: { kind: 'route' as const, path: settingsPagePath('indexer-sources') },
   },
   {
     id: 'fliks-download.settings.download-clients',
@@ -482,6 +497,41 @@ export const CONFIG_PAGES = [
         method: 'DELETE' as const,
         route: '/indexers/cooldowns',
         scope: 'list' as const,
+      },
+    ],
+  },
+  {
+    /**
+     * The import side of the indexers page: a saved Prowlarr / Jackett connection, and one
+     * button per row that turns what it has configured into torznab indexers. Its own page
+     * rather than a dialog on the indexers page, because a source is saved and re-read: the
+     * refresh has to have somewhere to live.
+     */
+    id: 'indexer-sources',
+    kind: 'providers' as const,
+    labelKey: 'download.config.indexer_sources.title',
+    subtitleKey: 'download.config.indexer_sources.subtitle',
+    icon: 'server',
+    list: '/indexer-sources',
+    implementations: '/indexer-sources/implementations',
+    testConnection: { route: '/indexer-sources/test-connection' },
+    // Nothing consumes a source in priority order: the import is manual, one source at a time.
+    showPriority: false,
+    labels: {
+      newKey: 'download.config.indexer_sources.labels.new',
+      emptyKey: 'download.config.indexer_sources.labels.empty',
+      testKey: 'download.config.indexer_sources.labels.test',
+      deleteConfirmKey: 'download.config.indexer_sources.labels.delete_confirm',
+      createTitleKey: 'download.config.indexer_sources.labels.create_title',
+      editTitleKey: 'download.config.indexer_sources.labels.edit_title',
+    },
+    actions: [
+      {
+        id: 'import',
+        labelKey: 'download.config.indexer_sources.actions.import',
+        method: 'POST' as const,
+        route: '/indexer-sources/:id/import',
+        scope: 'row' as const,
       },
     ],
   },
@@ -734,6 +784,31 @@ export const I18N = {
     'download.jobs.clean_seeded': 'Clean seeded downloads',
     // Connection-test outcomes: the key names the reason, `detail` carries the
     // indexer's own text or an HTTP status — the `rejections[].code` split.
+    // Import sources: a saved Prowlarr / Jackett connection, and the outcomes of reading it.
+    'download.config.indexer_sources.title': 'Indexer sources',
+    'download.config.indexer_sources.subtitle':
+      'Prowlarr or Jackett instances you import indexers from. Importing twice updates what it already added.',
+    'download.config.indexer_sources.implementations.prowlarr': 'Prowlarr',
+    'download.config.indexer_sources.implementations.jackett': 'Jackett',
+    'download.config.indexer_sources.fields.base_url': 'Base URL',
+    'download.config.indexer_sources.fields.api_key': 'API key',
+    'download.config.indexer_sources.labels.new': 'New source',
+    'download.config.indexer_sources.labels.empty': 'No source saved yet',
+    'download.config.indexer_sources.labels.test': 'Test connection',
+    'download.config.indexer_sources.labels.delete_confirm':
+      'Delete this source? The indexers it imported are kept.',
+    'download.config.indexer_sources.labels.create_title': 'New indexer source',
+    'download.config.indexer_sources.labels.edit_title': 'Edit the source',
+    'download.config.indexer_sources.actions.import': 'Import the indexers',
+    'download.config.indexer_sources.errors.disabled':
+      'This source is disabled. Enable it before importing.',
+    'download.indexer_sources.test.ok': 'Indexer list read, connection OK',
+    'download.indexer_sources.test.base_url_missing': 'Base URL is empty',
+    'download.indexer_sources.test.http_error': 'The source answered with an HTTP error',
+    'download.indexer_sources.test.unexpected_response':
+      'Unexpected response: not an indexer list. Check the base URL.',
+    'download.indexer_sources.test.network_error': 'Could not reach the source',
+    'download.indexer_sources.test.unknown_implementation': 'Unknown source type',
     'download.indexers.test.ok': 'Capabilities read, connection OK',
     'download.indexers.test.base_url_missing': 'Base URL is empty',
     'download.indexers.test.http_error':
@@ -916,6 +991,30 @@ export const I18N = {
     'download.jobs.import_completed': 'Import des téléchargements terminés',
     'download.jobs.clean_stalled': 'Nettoyage des torrents bloqués',
     'download.jobs.clean_seeded': 'Nettoyage des torrents seedés',
+    'download.config.indexer_sources.title': 'Sources d’indexeurs',
+    'download.config.indexer_sources.subtitle':
+      'Instances Prowlarr ou Jackett depuis lesquelles importer des indexeurs. Un second import met à jour ce qu’il a déjà ajouté.',
+    'download.config.indexer_sources.implementations.prowlarr': 'Prowlarr',
+    'download.config.indexer_sources.implementations.jackett': 'Jackett',
+    'download.config.indexer_sources.fields.base_url': 'URL de base',
+    'download.config.indexer_sources.fields.api_key': 'Clé d’API',
+    'download.config.indexer_sources.labels.new': 'Nouvelle source',
+    'download.config.indexer_sources.labels.empty': 'Aucune source enregistrée',
+    'download.config.indexer_sources.labels.test': 'Tester la connexion',
+    'download.config.indexer_sources.labels.delete_confirm':
+      'Supprimer cette source ? Les indexeurs importés sont conservés.',
+    'download.config.indexer_sources.labels.create_title': 'Nouvelle source d’indexeurs',
+    'download.config.indexer_sources.labels.edit_title': 'Modifier la source',
+    'download.config.indexer_sources.actions.import': 'Importer les indexeurs',
+    'download.config.indexer_sources.errors.disabled':
+      'Cette source est désactivée. Activez-la avant d’importer.',
+    'download.indexer_sources.test.ok': 'Liste des indexeurs lue, connexion OK',
+    'download.indexer_sources.test.base_url_missing': 'L’URL de base est vide',
+    'download.indexer_sources.test.http_error': 'La source a répondu avec une erreur HTTP',
+    'download.indexer_sources.test.unexpected_response':
+      'Réponse inattendue : ce n’est pas une liste d’indexeurs. Vérifiez l’URL de base.',
+    'download.indexer_sources.test.network_error': 'Impossible de joindre la source',
+    'download.indexer_sources.test.unknown_implementation': 'Type de source inconnu',
     'download.indexers.test.ok': 'Capacités lues, connexion OK',
     'download.indexers.test.base_url_missing': 'L’URL de base est vide',
     'download.indexers.test.http_error':

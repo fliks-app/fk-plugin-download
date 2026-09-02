@@ -68,6 +68,16 @@ export class IndexersRepository {
     return rows[0] ?? null;
   }
 
+  /** The identity an import dedupes on: the torznab endpoint is derived from the source and the
+   *  remote indexer's own id, so it names one remote tracker even after a local rename. */
+  async findByBaseUrl(baseUrl: string): Promise<IndexerRow | null> {
+    const { rows } = await this.pool.query<IndexerRow>(
+      `SELECT ${COLUMNS} FROM "indexers" WHERE "settings"->>'baseUrl' = $1 ORDER BY "id" ASC LIMIT 1`,
+      [baseUrl],
+    );
+    return rows[0] ?? null;
+  }
+
   /** `indexers.service.ts:82-93`. */
   async insert(input: NewIndexer): Promise<IndexerRow> {
     const { rows } = await this.pool.query<IndexerRow>(
@@ -114,6 +124,15 @@ export class IndexersRepository {
     const row = rows[0];
     if (!row) throw new Error(`"indexers" row ${id} not found`);
     return row;
+  }
+
+  /** Settings-only write, for an import refreshing a rotated API key on a row whose name,
+   *  priority and tuning are the admin's. */
+  async updateSettings(id: number, settings: Record<string, unknown>): Promise<void> {
+    await this.pool.query(`UPDATE "indexers" SET "settings" = $2, "updatedAt" = now() WHERE "id" = $1`, [
+      id,
+      settings,
+    ]);
   }
 
   /** `indexers/torznab.service.ts:256` — caps refresh after a `t=caps` probe. */

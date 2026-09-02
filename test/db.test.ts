@@ -15,6 +15,10 @@ import { createRepositories, type Repositories } from '../src/db/repositories';
 const PLUGIN_ID = 'test.download';
 const SCHEMA = pluginSchemaName(PLUGIN_ID);
 const SIX_TABLES = ['indexers', 'download_clients', 'indexer_stats', 'download_history', 'blocklist', 'stalled_checks'];
+/** Tables with no Fliks original, so the column and FK comparisons against `public` skip them:
+ *  this plugin created them itself. */
+const OWN_TABLES = ['indexer_sources'];
+const ALL_TABLES = [...SIX_TABLES, ...OWN_TABLES];
 
 let reachable = false;
 /** The two comparison tests need a Fliks-migrated `public`; a bare Postgres (CI)
@@ -71,7 +75,7 @@ test('migrateUp -> migrateDown -> migrateUp, in its own throwaway schema', async
     const ranUp1 = await migrateUp(udoPool);
     console.log('[up#1]', ranUp1);
     assert.deepEqual(ranUp1, allNames, 'every migration, in declaration order');
-    assert.deepEqual(await tableNames(udoPool, udoSchema), ['_migrations', ...SIX_TABLES].sort());
+    assert.deepEqual(await tableNames(udoPool, udoSchema), ['_migrations', ...ALL_TABLES].sort());
 
     const ranUpAgain = await migrateUp(udoPool);
     console.log('[up-again, idempotent]', ranUpAgain);
@@ -86,7 +90,7 @@ test('migrateUp -> migrateDown -> migrateUp, in its own throwaway schema', async
     const ranUp2 = await migrateUp(udoPool);
     console.log('[up#2]', ranUp2);
     assert.deepEqual(ranUp2, allNames);
-    assert.deepEqual(await tableNames(udoPool, udoSchema), ['_migrations', ...SIX_TABLES].sort());
+    assert.deepEqual(await tableNames(udoPool, udoSchema), ['_migrations', ...ALL_TABLES].sort());
   } finally {
     await udoPool.end();
     await admin.query(`DROP SCHEMA IF EXISTS "${udoSchema}" CASCADE`);
@@ -303,6 +307,49 @@ test('download_clients repository: insert, listAll, update, remove', async () =>
 
   await repos.downloadClients.remove(created.id);
   assert.equal(await repos.downloadClients.findById(created.id), null);
+});
+
+test('indexer_sources repository: insert, listAll, findById, update, remove', async () => {
+  if (!reachable) return;
+  const created = await repos.indexerSources.insert({
+    name: 'prowlarr at home',
+    implementation: 'prowlarr',
+    settings: { baseUrl: 'http://prowlarr:9696', apiKey: 'KEY' },
+    priority: 1,
+    enabled: true,
+  });
+  assert.deepEqual(created.settings, { baseUrl: 'http://prowlarr:9696', apiKey: 'KEY' });
+  assert.ok((await repos.indexerSources.listAll()).some((r) => r.id === created.id));
+
+  const updated = await repos.indexerSources.update(created.id, { ...created, enabled: false });
+  assert.equal(updated.enabled, false);
+  assert.equal((await repos.indexerSources.findById(created.id))?.name, 'prowlarr at home');
+
+  await repos.indexerSources.remove(created.id);
+  assert.equal(await repos.indexerSources.findById(created.id), null);
+});
+
+test('indexers repository: findByBaseUrl matches on the settings key an import dedupes on', async () => {
+  if (!reachable) return;
+  const created = await repos.indexers.insert({
+    name: 'imported tracker',
+    implementation: 'torznab',
+    settings: { baseUrl: 'http://prowlarr:9696/7/api', apiKey: 'KEY' },
+    enableRss: true,
+    enableSearch: true,
+    priority: 25,
+    requestDelay: 2,
+    enabled: true,
+  });
+  try {
+    assert.equal((await repos.indexers.findByBaseUrl('http://prowlarr:9696/7/api'))?.id, created.id);
+    assert.equal(await repos.indexers.findByBaseUrl('http://prowlarr:9696/8/api'), null);
+
+    await repos.indexers.updateSettings(created.id, { baseUrl: 'http://prowlarr:9696/7/api', apiKey: 'ROTATED' });
+    assert.equal((await repos.indexers.findById(created.id))?.settings['apiKey'], 'ROTATED');
+  } finally {
+    await repos.indexers.remove(created.id);
+  }
 });
 
 test('download_history repository: insertGrab, status transitions, completeImport, healMatch', async () => {
