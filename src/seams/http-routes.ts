@@ -656,10 +656,7 @@ export interface QueueItemDto extends MediaLabelled {
   /** The tracker's page for this release; null when the feed named none, or on a row grabbed
    *  before the column existed. Never the download URL, which carries the API key. */
   infoUrl: string | null;
-  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing' | 'unknown';
-  /** Set only when `state` is `unknown`: a translation key naming why, for the detail
-   *  dialog to render. Null on every other row. */
-  stateReason: string | null;
+  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
   /** Percent, 0-100 — the table renders it verbatim. Clients report a 0-1 fraction, which
    *  rounded to 0% for everything short of a finished download. */
   progress: number | null;
@@ -793,14 +790,22 @@ function liveTorrentFor(
   return index && row.torrentHash ? index.byHash.get(row.torrentHash.toLowerCase()) : undefined;
 }
 
-const CLIENT_DISABLED_REASON_KEY = 'download.config.queue.state_reason.client_disabled';
-const CLIENT_UNREACHABLE_REASON_KEY = 'download.config.queue.state_reason.client_unreachable';
+const HIDDEN_DISABLED_KEY = 'download.config.queue.notice.hidden_client_disabled';
+const HIDDEN_UNREACHABLE_KEY = 'download.config.queue.notice.hidden_client_unreachable';
 
 /** Never consulted reads as "disabled" (the case the bug was filed against); a missing client
  *  id/hash or an error answer both read as "did not answer". */
-function stateReasonFor(row: DownloadHistoryRow, index: ClientTorrentIndex | undefined): string {
-  if (row.downloadClientId == null || !row.torrentHash || !index) return CLIENT_UNREACHABLE_REASON_KEY;
-  return index.consulted ? CLIENT_UNREACHABLE_REASON_KEY : CLIENT_DISABLED_REASON_KEY;
+/**
+ * Its client was asked and could not answer, or was never asked at all: the row is in flight and
+ * nothing can say what became of it. A client that answered WITHOUT the torrent is not this: that
+ * download is genuinely over, and the row leaves the queue for good rather than being hidden.
+ */
+function isUnverifiable(row: DownloadHistoryRow, byClientId: Map<number, ClientTorrentIndex>): boolean {
+  if (row.status === 'importing') return false;
+  if (row.downloadClientId == null || !row.torrentHash) return false;
+  const index = byClientId.get(row.downloadClientId);
+  if (!index || !index.consulted || !index.ok) return true;
+  return false;
 }
 
 function toQueueItem(
@@ -823,7 +828,7 @@ function toQueueItem(
     mediaType: null as MediaKind | null,
   };
   if (row.status === 'importing') {
-    return { ...base, state: 'importing', stateReason: null, progress: 100, bytesPerSecond: null, size: null, clientReachable: true };
+    return { ...base, state: 'importing', progress: 100, bytesPerSecond: null, size: null, clientReachable: true };
   }
   const index = row.downloadClientId != null ? byClientId.get(row.downloadClientId) : undefined;
   const torrent = liveTorrentFor(row, byClientId);
@@ -831,7 +836,6 @@ function toQueueItem(
     return {
       ...base,
       state: torrentProgressState(torrent),
-      stateReason: null,
       progress: torrent.progress * 100,
       bytesPerSecond: torrent.dlspeed,
       // A client reports 0 until it has the torrent's metadata. That is "not known yet",
@@ -840,16 +844,15 @@ function toQueueItem(
       clientReachable: true,
     };
   }
-  if (index?.ok) return null;
-  return {
-    ...base,
-    state: 'unknown',
-    stateReason: stateReasonFor(row, index),
-    progress: null,
-    bytesPerSecond: null,
-    size: null,
-    clientReachable: false,
-  };
+  // No client and no hash: the grab has not reached a client at all, which is what queued means.
+  // Nothing was consulted, so nothing is being contradicted here.
+  if (row.downloadClientId == null || !row.torrentHash) {
+    return { ...base, state: 'queued', progress: null, bytesPerSecond: null, size: null, clientReachable: true };
+  }
+  // Otherwise its client was asked and could not vouch for the torrent, or was never asked at
+  // all. A queue is what the clients report, not a registry: the row is a record, `history` holds
+  // it, and `handleQueue` counts the gap into its notice.
+  return null;
 }
 
 /** One row of the history view. `status` and `statusMessage` are the point of it: a failed grab
@@ -967,6 +970,7 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
     .map((row) => toQueueItem(row, byClientId, indexerNames))
     .filter((item): item is QueueItemDto => item !== null)
     .sort((a, b) => b.id - a.id);
+  const hidden = rows.filter((row) => isUnverifiable(row, byClientId)).length;
   const start = (page - 1) * pageSize;
   // Slice to the page first — attachMediaLabels's host call must only ever see this page's ids.
   const data = await attachMediaLabels(deps, items.slice(start, start + pageSize));
@@ -976,9 +980,16 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
     total: items.length,
     page,
     pageSize,
-    // A client that answered with an error counts, and so does a row left `unknown` because
-    // it was never consulted at all: both are a row this response cannot vouch for.
-    clientsUnreachable: anyUnreachable || items.some((item) => item.state === 'unknown'),
+    // The dropped rows are the whole reason for a notice: without it the list would just be
+    // short, and a client falling over mid-session would empty the queue without a word.
+    ...(hidden > 0
+      ? {
+          notice: anyUnreachable
+            ? { messageKey: HIDDEN_UNREACHABLE_KEY, tone: 'warning' as const, count: hidden }
+            : { messageKey: HIDDEN_DISABLED_KEY, tone: 'info' as const, count: hidden },
+        }
+      : {}),
+    clientsUnreachable: anyUnreachable || hidden > 0,
   });
 }
 

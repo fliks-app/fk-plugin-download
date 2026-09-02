@@ -339,7 +339,6 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
     sourceTitle: string;
     quality: string;
     state: string;
-    stateReason: string | null;
     progress: number | null;
     clientReachable: boolean;
     mediaId: number | null;
@@ -348,21 +347,24 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
 
   const queueWithUnreachableClient = await channel.call<{
     status: number;
-    body: { data: QueueRowLike[]; total: number; clientsUnreachable: boolean };
+    body: {
+      data: QueueRowLike[];
+      total: number;
+      clientsUnreachable: boolean;
+      notice?: { messageKey: string; count?: number };
+    };
   }>('http', { method: 'GET', path: '/queue', query: {}, body: null, principal: { kind: 'system' } });
   assert.equal(queueWithUnreachableClient.status, 200);
-  assert.equal(queueWithUnreachableClient.body.total, 1, 'the in-flight row still shows — never dropped to an empty page');
+  // A queue lists what the clients report: with none of them answering there is nothing to list,
+  // and the notice is what keeps that from reading as "nothing is downloading".
+  assert.deepEqual(queueWithUnreachableClient.body.data, []);
+  assert.equal(queueWithUnreachableClient.body.total, 0);
   assert.equal(queueWithUnreachableClient.body.clientsUnreachable, true, 'the client-down case must be flagged, not hidden');
-  const [queueRow] = queueWithUnreachableClient.body.data;
-  // No media linked, so nothing to name it after: the release name stands in.
-  assert.equal(queueRow!.title, 'Harness In-Flight Grab');
-  assert.equal(queueRow!.sourceTitle, 'Harness In-Flight Grab');
-  assert.equal(queueRow!.state, 'unknown');
-  assert.equal(queueRow!.stateReason, 'download.config.queue.state_reason.client_unreachable');
-  assert.equal(queueRow!.progress, null);
-  assert.equal(queueRow!.clientReachable, false);
-  assert.equal(queueRow!.mediaId, null, 'no media was ever linked to this grab — both fields stay null, never guessed');
-  assert.equal(queueRow!.mediaType, null, 'no button renders client-side without both mediaId and mediaType');
+  assert.equal(
+    queueWithUnreachableClient.body.notice?.messageKey,
+    'download.config.queue.notice.hidden_client_unreachable',
+  );
+  assert.equal(queueWithUnreachableClient.body.notice?.count, 1, 'the row it could not show is counted');
 
   // A second in-flight row, this one linked to a real core media id via `download_history`'s
   // own FK into `public.media` — proves the queue resolves mediaId/mediaType for a real row,
@@ -371,14 +373,19 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
     `INSERT INTO public."media" ("title", "type") VALUES ('Harness Media', 'movie') RETURNING "id"`,
   );
   resolvableMediaId = mediaRows[0]!.id;
+  // No client and no hash on purpose: this row is here for the label resolution, and a row whose
+  // client answers nothing is now hidden from the queue (see the notice asserted above).
   await admin!.query(
     `INSERT INTO "${SCHEMA}"."download_history"
-       ("sourceTitle", "quality", "torrentHash", "status", "downloadClientId", "mediaId")
-     VALUES ('Harness Media Grab', '1080p', 'feedface', 'grabbed', $1, $2)`,
-    [unreachableClientId, resolvableMediaId],
+       ("sourceTitle", "quality", "status", "mediaId")
+     VALUES ('Harness Media Grab', '1080p', 'grabbed', $1)`,
+    [resolvableMediaId],
   );
 
-  const queueWithMedia = await channel.call<{ status: number; body: { data: QueueRowLike[]; total: number } }>('http', {
+  const queueWithMedia = await channel.call<{
+    status: number;
+    body: { data: QueueRowLike[]; total: number; notice?: { messageKey: string; count?: number } };
+  }>('http', {
     method: 'GET',
     path: '/queue',
     query: {},
@@ -386,19 +393,20 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
     principal: { kind: 'system' },
   });
   assert.equal(queueWithMedia.status, 200);
-  assert.equal(queueWithMedia.body.total, 2, 'both in-flight rows show');
+  assert.equal(queueWithMedia.body.total, 1, 'the listable row is the one no client has to vouch for');
   // Rows are found by their release name, which never moves; `title` is what the resolve
   // replaced, and asserting on it is what this test is here to check.
   const resolvedRow = queueWithMedia.body.data.find((r) => r.sourceTitle === 'Harness Media Grab');
-  const unresolvedRow = queueWithMedia.body.data.find((r) => r.sourceTitle === 'Harness In-Flight Grab');
-  assert.ok(resolvedRow, 'the media-linked row must still be present');
-  assert.ok(unresolvedRow, 'the media-less row must still be present alongside it');
+  assert.ok(resolvedRow, 'the media-linked row must be present');
+  assert.equal(
+    queueWithMedia.body.data.find((r) => r.sourceTitle === 'Harness In-Flight Grab'),
+    undefined,
+    'the row behind an unreachable client is not listed as if it were running',
+  );
+  assert.equal(queueWithMedia.body.notice?.count, 1, 'and the notice still accounts for it');
   assert.equal(resolvedRow!.title, 'Harness Media', 'a resolved row is titled by its media, not by the release');
-  assert.equal(unresolvedRow!.title, 'Harness In-Flight Grab', 'an unresolved one keeps the release name');
   assert.equal(resolvedRow!.mediaId, resolvableMediaId, 'carries the real core media id straight off the row');
   assert.equal(resolvedRow!.mediaType, 'movie', 'resolved via media.resolve, over the real socket, keyed "media:<id>"');
-  assert.equal(unresolvedRow!.mediaId, null, 'still no media linked — unaffected by the other row resolving');
-  assert.equal(unresolvedRow!.mediaType, null, 'still no button for this row');
 
   // The composition root's real proof: all five manifest job names dispatch into a real
   // handler over the real socket, against the real (empty) fliks-migtest schema.
