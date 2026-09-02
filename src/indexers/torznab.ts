@@ -22,6 +22,11 @@ interface FetchOptions {
   timeoutMs: number;
   /** Omitted = never throw on status, matching axios `validateStatus: () => true`. */
   validateStatus?: (status: number) => boolean;
+  /** Merged over the User-Agent. For an API that authenticates on a header or a cookie. */
+  headers?: Record<string, string>;
+  /** `'manual'` to read a redirect rather than follow it: following one loses the `Set-Cookie`
+   *  the redirect carried, which is the whole answer for a session-gated API. */
+  redirect?: 'manual' | 'follow';
 }
 
 /**
@@ -43,7 +48,11 @@ export async function fetchText(url: string, opts: FetchOptions): Promise<{ stat
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': USER_AGENT } });
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': USER_AGENT, ...opts.headers },
+      ...(opts.redirect ? { redirect: opts.redirect } : {}),
+    });
     const body = await res.text();
     if (opts.validateStatus && !opts.validateStatus(res.status)) {
       throw new TorznabHttpError(res.status, res.headers.get('retry-after'));

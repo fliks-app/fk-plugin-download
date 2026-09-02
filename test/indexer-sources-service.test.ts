@@ -6,17 +6,29 @@ import { SourceUnreachableError } from '../src/indexer-sources/types';
 import type { IndexerRow, IndexerSourceRow } from '../src/db/rows';
 import type { CreateIndexerInput } from '../src/indexers/types';
 
-function stubFetch(handler: (url: string) => { status: number; body: string }) {
+interface StubbedCall {
+  url: string;
+  headers: Record<string, string>;
+}
+
+function stubFetch(
+  handler: (url: string, call: StubbedCall, index: number) => { status: number; body: string; headers?: Record<string, string> },
+) {
   const original = globalThis.fetch;
-  const calls: string[] = [];
-  globalThis.fetch = (async (input: string | URL) => {
+  const calls: StubbedCall[] = [];
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     const url = String(input);
-    calls.push(url);
-    const { status, body } = handler(url);
-    return new Response(body, { status }) as unknown as Response;
+    const headers = Object.fromEntries(
+      Object.entries((init?.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    const call = { url, headers };
+    calls.push(call);
+    const { status, body, headers: resHeaders } = handler(url, call, calls.length - 1);
+    return new Response(body, { status, headers: resHeaders }) as unknown as Response;
   }) as typeof fetch;
   return {
     calls,
+    urls: () => calls.map((c) => c.url),
     restore: () => {
       globalThis.fetch = original;
     },
@@ -112,7 +124,8 @@ test('prowlarr: imports each torrent indexer as a torznab row, counting the usen
     // The endpoint prowlarr proxies that indexer on, with prowlarr's own key.
     assert.equal(indexers.created[0]!.settings!['baseUrl'], 'http://prowlarr:9696/3/api');
     assert.equal(indexers.created[0]!.settings!['apiKey'], 'KEY');
-    assert.match(fetchStub.calls[0]!, /^http:\/\/prowlarr:9696\/api\/v1\/indexer\?apikey=KEY$/);
+    assert.match(fetchStub.calls[0]!.url, /^http:\/\/prowlarr:9696\/api\/v1\/indexer\?apikey=KEY$/);
+    assert.equal(fetchStub.calls[0]!.headers['x-api-key'], 'KEY', 'the documented header goes out too');
   } finally {
     fetchStub.restore();
   }
@@ -173,7 +186,7 @@ test('jackett: derives the torznab results endpoint and skips a tracker it repor
       'http://jackett:9117/api/v2.0/indexers/yts/results/torznab/',
       'the trailing slash on the base URL must not double up',
     );
-    assert.match(fetchStub.calls[0]!, /configured=true&apikey=JK$/);
+    assert.match(fetchStub.calls[0]!.url, /configured=true&apikey=JK$/);
   } finally {
     fetchStub.restore();
   }
@@ -261,7 +274,100 @@ test('a saved source tests with the key it stored, so a blank field is not a wro
       settings: { baseUrl: 'http://prowlarr:9696', apiKey: '' },
     });
     assert.equal(result.ok, true);
-    assert.match(fetchStub.calls[0]!, /apikey=KEY$/);
+    assert.match(fetchStub.calls[0]!.url, /apikey=KEY$/);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+const JACKETT_BODY = JSON.stringify([{ id: 'eztv', name: 'EZTV', configured: true }]);
+
+test('jackett: walks its login chain, keeping the cookies, then asks again with the session', async () => {
+  // The real refusal, hop by hop: the admin API is gated on a session cookie rather than the API
+  // key, and the cookies are handed out by the login page over two redirects. The API's own 302
+  // sets nothing, so replaying just that response cannot work.
+  const fetchStub = stubFetch((url, call) => {
+    if (url.includes('/api/v2.0/indexers')) {
+      return call.headers['cookie']?.includes('Jackett=SESSION')
+        ? { status: 200, body: JACKETT_BODY }
+        : { status: 302, body: '', headers: { location: 'http://jackett:9117/UI/Login?ReturnUrl=%2Fapi' } };
+    }
+    if (url.includes('/UI/Login')) {
+      return {
+        status: 302,
+        body: '',
+        headers: { location: 'http://jackett:9117/UI/Dashboard', 'set-cookie': 'TestCookie=1; path=/' },
+      };
+    }
+    return { status: 200, body: '<html>dashboard</html>', headers: { 'set-cookie': 'Jackett=SESSION; path=/; httponly' } };
+  });
+  try {
+    const indexers = fakeIndexers();
+    const row = source({ implementation: 'jackett', settings: { baseUrl: 'http://jackett:9117', apiKey: 'JK' } });
+    const summary = await serviceFor(row, indexers).importFrom(1);
+
+    assert.deepEqual(summary, { created: 1, updated: 0, unchanged: 0, unsupported: 0 });
+    assert.deepEqual(
+      fetchStub.urls().map((u) => new URL(u).pathname),
+      ['/api/v2.0/indexers', '/UI/Login', '/UI/Dashboard', '/api/v2.0/indexers'],
+      'the chain is walked by hand, then the list is asked again',
+    );
+    assert.equal(fetchStub.calls[1]!.headers['cookie'], undefined, 'nothing to send on the first hop');
+    assert.equal(fetchStub.calls[2]!.headers['cookie'], 'TestCookie=1', 'the probe cookie goes back');
+    assert.equal(
+      fetchStub.calls[3]!.headers['cookie'],
+      'TestCookie=1; Jackett=SESSION',
+      'both cookies, values only, exactly as a browser would send them',
+    );
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('jackett: a redirect that survives the session reports a login, not a network error', async () => {
+  // An instance with an admin password set: the login page never auto-logs in, so the list stays
+  // behind a redirect however many cookies are collected.
+  const fetchStub = stubFetch(() => ({
+    status: 302,
+    body: '',
+    headers: { location: 'http://jackett:9117/UI/Login', 'set-cookie': 'TestCookie=1; path=/' },
+  }));
+  try {
+    const row = source({ implementation: 'jackett', settings: { baseUrl: 'http://jackett:9117', apiKey: 'JK' } });
+    await assert.rejects(
+      () => serviceFor(row, fakeIndexers()).importFrom(1),
+      (e: unknown) => {
+        assert.ok(e instanceof SourceUnreachableError);
+        assert.equal(e.messageKey, 'download.indexer_sources.test.login_required');
+        return true;
+      },
+    );
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('jackett: an instance that answers the list straight away is one request', async () => {
+  const fetchStub = stubFetch(() => ({ status: 200, body: JACKETT_BODY }));
+  try {
+    const indexers = fakeIndexers();
+    const row = source({ implementation: 'jackett', settings: { baseUrl: 'http://jackett:9117', apiKey: 'JK' } });
+    await serviceFor(row, indexers).importFrom(1);
+    assert.equal(fetchStub.calls.length, 1, 'no session to pick up, so nothing extra is asked');
+    assert.equal(indexers.created.length, 1);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('jackett: a redirect with no cookie at all is the same login problem', async () => {
+  const fetchStub = stubFetch(() => ({ status: 302, body: '', headers: { location: 'http://jackett:9117/UI/Login' } }));
+  try {
+    const row = source({ implementation: 'jackett', settings: { baseUrl: 'http://jackett:9117', apiKey: 'JK' } });
+    await assert.rejects(
+      () => serviceFor(row, fakeIndexers()).importFrom(1),
+      (e: unknown) => (e as SourceUnreachableError).messageKey === 'download.indexer_sources.test.login_required',
+    );
   } finally {
     fetchStub.restore();
   }
