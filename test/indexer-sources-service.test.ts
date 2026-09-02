@@ -11,8 +11,14 @@ interface StubbedCall {
   headers: Record<string, string>;
 }
 
+/** `headers` allows an undefined value so the branches of one handler still unify: TypeScript
+ *  infers `'set-cookie'?: undefined` on the branches that omit it. */
 function stubFetch(
-  handler: (url: string, call: StubbedCall, index: number) => { status: number; body: string; headers?: Record<string, string> },
+  handler: (
+    url: string,
+    call: StubbedCall,
+    index: number,
+  ) => { status: number; body: string; headers?: Record<string, string | undefined> },
 ) {
   const original = globalThis.fetch;
   const calls: StubbedCall[] = [];
@@ -24,7 +30,8 @@ function stubFetch(
     const call = { url, headers };
     calls.push(call);
     const { status, body, headers: resHeaders } = handler(url, call, calls.length - 1);
-    return new Response(body, { status, headers: resHeaders }) as unknown as Response;
+    const present = Object.entries(resHeaders ?? {}).filter((e): e is [string, string] => e[1] !== undefined);
+    return new Response(body, { status, headers: present }) as unknown as Response;
   }) as typeof fetch;
   return {
     calls,
