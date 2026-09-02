@@ -1163,12 +1163,9 @@ export const MANIFEST_TEMPLATE = {
   // rather than handing the picker an absent bound.
   pluginApi: 1,
   name: 'Download',
-  // 3.7.0 is the first core that reads `visibleWhen`, `confirmToggle` and `progressField`, and
-  // the first whose data table substitutes `:id` into a proxy row action. An older client ignores
-  // all four in silence — which would render every control unconditionally and drop the
-  // "delete the files" answer. 3.8.0 raises it again: it is the first core that applies the whole
-  // quality profile itself, which is what lets the picker trust `rejections` alone.
-  fliks: '>=3.8.0 <4.0.0',
+  // 4.0.0 is the first core that applies the whole quality profile itself, which is what lets the
+  // picker trust `rejections` alone. It is also the first that accepts `pluginApi` 1 at all.
+  fliks: '>=4.0.0 <5.0.0',
   author: 'Fliks',
   description: 'Indexer search, download-client management and the acquisition grab pipeline for Fliks.',
   license: 'AGPL-3.0-or-later',
