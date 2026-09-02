@@ -94,8 +94,9 @@ export interface RouteDeps {
     'findByStatuses' | 'listPage' | 'findById' | 'remove' | 'clearTerminal' | 'markFailed'
   >;
   /** Raw rows (credentials included) — unlike `downloadClientsService`, which redacts
-   *  them before a driver call ever happens. */
-  downloadClientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
+   *  them before a driver call ever happens. `listAll`, not `listEnabled`: a disabled
+   *  client still needs an entry, so a row backed by it reads as unverified, not queued. */
+  downloadClientsRepo: Pick<DownloadClientsRepository, 'listAll'>;
   downloadClientDrivers: Readonly<Record<string, DownloadClientDriver>>;
   /** Waits for the client to reflect a control just issued, then states that media's download
    *  set from the same read. The poller's own builder and its own client reads — the media page
@@ -518,19 +519,20 @@ async function handleRemoveBlocklistEntry(deps: RouteDeps, params: Record<string
  *  leaving the orphan sweep to guess minutes later. A key, not prose — core translates it. */
 const REMOVED_BY_USER_KEY = 'download.queue.removed_by_user';
 
+/** Stored instead of `REMOVED_BY_USER_KEY` when the row never had a client or hash to call:
+ *  nothing was removed, the record was only retired. */
+const RETIRED_UNVERIFIABLE_KEY = 'download.queue.retired_unverifiable';
+
 /** Rows the client can still be asked about. An `importing` row's download is already finished
  *  and its files are being moved; reaching into the client then races the import. */
 const CONTROLLABLE_STATUSES: DownloadHistoryStatus[] = ['grabbed'];
 
-/**
- * Resolves a queue row down to the client and torrent a control can act on. Every "cannot"
- * answers 409 rather than 404 — the row exists, it just has nothing actionable behind it,
- * which is a different fix for whoever reads the error.
- */
-async function resolveControllable(
+/** Existence and status gate shared by every queue control, cancel included, since it
+ *  alone tolerates a row with no client or hash rather than 409ing on it. */
+async function findControllableRow(
   deps: RouteDeps,
   params: Record<string, string>,
-): Promise<{ row: DownloadHistoryRow; clientId: number; hash: string } | PluginHttpResponse> {
+): Promise<{ row: DownloadHistoryRow } | PluginHttpResponse> {
   const id = requireIntParam(params, 'id');
   if (id === null) return badRequest('id');
   const row = await deps.downloadHistory.findById(id);
@@ -538,8 +540,23 @@ async function resolveControllable(
   if (!CONTROLLABLE_STATUSES.includes(row.status)) {
     return jsonResponse(409, { error: { key: 'download.queue.errors.not_controllable', detail: row.status } });
   }
+  return { row };
+}
+
+/**
+ * Resolves a queue row down to the client and torrent a control can act on. Every "cannot"
+ * answers 409 rather than 404: the row exists, it just has nothing actionable behind it,
+ * which is a different fix for whoever reads the error.
+ */
+async function resolveControllable(
+  deps: RouteDeps,
+  params: Record<string, string>,
+): Promise<{ row: DownloadHistoryRow; clientId: number; hash: string } | PluginHttpResponse> {
+  const resolved = await findControllableRow(deps, params);
+  if (isHttpResponse(resolved)) return resolved;
+  const { row } = resolved;
   if (row.downloadClientId == null || !row.torrentHash) {
-    return jsonResponse(409, { error: { key: 'download.queue.errors.no_torrent', detail: String(id) } });
+    return jsonResponse(409, { error: { key: 'download.queue.errors.no_torrent', detail: String(row.id) } });
   }
   return { row, clientId: row.downloadClientId, hash: row.torrentHash };
 }
@@ -571,14 +588,28 @@ async function handleQueueControl(
  * Removes the torrent from its client and retires the row. The row is marked failed rather than
  * deleted: the queue drops it either way (a reachable client that no longer holds the torrent
  * answers for that), and history is the only place a removal can still be read afterwards.
+ *
+ * Unlike pause/resume, cancel does not 409 on a row nothing can verify: retiring the record is how
+ * the queue stops showing it. That covers a row with no client or hash AND a row whose client was
+ * never consulted, a disabled one, which is the same dead end from the admin's side. A client that
+ * WAS consulted is still called, error and all: a torrent that may still be running is not
+ * something to forget about quietly.
  */
 async function handleQueueRemove(deps: RouteDeps, req: PluginHttpRequest, params: Record<string, string>): Promise<PluginHttpResponse> {
-  const resolved = await resolveControllable(deps, params);
+  const resolved = await findControllableRow(deps, params);
   if (isHttpResponse(resolved)) return resolved;
-  await deps.downloadClientsService.removeTorrent(resolved.clientId, resolved.hash, req.query['deleteFiles'] === 'true');
-  await deps.downloadHistory.markFailed(resolved.row.id, REMOVED_BY_USER_KEY);
+  const { row } = resolved;
+
+  const { byClientId } = await indexClientTorrents(deps);
+  const consulted = row.downloadClientId != null && byClientId.get(row.downloadClientId)?.consulted === true;
+  if (consulted && row.torrentHash) {
+    await deps.downloadClientsService.removeTorrent(row.downloadClientId!, row.torrentHash, req.query['deleteFiles'] === 'true');
+    await deps.downloadHistory.markFailed(row.id, REMOVED_BY_USER_KEY);
+  } else {
+    await deps.downloadHistory.markFailed(row.id, RETIRED_UNVERIFIABLE_KEY);
+  }
   // 'absent': the published set must not still carry the torrent that was just deleted.
-  await settleAndPublish(deps, resolved.row, 'absent');
+  await settleAndPublish(deps, row, 'absent');
   return jsonResponse(200, {});
 }
 
@@ -625,7 +656,10 @@ export interface QueueItemDto extends MediaLabelled {
   /** The tracker's page for this release; null when the feed named none, or on a row grabbed
    *  before the column existed. Never the download URL, which carries the API key. */
   infoUrl: string | null;
-  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
+  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing' | 'unknown';
+  /** Set only when `state` is `unknown`: a translation key naming why, for the detail
+   *  dialog to render. Null on every other row. */
+  stateReason: string | null;
   /** Percent, 0-100 — the table renders it verbatim. Clients report a 0-1 fraction, which
    *  rounded to 0% for everything short of a finished download. */
   progress: number | null;
@@ -705,27 +739,33 @@ async function attachMediaLabels<T extends MediaLabelled>(deps: RouteDeps, items
 const QUEUE_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing'];
 const HISTORY_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing', 'completed', 'failed', 'warning'];
 
+/** `consulted`: was this client asked at all (false for disabled, no driver, or unsupported).
+ *  `ok`: did it answer, only ever true once `consulted` is. */
 interface ClientTorrentIndex {
+  consulted: boolean;
   ok: boolean;
   byHash: Map<string, ClientTorrent>;
 }
 
-/** One `getTorrentsResult` per enabled client — each client's `ok` flag is kept, not
- *  collapsed, so a row can tell "client answered, torrent just isn't in it" apart from
- *  "client never answered". */
+/** One entry per known client, enabled or not, so "never asked" reads apart from "asked, got
+ *  nothing back". `anyUnreachable` only counts a client that answered with an error. */
 async function indexClientTorrents(
   deps: RouteDeps,
 ): Promise<{ byClientId: Map<number, ClientTorrentIndex>; anyUnreachable: boolean }> {
-  const clients = await deps.downloadClientsRepo.listEnabled();
+  const clients = await deps.downloadClientsRepo.listAll();
   const byClientId = new Map<number, ClientTorrentIndex>();
   let anyUnreachable = false;
   await Promise.all(
     clients.map(async (client) => {
       const driver = deps.downloadClientDrivers[client.implementation];
-      if (!driver || !driver.supports(client)) return;
+      if (!client.enabled || !driver || !driver.supports(client)) {
+        byClientId.set(client.id, { consulted: false, ok: false, byHash: new Map() });
+        return;
+      }
       const result = await driver.getTorrentsResult(client);
       if (!result.ok) anyUnreachable = true;
       byClientId.set(client.id, {
+        consulted: true,
         ok: result.ok,
         byHash: new Map(result.torrents.map((t) => [t.hash.toLowerCase(), t])),
       });
@@ -753,6 +793,16 @@ function liveTorrentFor(
   return index && row.torrentHash ? index.byHash.get(row.torrentHash.toLowerCase()) : undefined;
 }
 
+const CLIENT_DISABLED_REASON_KEY = 'download.config.queue.state_reason.client_disabled';
+const CLIENT_UNREACHABLE_REASON_KEY = 'download.config.queue.state_reason.client_unreachable';
+
+/** Never consulted reads as "disabled" (the case the bug was filed against); a missing client
+ *  id/hash or an error answer both read as "did not answer". */
+function stateReasonFor(row: DownloadHistoryRow, index: ClientTorrentIndex | undefined): string {
+  if (row.downloadClientId == null || !row.torrentHash || !index) return CLIENT_UNREACHABLE_REASON_KEY;
+  return index.consulted ? CLIENT_UNREACHABLE_REASON_KEY : CLIENT_DISABLED_REASON_KEY;
+}
+
 function toQueueItem(
   row: DownloadHistoryRow,
   byClientId: Map<number, ClientTorrentIndex>,
@@ -773,7 +823,7 @@ function toQueueItem(
     mediaType: null as MediaKind | null,
   };
   if (row.status === 'importing') {
-    return { ...base, state: 'importing', progress: 100, bytesPerSecond: null, size: null, clientReachable: true };
+    return { ...base, state: 'importing', stateReason: null, progress: 100, bytesPerSecond: null, size: null, clientReachable: true };
   }
   const index = row.downloadClientId != null ? byClientId.get(row.downloadClientId) : undefined;
   const torrent = liveTorrentFor(row, byClientId);
@@ -781,6 +831,7 @@ function toQueueItem(
     return {
       ...base,
       state: torrentProgressState(torrent),
+      stateReason: null,
       progress: torrent.progress * 100,
       bytesPerSecond: torrent.dlspeed,
       // A client reports 0 until it has the torrent's metadata. That is "not known yet",
@@ -792,7 +843,8 @@ function toQueueItem(
   if (index?.ok) return null;
   return {
     ...base,
-    state: 'queued',
+    state: 'unknown',
+    stateReason: stateReasonFor(row, index),
     progress: null,
     bytesPerSecond: null,
     size: null,
@@ -924,7 +976,9 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
     total: items.length,
     page,
     pageSize,
-    clientsUnreachable: anyUnreachable,
+    // A client that answered with an error counts, and so does a row left `unknown` because
+    // it was never consulted at all: both are a row this response cannot vouch for.
+    clientsUnreachable: anyUnreachable || items.some((item) => item.state === 'unknown'),
   });
 }
 

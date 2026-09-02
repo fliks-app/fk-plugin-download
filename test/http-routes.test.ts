@@ -106,7 +106,7 @@ function fakeDeps(over: { [K in keyof RouteDeps]?: Partial<RouteDeps[K]> } = {})
       clearTerminal: async () => 0,
       markFailed: async () => {},
     },
-    downloadClientsRepo: { listEnabled: async () => [] },
+    downloadClientsRepo: { listAll: async () => [] },
     downloadClientDrivers: {},
     settleAndPublish: async () => {},
     host: { call: async () => ({}) },
@@ -403,6 +403,7 @@ describe('route table — GET /queue', () => {
         infoUrl: null,
         source: 'Tracker A',
         state: 'importing',
+        stateReason: null,
         progress: 100,
         bytesPerSecond: null,
         size: null,
@@ -438,7 +439,7 @@ describe('route table — GET /queue', () => {
         findByStatuses: async () => [historyRow({ id: 3, torrentHash: 'abcd', downloadClientId: 1 })],
         listPage: async () => ({ rows: [], total: 0 }),
       },
-      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
     });
     const table = createRouteTable(deps);
@@ -468,7 +469,7 @@ describe('route table — GET /queue', () => {
         findByStatuses: async () => [historyRow({ id: 3, torrentHash: 'abcd', downloadClientId: 1 })],
         listPage: async () => ({ rows: [], total: 0 }),
       },
-      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
     });
     const table = createRouteTable(deps);
@@ -479,6 +480,62 @@ describe('route table — GET /queue', () => {
     assert.equal(body.data.length, 1);
     assert.equal(body.data[0]!.clientReachable, false);
     assert.equal(body.clientsUnreachable, true);
+  });
+
+  /** The bug this fix answers: a disabled client's rows read `queued` with
+   *  `clientsUnreachable: false`, nothing on screen saying the client was never asked. */
+  test('a disabled client: its rows read unknown, name the client as the reason, stay in the queue, and flag clientsUnreachable', async () => {
+    let asked = false;
+    const driver: DownloadClientDriver = {
+      supports: (c) => c.enabled,
+      testConnection: async () => ({ ok: true, messageKey: 'download.download_clients.test.ok' }),
+      getTorrents: async () => [],
+      getTorrentsResult: async () => {
+        asked = true;
+        return { ok: true, torrents: [] };
+      },
+      getTorrentFilesResult: async () => ({ ok: true, files: [] }),
+      addTorrentUrl: async () => 'x',
+      deleteTorrent: async () => {},
+      pauseTorrent: async () => {},
+      resumeTorrent: async () => {},
+    };
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 4, torrentHash: 'abcd', downloadClientId: 1 })],
+        listPage: async () => ({ rows: [], total: 0 }),
+      },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1, enabled: false })] },
+      downloadClientDrivers: { qbittorrent: driver },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; total: number; clientsUnreachable: boolean };
+
+    assert.equal(asked, false, 'a disabled client is never consulted');
+    assert.equal(body.total, 1, 'the row is not dropped just because its client is unverified');
+    assert.equal(body.data[0]!.state, 'unknown');
+    assert.equal(body.data[0]!.stateReason, 'download.config.queue.state_reason.client_disabled');
+    assert.equal(body.data[0]!.clientReachable, false);
+    assert.equal(body.clientsUnreachable, true, 'a row nobody could verify makes the whole page say so');
+  });
+
+  test('a row with no download client or torrent hash yet: unknown, with its own reason, never queued', async () => {
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async () => [historyRow({ id: 6, downloadClientId: null, torrentHash: null })],
+        listPage: async () => ({ rows: [], total: 0 }),
+      },
+    });
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[] };
+
+    assert.equal(body.data[0]!.state, 'unknown');
+    assert.equal(body.data[0]!.stateReason, 'download.config.queue.state_reason.client_unreachable');
+    assert.equal(body.data[0]!.clientReachable, false);
   });
 
   test('a grabbed row matched to a live torrent maps the client\'s own state through the closed vocabulary', async () => {
@@ -518,7 +575,7 @@ describe('route table — GET /queue', () => {
         findByStatuses: async () => [historyRow({ id: 3, torrentHash: 'abcd', downloadClientId: 1 })],
         listPage: async () => ({ rows: [], total: 0 }),
       },
-      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
     });
     const table = createRouteTable(deps);
@@ -536,6 +593,7 @@ describe('route table — GET /queue', () => {
         infoUrl: null,
         source: '',
         state: 'stalled',
+        stateReason: null,
         // The client reports 0.5; the table renders this verbatim, so it must be a percent.
         progress: 50,
         bytesPerSecond: 12345,
@@ -567,7 +625,7 @@ describe('route table — GET /queue', () => {
         findByStatuses: async () => [historyRow({ id: 5, torrentHash: 'abcd', downloadClientId: 1 })],
         listPage: async () => ({ rows: [], total: 0 }),
       },
-      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
     });
     const table = createRouteTable(deps);
@@ -585,7 +643,8 @@ describe('route table — GET /queue', () => {
       date: '2026-01-01T00:00:00.000Z',
       infoUrl: null,
       source: '',
-      state: 'queued',
+      state: 'unknown',
+      stateReason: 'download.config.queue.state_reason.client_unreachable',
       progress: null,
       bytesPerSecond: null,
       size: null,
@@ -1006,7 +1065,7 @@ describe('route table — download history', () => {
 describe('queue controls', () => {
   const live = () => historyRow({ id: 3, status: 'grabbed', torrentHash: 'abcd', downloadClientId: 1 });
 
-  function controlDeps(row: DownloadHistoryRow | null) {
+  function controlDeps(row: DownloadHistoryRow | null, clientEnabled = true) {
     const calls: { fn: string; args: unknown[] }[] = [];
     const failed: { id: number; message: string }[] = [];
     const deps = fakeDeps({
@@ -1027,6 +1086,15 @@ describe('queue controls', () => {
           calls.push({ fn: 'remove', args });
         },
       } as unknown as RouteDeps['downloadClientsService'],
+      // Cancel decides on whether the client was consulted, so these have to be declared: with
+      // no client at all, every row would take the retire path.
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1, enabled: clientEnabled })] },
+      downloadClientDrivers: {
+        qbittorrent: {
+          supports: (c: DownloadClientRow) => c.enabled,
+          getTorrentsResult: async () => ({ ok: true, torrents: [] }),
+        } as unknown as RouteDeps['downloadClientDrivers'][string],
+      },
     });
     return { deps, calls, failed };
   }
@@ -1075,6 +1143,32 @@ describe('queue controls', () => {
   test('a row with no client or hash answers 409, not 404 — the row exists', async () => {
     const { deps } = controlDeps(historyRow({ id: 3, status: 'grabbed' }));
     assert.equal((await run(deps, 'POST', '/queue/3/pause')).status, 409);
+  });
+
+  test('cancelling a row with no client or hash retires it instead of 409ing: nothing to call, but the queue must still drop it', async () => {
+    const { deps, calls, failed } = controlDeps(historyRow({ id: 3, status: 'grabbed', downloadClientId: null, torrentHash: null }));
+    const res = await run(deps, 'DELETE', '/queue/3');
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls, [], 'there is no client to call');
+    assert.deepEqual(failed, [{ id: 3, message: 'download.queue.retired_unverifiable' }]);
+  });
+
+  test('VERDICT: cancelling a row whose client is disabled retires it without calling that client', async () => {
+    // The reported case: the client is off, so nothing can confirm the torrent is gone, and the
+    // row sat in the queue for good. Retiring the record is the only exit left.
+    const { deps, calls, failed } = controlDeps(live(), false);
+    const res = await run(deps, 'DELETE', '/queue/3');
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls, [], 'a client that was never consulted is never called');
+    assert.deepEqual(failed, [{ id: 3, message: 'download.queue.retired_unverifiable' }]);
+  });
+
+  test('cancelling a row that does have a client and hash still calls it, exactly as before', async () => {
+    const { deps, calls, failed } = controlDeps(live());
+    const res = await run(deps, 'DELETE', '/queue/3');
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls, [{ fn: 'remove', args: [1, 'abcd', false] }]);
+    assert.deepEqual(failed, [{ id: 3, message: 'download.queue.removed_by_user' }]);
   });
 
   test('an unknown row is a 404', async () => {
@@ -1227,7 +1321,7 @@ describe('history live state', () => {
     } as unknown as DownloadClientDriver;
     return fakeDeps({
       downloadHistory: { listPage: async () => ({ rows: [row], total: 1 }) },
-      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
     });
   }
@@ -1286,7 +1380,7 @@ describe('an unknown size is not a zero', () => {
       downloadHistory: {
         findByStatuses: async () => [historyRow({ id: 1, torrentHash: 'abcd', downloadClientId: 1 })],
       },
-      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
     });
     const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
@@ -1421,7 +1515,7 @@ describe('history entries are records, not queue state', () => {
       removed,
       deps: fakeDeps({
         downloadHistory: { findById: async () => row, remove: async (id: number) => void removed.push(id) },
-        downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+        downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
         downloadClientDrivers: { qbittorrent: driver },
       }),
     };
@@ -1475,7 +1569,7 @@ describe('the history status column reads like the queue while a row runs', () =
       downloadHistory: {
         listPage: async () => ({ rows: [historyRow({ id: 1, status, torrentHash: 'abcd', downloadClientId: 1 })], total: 1 }),
       },
-      downloadClientsRepo: { listEnabled: async () => [clientRow({ id: 1 })] },
+      downloadClientsRepo: { listAll: async () => [clientRow({ id: 1 })] },
       downloadClientDrivers: { qbittorrent: driver },
     });
     const resolved = createRouteTable(deps).resolve('GET', '/history')!;
