@@ -938,7 +938,7 @@ interface ImplementationFieldDef {
   hint?: string;
   required?: boolean;
   secret?: boolean;
-  default?: string | number | boolean;
+  default?: string | number | boolean | string[];
   options?: { value: string; labelKey: string }[];
   topLevel?: boolean;
 }
@@ -977,6 +977,9 @@ const INDEXER_IMPLEMENTATIONS: ImplementationDef[] = [
         hint: 'download.config.indexers.fields.use_for_hint',
         required: true,
         topLevel: true,
+        // A new indexer is worth using everywhere until its owner says otherwise, which is also
+        // what `IndexerService.create` writes when a caller (the source import) sends no gates.
+        default: ['rss', 'auto', 'manual'],
         options: [
           { value: 'rss', labelKey: 'download.config.indexers.fields.use_for_rss' },
           { value: 'auto', labelKey: 'download.config.indexers.fields.use_for_auto' },
