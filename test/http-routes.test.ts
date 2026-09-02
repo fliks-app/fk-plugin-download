@@ -705,14 +705,14 @@ describe('route table — implementations routes', () => {
     );
     const useFor = body[0]!.fields.find((f) => f.key === 'useFor') as unknown as {
       type: string;
-      default: string;
+      required: boolean;
       topLevel: boolean;
       options: { value: string }[];
     };
-    assert.equal(useFor.type, 'select');
-    assert.equal(useFor.default, 'both');
-    assert.equal(useFor.topLevel, true, 'both gates it projects onto are columns, not settings keys');
-    assert.deepEqual(useFor.options.map((o) => o.value), ['both', 'search', 'rss']);
+    assert.equal(useFor.type, 'multiselect');
+    assert.equal(useFor.required, true, 'empty is refused, never silently coerced');
+    assert.equal(useFor.topLevel, true, 'all three gates it projects onto are columns, not settings keys');
+    assert.deepEqual(useFor.options.map((o) => o.value), ['rss', 'auto', 'manual']);
   });
 
   test('GET /download-clients/implementations answers a list with one entry, "qbittorrent", and its fields', async () => {
@@ -765,7 +765,7 @@ describe('route table — admin write handlers', () => {
       req({
         method: 'PUT',
         path: '/indexers/1',
-        body: { name: 'X', useFor: 'rss', enableRss: true, enableSearch: true },
+        body: { name: 'X', useFor: ['rss'], enableRss: true, enableSearch: true, enableInteractiveSearch: true },
       }),
       resolved.params,
     );
@@ -775,6 +775,7 @@ describe('route table — admin write handlers', () => {
       settings: undefined,
       enableRss: true,
       enableSearch: false,
+      enableInteractiveSearch: false,
       priority: undefined,
       requestDelay: undefined,
       enabled: undefined,
@@ -798,21 +799,51 @@ describe('route table — admin write handlers', () => {
     assert.equal(seen['enableSearch'], true);
   });
 
-  test('an unknown `useFor` value is ignored rather than trusted', async () => {
+  test('an unknown `useFor` value is a 400 through badBody, and never reaches the service', async () => {
     const deps = fakeDeps();
-    let seen: Record<string, unknown> = {};
+    let called = false;
     deps.indexerService.update = (async (_id: number, patch: unknown) => {
-      seen = patch as Record<string, unknown>;
+      called = true;
       return { id: 1, ...(patch as object) };
     }) as typeof deps.indexerService.update;
     const table = createRouteTable(deps);
     const resolved = table.resolve('PUT', '/indexers/1')!;
-    await resolved.handler(
-      req({ method: 'PUT', path: '/indexers/1', body: { useFor: 'everything', enableRss: false, enableSearch: false } }),
+    const res = await resolved.handler(
+      req({ method: 'PUT', path: '/indexers/1', body: { useFor: ['everything'], enableRss: false, enableSearch: false } }),
       resolved.params,
     );
-    assert.equal(seen['enableRss'], false);
-    assert.equal(seen['enableSearch'], false);
+    assert.equal(res.status, 400);
+    assert.deepEqual(res.body, { error: { key: 'download.http.errors.bad_body', detail: 'useFor' } });
+    assert.equal(called, false);
+  });
+
+  test('an empty `useFor` array is a 400 with the no_usage key, and never reaches the service', async () => {
+    const deps = fakeDeps();
+    let called = false;
+    deps.indexerService.update = (async (_id: number, patch: unknown) => {
+      called = true;
+      return { id: 1, ...(patch as object) };
+    }) as typeof deps.indexerService.update;
+    const table = createRouteTable(deps);
+    const resolved = table.resolve('PUT', '/indexers/1')!;
+    const res = await resolved.handler(
+      req({ method: 'PUT', path: '/indexers/1', body: { useFor: [] } }),
+      resolved.params,
+    );
+    assert.equal(res.status, 400);
+    assert.deepEqual(res.body, { error: { key: 'download.config.indexers.errors.no_usage' } });
+    assert.equal(called, false);
+  });
+
+  test('POST /indexers with an empty `useFor` array is a 400 with the no_usage key', async () => {
+    const table = createRouteTable(fakeDeps());
+    const resolved = table.resolve('POST', '/indexers')!;
+    const res = await resolved.handler(
+      req({ method: 'POST', path: '/indexers', body: { name: 'X', implementation: 'torznab', useFor: [] } }),
+      resolved.params,
+    );
+    assert.equal(res.status, 400);
+    assert.deepEqual(res.body, { error: { key: 'download.config.indexers.errors.no_usage' } });
   });
 
   test('DELETE /indexers/:id maps IndexerNotFoundError to a 404 with the not_found key', async () => {

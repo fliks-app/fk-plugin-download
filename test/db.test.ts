@@ -228,14 +228,17 @@ test('indexers repository: insert, findById, refreshCaps, markSearchFallback, up
     settings: { baseUrl: 'https://example.invalid', apiKey: 'x' },
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,
   });
   assert.equal(created.capsMovieSearch, false);
+  assert.equal(created.enableInteractiveSearch, true);
 
   const found = await repos.indexers.findById(created.id);
   assert.equal(found?.name, 'Test Indexer');
+  assert.equal(found?.enableInteractiveSearch, true);
 
   await repos.indexers.refreshCaps(created.id, { capsMovieSearch: true, capsTvSearch: false, capsSearchFallback: false });
   assert.equal((await repos.indexers.findById(created.id))?.capsMovieSearch, true);
@@ -249,12 +252,14 @@ test('indexers repository: insert, findById, refreshCaps, markSearchFallback, up
     settings: created.settings,
     enableRss: false,
     enableSearch: true,
+    enableInteractiveSearch: false,
     priority: 10,
     requestDelay: 5,
     enabled: false,
   });
   assert.equal(updated.name, 'Renamed');
   assert.equal(updated.enableRss, false);
+  assert.equal(updated.enableInteractiveSearch, false, 'update() round-trips the column too');
 
   const enabledList = await repos.indexers.listEnabled();
   assert.ok(!enabledList.some((i) => i.id === created.id), 'disabled indexer must not appear in listEnabled');
@@ -271,6 +276,7 @@ test('indexer_stats repository: insert and dailyStats aggregation', async () => 
     settings: {},
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,
@@ -309,6 +315,38 @@ test('download_clients repository: insert, listAll, update, remove', async () =>
   assert.equal(await repos.downloadClients.findById(created.id), null);
 });
 
+test('VERDICT: 0006 backfills the manual-search gate from the column that used to gate both', async () => {
+  if (!reachable) return;
+  // A row that had searches off must not come out of the migration answering manual ones: before
+  // 0006 there was one `enableSearch` for both kinds, so that is what the new column starts from.
+  const udoPluginId = 'test.download.backfill';
+  const udoSchema = pluginSchemaName(udoPluginId);
+  await admin.query(`DROP SCHEMA IF EXISTS "${udoSchema}" CASCADE`);
+  await admin.query(`CREATE SCHEMA "${udoSchema}"`);
+  const udoPool = createPluginPool({ dsn: MIGTEST_DSN, pluginId: udoPluginId });
+  try {
+    await migrateUp(udoPool);
+    await migrateDown(udoPool, 1);
+    await udoPool.query(
+      `INSERT INTO "indexers" ("name", "implementation", "enableRss", "enableSearch")
+       VALUES ('rss only', 'torznab', true, false), ('everything', 'torznab', true, true)`,
+    );
+
+    await migrateUp(udoPool);
+
+    const { rows } = await udoPool.query<{ name: string; enableInteractiveSearch: boolean }>(
+      `SELECT "name", "enableInteractiveSearch" FROM "indexers" ORDER BY "name"`,
+    );
+    assert.deepEqual(rows, [
+      { name: 'everything', enableInteractiveSearch: true },
+      { name: 'rss only', enableInteractiveSearch: false },
+    ]);
+  } finally {
+    await udoPool.end();
+    await admin.query(`DROP SCHEMA IF EXISTS "${udoSchema}" CASCADE`);
+  }
+});
+
 test('indexer_sources repository: insert, listAll, findById, update, remove', async () => {
   if (!reachable) return;
   const created = await repos.indexerSources.insert({
@@ -337,6 +375,7 @@ test('indexers repository: findByBaseUrl matches on the settings key an import d
     settings: { baseUrl: 'http://prowlarr:9696/7/api', apiKey: 'KEY' },
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,

@@ -37,6 +37,7 @@ describe('searchMovieAcrossIndexers', () => {
       const pending = searchMovieAcrossIndexers(
         driver(),
         [row(1, 'fast'), row(2, 'hung'), row(3, 'other')],
+        'auto',
         'Some Title 2024',
         {},
       );
@@ -63,6 +64,7 @@ describe('searchMovieAcrossIndexers', () => {
       const pending = searchMovieAcrossIndexers(
         driver(),
         [row(1, 'fast'), row(2, 'hung')],
+        'auto',
         'Some Title 2024',
         {},
       );
@@ -82,6 +84,7 @@ describe('searchMovieAcrossIndexers', () => {
     const releases = await searchMovieAcrossIndexers(
       driver(),
       [row(1, 'fast'), row(2, 'angry')],
+      'auto',
       'Some Title 2024',
       {},
     );
@@ -93,6 +96,6 @@ describe('searchMovieAcrossIndexers', () => {
 
   test('every indexer in cooldown searches nothing rather than sleeping it out', async () => {
     const cooling = { ...driver(), filterReadyIndexers: () => [] } as unknown as IndexerDriver;
-    assert.deepEqual(await searchMovieAcrossIndexers(cooling, [row(1, 'fast')], 'q', {}), []);
+    assert.deepEqual(await searchMovieAcrossIndexers(cooling, [row(1, 'fast')], 'auto', 'q', {}), []);
   });
 });

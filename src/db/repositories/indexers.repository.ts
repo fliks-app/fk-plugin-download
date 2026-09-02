@@ -2,8 +2,8 @@ import type { Pool } from 'pg';
 import type { IndexerRow } from '../rows';
 
 const COLUMNS = `"id", "name", "implementation", "settings", "enableRss", "enableSearch",
-  "priority", "enabled", "capsSearchFallback", "capsMovieSearch", "capsTvSearch", "capsProbedAt",
-  "requestDelay", "createdAt", "updatedAt"`;
+  "enableInteractiveSearch", "priority", "enabled", "capsSearchFallback", "capsMovieSearch",
+  "capsTvSearch", "capsProbedAt", "requestDelay", "createdAt", "updatedAt"`;
 
 export interface NewIndexer {
   name: string;
@@ -11,6 +11,7 @@ export interface NewIndexer {
   settings: Record<string, unknown>;
   enableRss: boolean;
   enableSearch: boolean;
+  enableInteractiveSearch: boolean;
   priority: number;
   requestDelay: number;
   enabled: boolean;
@@ -82,8 +83,9 @@ export class IndexersRepository {
   async insert(input: NewIndexer): Promise<IndexerRow> {
     const { rows } = await this.pool.query<IndexerRow>(
       `INSERT INTO "indexers"
-         ("name", "implementation", "settings", "enableRss", "enableSearch", "priority", "requestDelay", "enabled")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ("name", "implementation", "settings", "enableRss", "enableSearch", "enableInteractiveSearch",
+          "priority", "requestDelay", "enabled")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING ${COLUMNS}`,
       [
         input.name,
@@ -91,6 +93,7 @@ export class IndexersRepository {
         input.settings,
         input.enableRss,
         input.enableSearch,
+        input.enableInteractiveSearch,
         input.priority,
         input.requestDelay,
         input.enabled,
@@ -106,7 +109,8 @@ export class IndexersRepository {
     const { rows } = await this.pool.query<IndexerRow>(
       `UPDATE "indexers" SET
          "name" = $2, "implementation" = $3, "enableRss" = $4, "enableSearch" = $5,
-         "priority" = $6, "requestDelay" = $7, "enabled" = $8, "settings" = $9, "updatedAt" = now()
+         "enableInteractiveSearch" = $6, "priority" = $7, "requestDelay" = $8, "enabled" = $9,
+         "settings" = $10, "updatedAt" = now()
        WHERE "id" = $1
        RETURNING ${COLUMNS}`,
       [
@@ -115,6 +119,7 @@ export class IndexersRepository {
         input.implementation,
         input.enableRss,
         input.enableSearch,
+        input.enableInteractiveSearch,
         input.priority,
         input.requestDelay,
         input.enabled,

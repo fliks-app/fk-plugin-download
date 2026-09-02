@@ -1,29 +1,45 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gatesFor, isUseFor, useForOf, USE_FOR_VALUES } from '../src/indexers/use-for';
+import { gatesFor, isUseFor, isUseForList, useForOf, USE_FOR_VALUES } from '../src/indexers/use-for';
 
-test('the projection round-trips every offered choice', () => {
-  for (const value of USE_FOR_VALUES) {
-    assert.equal(useForOf(gatesFor(value)), value, value);
+function allSubsets<T>(values: readonly T[]): T[][] {
+  if (!values.length) return [[]];
+  const [head, ...rest] = values;
+  const withoutHead = allSubsets(rest);
+  return [...withoutHead, ...withoutHead.map((s) => [head as T, ...s])];
+}
+
+test('the projection round-trips every non-empty subset, in declared order', () => {
+  for (const subset of allSubsets(USE_FOR_VALUES)) {
+    if (!subset.length) continue;
+    const ordered = USE_FOR_VALUES.filter((v) => subset.includes(v));
+    assert.deepEqual(useForOf(gatesFor(subset)), ordered, subset.join(','));
   }
 });
 
-test('each choice gates exactly the path it names', () => {
-  assert.deepEqual(gatesFor('both'), { enableRss: true, enableSearch: true });
-  assert.deepEqual(gatesFor('search'), { enableRss: false, enableSearch: true });
-  assert.deepEqual(gatesFor('rss'), { enableRss: true, enableSearch: false });
+test('each single usage gates exactly the path it names', () => {
+  assert.deepEqual(gatesFor(['rss']), { enableRss: true, enableSearch: false, enableInteractiveSearch: false });
+  assert.deepEqual(gatesFor(['auto']), { enableRss: false, enableSearch: true, enableInteractiveSearch: false });
+  assert.deepEqual(gatesFor(['manual']), { enableRss: false, enableSearch: false, enableInteractiveSearch: true });
 });
 
-test('VERDICT: a row with both gates off reads back as both, since "neither" is what enabled:false says', () => {
-  // Only an API caller could have written it, and an indexer answering nothing while claiming to
-  // be enabled is a silent no-op rather than a state worth preserving.
-  assert.equal(useForOf({ enableRss: false, enableSearch: false }), 'both');
+test('a row with all three gates off reads back as an empty set', () => {
+  assert.deepEqual(useForOf({ enableRss: false, enableSearch: false, enableInteractiveSearch: false }), []);
 });
 
-test('isUseFor refuses anything outside the three choices', () => {
-  assert.equal(isUseFor('both'), true);
-  assert.equal(isUseFor('BOTH'), false);
-  assert.equal(isUseFor('all'), false);
+test('isUseFor refuses anything outside the three values', () => {
+  assert.equal(isUseFor('rss'), true);
+  assert.equal(isUseFor('RSS'), false);
+  assert.equal(isUseFor('both'), false);
   assert.equal(isUseFor(undefined), false);
   assert.equal(isUseFor(1), false);
+});
+
+test('isUseForList refuses an empty array and any array with an unknown entry', () => {
+  assert.equal(isUseForList(['rss', 'auto', 'manual']), true);
+  assert.equal(isUseForList(['rss']), true);
+  assert.equal(isUseForList([]), false, 'empty is refused, never silently coerced');
+  assert.equal(isUseForList(['rss', 'everything']), false);
+  assert.equal(isUseForList('rss'), false, 'a bare string is not a list');
+  assert.equal(isUseForList(undefined), false);
 });

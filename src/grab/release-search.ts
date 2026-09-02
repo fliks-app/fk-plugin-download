@@ -1,6 +1,6 @@
 import type { IndexerDriver } from '../seams/indexers';
 import type { IndexerRow } from '../db/rows';
-import type { IndexerRelease } from '../indexers/types';
+import type { IndexerRelease, SearchKind } from '../indexers/types';
 import { searchBudgetMs } from '../search-budget';
 import { log } from '../log';
 
@@ -108,6 +108,7 @@ function openRound(
 export async function searchMovieAcrossIndexers(
   indexer: IndexerDriver,
   indexers: IndexerRow[],
+  kind: SearchKind,
   query: string,
   externalIds: ExternalIds,
   context = 'search',
@@ -115,12 +116,13 @@ export async function searchMovieAcrossIndexers(
 ): Promise<IndexerRelease[]> {
   const ready = openRound(indexer, indexers, context, hooks);
   if (!ready) return [];
-  return fanOut(ready, (ix) => indexer.searchMovie(ix, query, externalIds), hooks);
+  return fanOut(ready, (ix) => indexer.searchMovie(ix, kind, query, externalIds), hooks);
 }
 
 export async function searchSeriesAcrossIndexers(
   indexer: IndexerDriver,
   indexers: IndexerRow[],
+  kind: SearchKind,
   query: string,
   season: number,
   episode: number,
@@ -130,12 +132,13 @@ export async function searchSeriesAcrossIndexers(
 ): Promise<IndexerRelease[]> {
   const ready = openRound(indexer, indexers, context, hooks);
   if (!ready) return [];
-  return fanOut(ready, (ix) => indexer.searchSeries(ix, query, season, episode, externalIds), hooks);
+  return fanOut(ready, (ix) => indexer.searchSeries(ix, kind, query, season, episode, externalIds), hooks);
 }
 
 export async function searchSeasonPackAcrossIndexers(
   indexer: IndexerDriver,
   indexers: IndexerRow[],
+  kind: SearchKind,
   query: string,
   season: number,
   externalIds: ExternalIds,
@@ -144,7 +147,7 @@ export async function searchSeasonPackAcrossIndexers(
 ): Promise<IndexerRelease[]> {
   const ready = openRound(indexer, indexers, context, hooks);
   if (!ready) return [];
-  return fanOut(ready, (ix) => indexer.searchSeasonPack(ix, query, season, externalIds), hooks);
+  return fanOut(ready, (ix) => indexer.searchSeasonPack(ix, kind, query, season, externalIds), hooks);
 }
 
 /** RSS: each indexer's own feed, tagged with its id so the caller can dedupe

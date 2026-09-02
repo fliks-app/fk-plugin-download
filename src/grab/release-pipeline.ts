@@ -3,7 +3,7 @@ import type { DownloadClientDriver } from '../download-clients/contract';
 import { ReleaseUnobtainableError } from '../download-clients/types';
 import type { IndexersRepository, DownloadClientsRepository, DownloadHistoryRepository, BlocklistRepository } from '../db/repositories';
 import type { DownloadClientRow, IndexerRow } from '../db/rows';
-import type { IndexerRelease } from '../indexers/types';
+import type { IndexerRelease, SearchKind } from '../indexers/types';
 import type { HostCaller } from './types';
 import type { HostResult } from '../host-client';
 import {
@@ -121,6 +121,7 @@ function isSpecial(target: AcquisitionTarget): boolean {
 export async function searchScored(
   deps: ReleasePipelineDeps,
   target: AcquisitionTarget,
+  kind: SearchKind,
   customQuery?: string,
   stream?: StreamTarget,
 ): Promise<RankedRelease[]> {
@@ -165,11 +166,11 @@ export async function searchScored(
 
   let raw: IndexerRelease[];
   if (target.episode) {
-    raw = await searchSeriesAcrossIndexers(deps.indexer, indexers, query, target.season!.number, target.episode.number, externalIds, context, hooks);
+    raw = await searchSeriesAcrossIndexers(deps.indexer, indexers, kind, query, target.season!.number, target.episode.number, externalIds, context, hooks);
   } else if (target.season) {
-    raw = await searchSeasonPackAcrossIndexers(deps.indexer, indexers, query, target.season.number, externalIds, context, hooks);
+    raw = await searchSeasonPackAcrossIndexers(deps.indexer, indexers, kind, query, target.season.number, externalIds, context, hooks);
   } else {
-    raw = await searchMovieAcrossIndexers(deps.indexer, indexers, query, externalIds, context, hooks);
+    raw = await searchMovieAcrossIndexers(deps.indexer, indexers, kind, query, externalIds, context, hooks);
   }
   if (!raw.length) return [];
 
@@ -213,7 +214,7 @@ export async function searchReleases(
 ): Promise<RankedRelease[]> {
   const target = await loadTarget(deps, mediaId, seasonId, episodeId);
   if (!target.want) throw new GrabError('download.grab.errors.unprofiled');
-  const scored = await searchScored(deps, target, customQuery, stream);
+  const scored = await searchScored(deps, target, 'manual', customQuery, stream);
   const satisfied = target.want.decision === 'skip' ? ' (profile already satisfied)' : '';
   log.info(`Search #${mediaId} "${target.title}"${satisfied} q="${searchQuery(target, customQuery)}" → ${scored.length} result(s)`);
   return scored;
@@ -316,7 +317,7 @@ export async function grabRelease(
   }
 
   log.info(`Grab #${mediaId} "${target.title}" — auto-pick`);
-  const scored = await searchScored(deps, target);
+  const scored = await searchScored(deps, target, 'auto');
   const pick = pickRelease(scored, target.want);
 
   // Season scope with no pack at the top: core's sort already ranks quality

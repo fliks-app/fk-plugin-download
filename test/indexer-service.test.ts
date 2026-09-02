@@ -85,6 +85,7 @@ test('refuses an unregistered implementation on update, naming it', async () => 
     settings: {},
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,
@@ -107,6 +108,7 @@ test('update() keeps the stored apiKey when the incoming settings omit it', asyn
     settings: { baseUrl: 'https://x.tld', apiKey: 'original-key' },
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,
@@ -129,6 +131,7 @@ test('a redacted row reports whether an apiKey is stored, so the editor can mask
     settings: { baseUrl: 'https://x.tld', apiKey: 'original-key' },
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,
@@ -153,6 +156,7 @@ test('update() erases the stored apiKey when the incoming settings send an expli
     settings: { baseUrl: 'https://x.tld', apiKey: 'original-key' },
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,
@@ -174,6 +178,7 @@ test('update() never persists the read-only marker a client echoes back', async 
     settings: { baseUrl: 'https://x.tld', apiKey: 'original-key' },
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,
@@ -205,6 +210,7 @@ test('VERDICT: testConnection on a saved row uses the stored apiKey when none is
     settings: { baseUrl: 'https://x.tld', apiKey: 'stored-key' },
     enableRss: true,
     enableSearch: true,
+    enableInteractiveSearch: true,
     priority: 25,
     requestDelay: 2,
     enabled: true,
@@ -266,7 +272,7 @@ test('sanitizeSettings floors and clamps minSeeders to a non-negative integer', 
   assert.equal(stored2?.settings.minSeeders, 4);
 });
 
-test('findAll() reports the two gates as the single choice the editor renders', async () => {
+test('findAll() reports the three gates as the set of usages the editor renders', async () => {
   const { service, repo } = makeService();
   const base = {
     implementation: 'torznab',
@@ -279,14 +285,16 @@ test('findAll() reports the two gates as the single choice the editor renders', 
     capsSearchFallback: false,
     capsProbedAt: null,
   };
-  await repo.insert({ ...base, name: 'both', enableRss: true, enableSearch: true });
-  await repo.insert({ ...base, name: 'rss only', enableRss: true, enableSearch: false });
-  await repo.insert({ ...base, name: 'search only', enableRss: false, enableSearch: true });
+  await repo.insert({ ...base, name: 'all three', enableRss: true, enableSearch: true, enableInteractiveSearch: true });
+  await repo.insert({ ...base, name: 'rss only', enableRss: true, enableSearch: false, enableInteractiveSearch: false });
+  await repo.insert({ ...base, name: 'auto only', enableRss: false, enableSearch: true, enableInteractiveSearch: false });
+  await repo.insert({ ...base, name: 'manual only', enableRss: false, enableSearch: false, enableInteractiveSearch: true });
 
   const byName = new Map((await service.findAll()).map((ix) => [ix.name, ix.useFor]));
   assert.deepEqual([...byName], [
-    ['both', 'both'],
-    ['rss only', 'rss'],
-    ['search only', 'search'],
+    ['all three', ['rss', 'auto', 'manual']],
+    ['rss only', ['rss']],
+    ['auto only', ['auto']],
+    ['manual only', ['manual']],
   ]);
 });

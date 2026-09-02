@@ -85,6 +85,7 @@ export class IndexerService {
       settings: mergeSecretSettings(undefined, this.sanitizeSettings(input.settings), SECRET_SETTING_KEYS),
       enableRss: input.enableRss ?? true,
       enableSearch: input.enableSearch ?? true,
+      enableInteractiveSearch: input.enableInteractiveSearch ?? true,
       priority: input.priority ?? 25,
       requestDelay: input.requestDelay ?? 2,
       enabled: input.enabled ?? true,
@@ -153,6 +154,7 @@ export class IndexerService {
     }
     if (input.enableRss !== undefined) patch.enableRss = input.enableRss;
     if (input.enableSearch !== undefined) patch.enableSearch = input.enableSearch;
+    if (input.enableInteractiveSearch !== undefined) patch.enableInteractiveSearch = input.enableInteractiveSearch;
     if (input.priority !== undefined) patch.priority = input.priority;
     if (input.requestDelay !== undefined) patch.requestDelay = input.requestDelay;
     if (input.enabled !== undefined) patch.enabled = input.enabled;

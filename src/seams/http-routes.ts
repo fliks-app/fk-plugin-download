@@ -9,7 +9,7 @@ import {
   IndexerNotFoundError,
   UnknownIndexerImplementationError,
   gatesFor,
-  isUseFor,
+  isUseForList,
   type CreateIndexerInput,
   type IndexerService,
   type TestIndexerConnectionInput,
@@ -154,29 +154,49 @@ function optionalIntParam(params: Record<string, string>, name: string): number 
   return n;
 }
 
-/** Returns the field name that failed a required check, or a fully-typed input. */
+/** `useFor: []` and `useFor: ['bogus']` are both refused, but with different response
+ *  shapes (`no_usage` vs the generic `badBody`), kept apart so the caller can tell them. */
+type UseForError = { useForError: 'empty' | 'invalid' };
+
+function useForErrorResponse(err: UseForError): PluginHttpResponse {
+  return err.useForError === 'empty'
+    ? jsonResponse(400, { error: { key: 'download.config.indexers.errors.no_usage' } })
+    : badBody('useFor');
+}
+
 /**
- * `useFor` is what the editor renders, `enableRss`/`enableSearch` are what the row stores. It wins
- * over the booleans on purpose: a save body is built by spreading the row the client last read,
- * so the booleans travelling beside a changed choice are the stale ones.
+ * `useFor` is what the editor renders, `enableRss`/`enableSearch`/`enableInteractiveSearch` are
+ * what the row stores. It wins over the booleans on purpose: a save body is built by spreading
+ * the row the client last read, so the booleans travelling beside a changed choice are stale.
  */
-function readGates(body: Record<string, unknown>): { enableRss?: boolean; enableSearch?: boolean } {
-  if (isUseFor(body['useFor'])) return gatesFor(body['useFor']);
+function readGates(
+  body: Record<string, unknown>,
+): { enableRss?: boolean; enableSearch?: boolean; enableInteractiveSearch?: boolean } | UseForError {
+  const useFor = body['useFor'];
+  if (useFor !== undefined) {
+    if (Array.isArray(useFor) && useFor.length === 0) return { useForError: 'empty' };
+    if (!isUseForList(useFor)) return { useForError: 'invalid' };
+    return gatesFor(useFor);
+  }
   return {
     enableRss: typeof body['enableRss'] === 'boolean' ? body['enableRss'] : undefined,
     enableSearch: typeof body['enableSearch'] === 'boolean' ? body['enableSearch'] : undefined,
+    enableInteractiveSearch:
+      typeof body['enableInteractiveSearch'] === 'boolean' ? body['enableInteractiveSearch'] : undefined,
   };
 }
 
-function readCreateIndexerInput(body: unknown): CreateIndexerInput | 'name' | 'implementation' {
+function readCreateIndexerInput(body: unknown): CreateIndexerInput | 'name' | 'implementation' | UseForError {
   const b = (body ?? {}) as Partial<CreateIndexerInput>;
   if (typeof b.name !== 'string' || !b.name.trim()) return 'name';
   if (typeof b.implementation !== 'string' || !b.implementation) return 'implementation';
+  const gates = readGates((body ?? {}) as Record<string, unknown>);
+  if ('useForError' in gates) return gates;
   return {
     name: b.name,
     implementation: b.implementation,
     settings: typeof b.settings === 'object' && b.settings !== null ? (b.settings as Record<string, unknown>) : undefined,
-    ...readGates((body ?? {}) as Record<string, unknown>),
+    ...gates,
     priority: typeof b.priority === 'number' ? b.priority : undefined,
     requestDelay: typeof b.requestDelay === 'number' ? b.requestDelay : undefined,
     enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
@@ -184,13 +204,15 @@ function readCreateIndexerInput(body: unknown): CreateIndexerInput | 'name' | 'i
 }
 
 /** Every field optional — `IndexerService.update` only applies what is present. */
-function readUpdateIndexerInput(body: unknown): UpdateIndexerInput {
+function readUpdateIndexerInput(body: unknown): UpdateIndexerInput | UseForError {
   const b = (body ?? {}) as Partial<UpdateIndexerInput>;
+  const gates = readGates((body ?? {}) as Record<string, unknown>);
+  if ('useForError' in gates) return gates;
   return {
     name: typeof b.name === 'string' ? b.name : undefined,
     implementation: typeof b.implementation === 'string' ? b.implementation : undefined,
     settings: typeof b.settings === 'object' && b.settings !== null ? (b.settings as Record<string, unknown>) : undefined,
-    ...readGates((body ?? {}) as Record<string, unknown>),
+    ...gates,
     priority: typeof b.priority === 'number' ? b.priority : undefined,
     requestDelay: typeof b.requestDelay === 'number' ? b.requestDelay : undefined,
     enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
@@ -356,13 +378,16 @@ async function handleListDownloadClients(deps: RouteDeps): Promise<PluginHttpRes
 async function handleCreateIndexer(deps: RouteDeps, req: PluginHttpRequest): Promise<PluginHttpResponse> {
   const input = readCreateIndexerInput(req.body);
   if (typeof input === 'string') return badBody(input);
+  if ('useForError' in input) return useForErrorResponse(input);
   return jsonResponse(201, await deps.indexerService.create(input));
 }
 
 async function handleUpdateIndexer(deps: RouteDeps, params: Record<string, string>, req: PluginHttpRequest): Promise<PluginHttpResponse> {
   const id = requireIntParam(params, 'id');
   if (id === null) return badRequest('id');
-  return jsonResponse(200, await deps.indexerService.update(id, readUpdateIndexerInput(req.body)));
+  const input = readUpdateIndexerInput(req.body);
+  if ('useForError' in input) return useForErrorResponse(input);
+  return jsonResponse(200, await deps.indexerService.update(id, input));
 }
 
 async function handleDeleteIndexer(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
@@ -908,12 +933,12 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
  *  plugin has no import access to that contract type. */
 interface ImplementationFieldDef {
   key: string;
-  type: 'text' | 'email' | 'password' | 'url' | 'number' | 'toggle' | 'select';
+  type: 'text' | 'email' | 'password' | 'url' | 'number' | 'toggle' | 'select' | 'multiselect';
   labelKey: string;
   hint?: string;
   required?: boolean;
   secret?: boolean;
-  default?: string | number | boolean;
+  default?: string | number | boolean | string[];
   options?: { value: string; labelKey: string }[];
   topLevel?: boolean;
 }
@@ -927,7 +952,7 @@ interface ImplementationDef {
 /** `name`/`priority`/`enabled` are generic to every provider row (handled by the page
  *  itself): only implementation-specific settings are listed here. `requestDelay` is
  *  `topLevel`, a real column on `indexers` rather than a `settings` key, and so is `useFor`,
- *  which the readers above project onto the two columns that store it. */
+ *  which the readers above project onto the three columns that store it. */
 const INDEXER_IMPLEMENTATIONS: ImplementationDef[] = [
   {
     implementation: 'torznab',
@@ -944,18 +969,21 @@ const INDEXER_IMPLEMENTATIONS: ImplementationDef[] = [
         topLevel: true,
       },
       {
-        // One choice rather than two toggles: "neither" is not a setting, it is an indexer that
-        // answers nothing while claiming to be enabled, and `enabled` already says off.
+        // Three independent usages, not one choice: RSS sync, an automatic search and a manual
+        // one are each gated on their own column, and none of them implies another.
         key: 'useFor',
-        type: 'select',
+        type: 'multiselect',
         labelKey: 'download.config.indexers.fields.use_for',
         hint: 'download.config.indexers.fields.use_for_hint',
-        default: 'both',
+        required: true,
         topLevel: true,
+        // A new indexer is worth using everywhere until its owner says otherwise, which is also
+        // what `IndexerService.create` writes when a caller (the source import) sends no gates.
+        default: ['rss', 'auto', 'manual'],
         options: [
-          { value: 'both', labelKey: 'download.config.indexers.fields.use_for_both' },
-          { value: 'search', labelKey: 'download.config.indexers.fields.use_for_search' },
           { value: 'rss', labelKey: 'download.config.indexers.fields.use_for_rss' },
+          { value: 'auto', labelKey: 'download.config.indexers.fields.use_for_auto' },
+          { value: 'manual', labelKey: 'download.config.indexers.fields.use_for_manual' },
         ],
       },
       { key: 'minSeeders', type: 'number', labelKey: 'download.config.indexers.fields.min_seeders', default: 0 },
