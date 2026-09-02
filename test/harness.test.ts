@@ -339,6 +339,7 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
     sourceTitle: string;
     quality: string;
     state: string;
+    stateReason: string | null;
     progress: number | null;
     clientReachable: boolean;
     mediaId: number | null;
@@ -356,7 +357,8 @@ test('speaks the full protocol without core: connect, hello, health, event, conf
   // No media linked, so nothing to name it after: the release name stands in.
   assert.equal(queueRow!.title, 'Harness In-Flight Grab');
   assert.equal(queueRow!.sourceTitle, 'Harness In-Flight Grab');
-  assert.equal(queueRow!.state, 'queued');
+  assert.equal(queueRow!.state, 'unknown');
+  assert.equal(queueRow!.stateReason, 'download.config.queue.state_reason.client_unreachable');
   assert.equal(queueRow!.progress, null);
   assert.equal(queueRow!.clientReachable, false);
   assert.equal(queueRow!.mediaId, null, 'no media was ever linked to this grab — both fields stay null, never guessed');

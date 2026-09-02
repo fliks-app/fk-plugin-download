@@ -53,6 +53,8 @@ const DETAIL_ACTION = {
     { key: 'quality', labelKey: 'download.config.history.columns.quality' },
     { key: 'size', labelKey: 'download.config.queue.columns.size', format: 'bytes' as const },
     { key: 'source', labelKey: 'download.config.queue.detail.indexer' },
+    // Null on every row but an `unknown` one: the renderer already omits a null line.
+    { key: 'stateReason', labelKey: 'download.config.queue.detail.state_reason' },
     {
       key: 'grabSource',
       labelKey: 'download.config.queue.detail.grab_source',
@@ -72,7 +74,8 @@ const DETAIL_ACTION = {
 };
 
 /** Shared by both tables: the same three controls, gated on the row's live state. `importing`
- *  appears in none of them — its files are already being moved. */
+ *  appears in none of them: its files are already being moved. `unknown` only offers
+ *  cancel: there is nothing to pause or resume, but retiring the record is still possible. */
 const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
   {
     kind: 'proxy' as const,
@@ -103,7 +106,7 @@ const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
     },
     tone: 'danger' as const,
     when: WHEN_QUEUE_CONTROL,
-    visibleWhen: { key: stateKey, in: ['queued', 'active', 'stalled', 'paused'] },
+    visibleWhen: { key: stateKey, in: ['queued', 'active', 'stalled', 'paused', 'unknown'] },
   },
 ];
 
@@ -592,6 +595,7 @@ export const CONFIG_PAGES = [
           stalled: 'download.config.queue.states.stalled',
           paused: 'download.config.queue.states.paused',
           importing: 'download.status.importing',
+          unknown: 'download.config.queue.states.unknown',
         },
         badges: {
           queued: 'neutral' as const,
@@ -599,6 +603,8 @@ export const CONFIG_PAGES = [
           stalled: 'warning' as const,
           paused: 'ghost' as const,
           importing: 'primary' as const,
+          // Ghost, not warning: nothing is wrong, the row is simply unverifiable.
+          unknown: 'ghost' as const,
         },
         // The percentage fills this badge instead of holding a column of its own: it says what
         // the state beside it is doing, and a column of bare numbers read as unrelated to it.
@@ -737,6 +743,10 @@ export const I18N = {
     'download.config.queue.states.active': 'Downloading',
     'download.config.queue.states.stalled': 'Stalled',
     'download.config.queue.states.paused': 'Paused',
+    'download.config.queue.states.unknown': 'Unknown',
+    'download.config.queue.state_reason.client_disabled': 'Its download client is disabled',
+    'download.config.queue.state_reason.client_unreachable': 'Its download client did not answer',
+    'download.config.queue.detail.state_reason': 'Why unknown',
     'download.status.importing': 'Importing',
     'download.config.history.title': 'Download history',
     'download.config.history.detail_title': 'Reason',
@@ -847,6 +857,7 @@ export const I18N = {
     'download.grab.errors.releases_unobtainable':
       'No release could be fetched. Last reason: {{detail}}',
     'download.queue.removed_by_user': 'Removed from the queue by a user',
+    'download.queue.retired_unverifiable': 'Retired from the queue, no download client could confirm it',
     'download.queue.errors.not_controllable': 'This download can no longer be controlled',
     'download.queue.errors.no_torrent': 'No download client holds this release yet',
     'download.grab.errors.quality_not_allowed': "This release's quality is not allowed by the profile",
@@ -953,6 +964,10 @@ export const I18N = {
     'download.config.queue.states.active': 'Téléchargement',
     'download.config.queue.states.stalled': 'Bloqué',
     'download.config.queue.states.paused': 'En pause',
+    'download.config.queue.states.unknown': 'Inconnu',
+    'download.config.queue.state_reason.client_disabled': 'Son client de téléchargement est désactivé',
+    'download.config.queue.state_reason.client_unreachable': "Son client de téléchargement n'a pas répondu",
+    'download.config.queue.detail.state_reason': 'Pourquoi inconnu',
     'download.status.importing': 'Import en cours',
     'download.config.history.title': 'Historique des téléchargements',
     'download.config.history.detail_title': 'Raison',
@@ -1057,6 +1072,8 @@ export const I18N = {
     'download.grab.errors.releases_unobtainable':
       'Aucune release n’a pu être récupérée. Dernière raison : {{detail}}',
     'download.queue.removed_by_user': "Retiré de la file d'attente par un utilisateur",
+    'download.queue.retired_unverifiable':
+      "Retiré de la file d'attente, aucun client de téléchargement n'a pu le confirmer",
     'download.queue.errors.not_controllable': 'Ce téléchargement ne peut plus être piloté',
     'download.queue.errors.no_torrent': 'Aucun client de téléchargement ne détient encore cette release',
     'download.grab.errors.quality_not_allowed': 'La qualité de cette release n’est pas autorisée par le profil',
