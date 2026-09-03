@@ -197,6 +197,11 @@ export class DownloadCompletionPoller {
       }
       try {
         await this.deps.historyRepo.markImporting(history.id);
+        // The tick published its snapshot before this loop, so without a push here the
+        // `importing` state only ever reaches a viewer when the ingest outlives a whole tick.
+        if (history.mediaId != null) {
+          await this.publishOne(history.mediaId, allTorrents, allClientsResponded);
+        }
         await this.processOne(history, torrent, client);
         imported++;
       } catch (e) {
