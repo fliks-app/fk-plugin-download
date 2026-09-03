@@ -651,6 +651,22 @@ describe('DownloadCompletionPoller.poll — reporting the importing state', () =
     assert.ok(ticks.some((t) => t.ref === 'abc' && t.state === 'importing'));
   });
 
+  test('VERDICT: the state is pushed as the import starts, not on the tick after it', async () => {
+    const h = buildPoller();
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    const done = makeTorrent({ hash: 'abc', progress: 1, state: 'uploading' });
+    h.driver.torrentsByClient.set(1, { ok: true, torrents: [done] });
+    h.historyRepo.rows.push(
+      makeHistoryRow({ id: 1, status: 'grabbed', torrentHash: 'abc', mediaId: 5, downloadClientId: 1 }),
+    );
+
+    await h.poller.poll();
+
+    // The tick published its own snapshot before the import loop, and a finished torrent whose
+    // row still said `grabbed` was not in it at all. Without the push this state is never seen.
+    assert.ok(progressCalls(h.host).some((t) => t.ref === 'abc' && t.state === 'importing'));
+  });
+
   test('a finished torrent whose row is not importing stays unreported', async () => {
     const h = buildPoller();
     h.clientsRepo.rows.push(makeClient({ id: 1 }));
