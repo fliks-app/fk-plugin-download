@@ -465,7 +465,6 @@ test('a numbered season still goes out as tvsearch with its season and episode',
 
 // A tracker handed an id it does not index answers 200 with an empty feed, not an error, so
 // the error-driven t=search fallback never fires and the search silently returns nothing.
-// Regression: every typed query used to carry imdbid/tmdbid regardless of the caps.
 
 const capsBody = (movieParams: string) =>
   `<?xml version="1.0"?><caps><searching>` +
@@ -481,14 +480,14 @@ test('searchMovie sends no external ids to a tracker advertising only q', async 
       : { status: 200, body: emptyTorznabBody },
   );
   try {
-    await client.searchMovie(indexer({ settings: { baseUrl: 'https://ix.tld/api' } }), 'auto', 'Braveheart 1995', {
-      imdbId: 'tt0112573',
-      tmdbId: 197,
+    await client.searchMovie(indexer({ settings: { baseUrl: 'https://ix.tld/api' } }), 'auto', 'Some Movie', {
+      imdbId: 'tt1',
+      tmdbId: 2,
     });
     const search = fetchStub.calls.find((c) => !c.includes('t=caps'))!;
     assert.ok(!search.includes('imdbid='), `imdbid must not be sent: ${search}`);
     assert.ok(!search.includes('tmdbid='), `tmdbid must not be sent: ${search}`);
-    assert.ok(search.includes('q=Braveheart'), search);
+    assert.ok(search.includes('q=Some%20Movie'), search);
   } finally {
     fetchStub.restore();
   }
@@ -502,12 +501,12 @@ test('searchMovie sends imdbid but not tmdbid when the caps list only imdbid', a
       : { status: 200, body: emptyTorznabBody },
   );
   try {
-    await client.searchMovie(indexer({ settings: { baseUrl: 'https://ix.tld/api' } }), 'auto', 'Braveheart 1995', {
-      imdbId: 'tt0112573',
-      tmdbId: 197,
+    await client.searchMovie(indexer({ settings: { baseUrl: 'https://ix.tld/api' } }), 'auto', 'Some Movie', {
+      imdbId: 'tt1',
+      tmdbId: 2,
     });
     const search = fetchStub.calls.find((c) => !c.includes('t=caps'))!;
-    assert.ok(search.includes('imdbid=0112573'), search);
+    assert.ok(search.includes('imdbid=1'), search);
     assert.ok(!search.includes('tmdbid='), `tmdbid must not be sent: ${search}`);
   } finally {
     fetchStub.restore();
