@@ -326,7 +326,11 @@ test('VERDICT: 0006 backfills the manual-search gate from the column that used t
   const udoPool = createPluginPool({ dsn: MIGTEST_DSN, pluginId: udoPluginId });
   try {
     await migrateUp(udoPool);
-    await migrateDown(udoPool, 1);
+    // Undo everything back through 0006 so its backfill runs again on the way up. Counting
+    // from the tip would silently stop testing the backfill the next time a migration lands.
+    const backfill = MIGRATIONS.findIndex((m) => m.name === '0006_indexer_interactive_search');
+    assert.ok(backfill >= 0, '0006 must still be in the migration list');
+    await migrateDown(udoPool, MIGRATIONS.length - backfill);
     await udoPool.query(
       `INSERT INTO "indexers" ("name", "implementation", "enableRss", "enableSearch")
        VALUES ('rss only', 'torznab', true, false), ('everything', 'torznab', true, true)`,
