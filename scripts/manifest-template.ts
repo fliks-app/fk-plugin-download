@@ -3,10 +3,9 @@
  * `files` (sha256 of the built bundle + logo) are filled in by
  * `scripts/build.ts` — this template is not the manifest itself.
  *
- * `fliks` covers the whole 3.x line, cut off before an unknown-shape 4.0 — the upper bound
- * is mandatory, both here and in the catalog's CI. Plugins are a 3.0 feature; the 2.x range
- * this carried before only ever served development. `test/manifest.test.ts` re-checks the
- * range against a sibling checkout's real version when one is present.
+ * `fliks` covers the 4.x line; the upper bound is mandatory, both here and in the catalog's
+ * CI. `test/manifest.test.ts` re-checks the range against a sibling checkout's real version
+ * when one is present.
  */
 export const PLUGIN_ID = 'fliks.download';
 
