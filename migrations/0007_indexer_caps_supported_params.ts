@@ -1,8 +1,6 @@
 /**
- * Records the `supportedParams` each typed search advertises. Without it every typed query
- * carried `imdbid`/`tmdbid`/`tvdbid` whether or not the tracker indexed them, and a tracker
- * handed an id it does not index answers `200` with an empty feed — so the search returned
- * nothing and the error-driven `t=search` fallback never fired.
+ * The `supportedParams` each typed search advertises. An id the tracker does not index yields an
+ * empty `200`, so queries are filtered against it.
  */
 const up = `
   ALTER TABLE "indexers"

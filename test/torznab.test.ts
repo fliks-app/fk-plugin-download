@@ -411,8 +411,6 @@ test('VERDICT: searchSeries queries a special as plain text, with no season/ep f
       indexer({
         capsTvSearch: true,
         capsProbedAt: '2026-01-01T00:00:00.000Z',
-        capsMovieSearchParams: null,
-        capsTvSearchParams: null,
         settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
       }),
       'auto',
@@ -444,8 +442,6 @@ test('a numbered season still goes out as tvsearch with its season and episode',
       indexer({
         capsTvSearch: true,
         capsProbedAt: '2026-01-01T00:00:00.000Z',
-        capsMovieSearchParams: null,
-        capsTvSearchParams: null,
         settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
       }),
       'auto',

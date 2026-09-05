@@ -2,30 +2,11 @@ import type { IndexerRow } from '../db/rows';
 import type { IndexerRelease } from './types';
 import { decodeHtmlEntities } from './decode-html-entities';
 
-/** Parses a `supportedParams` attribute into a lookup. A tracker handed an id it does not
- *  index answers 200 with an empty feed rather than an error, so an unsupported param is a
- *  silent zero-result search — always filter against this before sending one. Null means the
- *  caps predate the column, so nothing beyond `q` is assumed. */
-export function parseSupportedParams(attr: string | null | undefined): Set<string> {
-  return new Set(
-    (attr ?? '')
-      .split(',')
-      .map((p) => p.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
-/** Reads `supportedParams` off a caps element, e.g. `<movie-search available="yes"
- *  supportedParams="q,imdbid" />`. Null when the element or the attribute is absent. */
-export function supportedParamsOf(capsBody: string, element: string): string | null {
-  const el = capsBody.match(new RegExp(`<${element}\\s[^>]*>`, 'i'))?.[0];
-  return el?.match(/supportedParams="([^"]*)"/i)?.[1]?.trim() || null;
-}
-
 /** Builds a Torznab query string, dropping null/undefined optional params so
  *  external-id filters are only sent when known. IMDb IDs lose their `tt`
- *  prefix — what every Newznab-spec indexer expects on the wire.
- *  `supportedParams`, when given, additionally drops any id the indexer does not advertise. */
+ *  prefix — what every Newznab-spec indexer expects on the wire. An id the tracker does not
+ *  advertise in `supportedParams` is dropped: it answers 200 with an empty feed rather than an
+ *  error, so sending one is a silent zero-result search the `t=search` fallback never catches. */
 export function buildTorznabQuery(opts: {
   t: string;
   q?: string;
@@ -36,9 +17,16 @@ export function buildTorznabQuery(opts: {
   tvdbId?: number | null;
   imdbId?: string | null;
   tmdbId?: number | null;
-  supportedParams?: Set<string>;
+  /** The caps attribute verbatim, e.g. `q,imdbid`. Anything absent from it is not sent. */
+  supportedParams?: string | null;
 }): string {
-  const allows = (param: string) => !opts.supportedParams || opts.supportedParams.has(param);
+  const advertised = new Set(
+    (opts.supportedParams ?? '')
+      .split(',')
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const allows = (param: string) => advertised.has(param);
   const parts: string[] = [`t=${opts.t}`];
   if (opts.q) parts.push(`q=${encodeURIComponent(opts.q)}`);
   if (opts.season != null) parts.push(`season=${opts.season}`);
