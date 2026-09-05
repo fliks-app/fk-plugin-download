@@ -154,7 +154,14 @@ test('a link pointing at localhost is rejected as a download URL (only as a fall
 });
 
 test('buildTorznabQuery strips the imdb "tt" prefix and omits absent optional ids', () => {
-  const qs = buildTorznabQuery({ t: 'movie', q: 'Some Title', cat: '2000', apiKey: 'k', imdbId: 'tt1234567' });
+  const qs = buildTorznabQuery({
+    t: 'movie',
+    q: 'Some Title',
+    cat: '2000',
+    apiKey: 'k',
+    imdbId: 'tt1234567',
+    supportedParams: 'q,imdbid',
+  });
   assert.equal(qs, 't=movie&q=Some%20Title&cat=2000&apikey=k&imdbid=1234567');
 });
 

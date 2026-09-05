@@ -108,9 +108,9 @@ describe('buildScoreRequest', () => {
   test('attaches the issuing indexer’s own minSeeders/unknownLanguageIsoCode, never a global default', async () => {
     const indexers: IndexerRow[] = [
       { id: 1, name: 'a', implementation: 'torznab', settings: { minSeeders: 5, unknownLanguageIsoCode: 'en' }, enableRss: true, enableSearch: true, enableInteractiveSearch: true, priority: 1, enabled: true, capsSearchFallback: false,
-      capsProbedAt: null, capsMovieSearch: false, capsTvSearch: false, requestDelay: 2, createdAt: '', updatedAt: '' },
+      capsProbedAt: null, capsMovieSearch: false, capsTvSearch: false, capsMovieSearchParams: null, capsTvSearchParams: null, requestDelay: 2, createdAt: '', updatedAt: '' },
       { id: 2, name: 'b', implementation: 'torznab', settings: {}, enableRss: true, enableSearch: true, enableInteractiveSearch: true, priority: 2, enabled: true, capsSearchFallback: false,
-      capsProbedAt: null, capsMovieSearch: false, capsTvSearch: false, requestDelay: 2, createdAt: '', updatedAt: '' },
+      capsProbedAt: null, capsMovieSearch: false, capsTvSearch: false, capsMovieSearchParams: null, capsTvSearchParams: null, requestDelay: 2, createdAt: '', updatedAt: '' },
     ];
     const req = await buildScoreRequest([release({ indexerId: 1 }), release({ indexerId: 2 })], indexers, noneBlocked);
     assert.equal(req[0]?.minSeeders, 5);

@@ -3,7 +3,8 @@ import type { IndexerRow } from '../rows';
 
 const COLUMNS = `"id", "name", "implementation", "settings", "enableRss", "enableSearch",
   "enableInteractiveSearch", "priority", "enabled", "capsSearchFallback", "capsMovieSearch",
-  "capsTvSearch", "capsProbedAt", "requestDelay", "createdAt", "updatedAt"`;
+  "capsTvSearch", "capsMovieSearchParams", "capsTvSearchParams", "capsProbedAt",
+  "requestDelay", "createdAt", "updatedAt"`;
 
 export interface NewIndexer {
   name: string;
@@ -143,12 +144,26 @@ export class IndexersRepository {
   /** `indexers/torznab.service.ts:256` — caps refresh after a `t=caps` probe. */
   async refreshCaps(
     id: number,
-    caps: { capsMovieSearch: boolean; capsTvSearch: boolean; capsSearchFallback: boolean },
+    caps: {
+      capsMovieSearch: boolean;
+      capsTvSearch: boolean;
+      capsSearchFallback: boolean;
+      capsMovieSearchParams: string | null;
+      capsTvSearchParams: string | null;
+    },
   ): Promise<void> {
     await this.pool.query(
       `UPDATE "indexers" SET "capsMovieSearch" = $2, "capsTvSearch" = $3, "capsSearchFallback" = $4,
+              "capsMovieSearchParams" = $5, "capsTvSearchParams" = $6,
               "capsProbedAt" = NOW() WHERE "id" = $1`,
-      [id, caps.capsMovieSearch, caps.capsTvSearch, caps.capsSearchFallback],
+      [
+        id,
+        caps.capsMovieSearch,
+        caps.capsTvSearch,
+        caps.capsSearchFallback,
+        caps.capsMovieSearchParams,
+        caps.capsTvSearchParams,
+      ],
     );
   }
 

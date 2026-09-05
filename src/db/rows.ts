@@ -25,6 +25,10 @@ export interface IndexerRow {
   capsProbedAt: IsoTimestamp | null;
   capsMovieSearch: boolean;
   capsTvSearch: boolean;
+  /** `supportedParams` as the caps feed spelled it, e.g. `q,imdbid`. Null when the probe
+   *  predates this column: treated as "ids unknown", so none are sent. */
+  capsMovieSearchParams: string | null;
+  capsTvSearchParams: string | null;
   requestDelay: number;
   createdAt: IsoTimestamp;
   updatedAt: IsoTimestamp;

@@ -55,7 +55,13 @@ export interface IndexerRepository {
   /** Stamps `capsProbedAt`, so only a probe that actually answered is recorded. */
   refreshCaps(
     id: number,
-    caps: { capsMovieSearch: boolean; capsTvSearch: boolean; capsSearchFallback: boolean },
+    caps: {
+      capsMovieSearch: boolean;
+      capsTvSearch: boolean;
+      capsSearchFallback: boolean;
+      capsMovieSearchParams: string | null;
+      capsTvSearchParams: string | null;
+    },
   ): Promise<void>;
   remove(id: number): Promise<void>;
 }

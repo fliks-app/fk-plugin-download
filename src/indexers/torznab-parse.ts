@@ -4,7 +4,9 @@ import { decodeHtmlEntities } from './decode-html-entities';
 
 /** Builds a Torznab query string, dropping null/undefined optional params so
  *  external-id filters are only sent when known. IMDb IDs lose their `tt`
- *  prefix — what every Newznab-spec indexer expects on the wire. */
+ *  prefix — what every Newznab-spec indexer expects on the wire. An id the tracker does not
+ *  advertise in `supportedParams` is dropped: it answers 200 with an empty feed rather than an
+ *  error, so sending one is a silent zero-result search the `t=search` fallback never catches. */
 export function buildTorznabQuery(opts: {
   t: string;
   q?: string;
@@ -15,19 +17,28 @@ export function buildTorznabQuery(opts: {
   tvdbId?: number | null;
   imdbId?: string | null;
   tmdbId?: number | null;
+  /** The caps attribute verbatim, e.g. `q,imdbid`. Anything absent from it is not sent. */
+  supportedParams?: string | null;
 }): string {
+  const advertised = new Set(
+    (opts.supportedParams ?? '')
+      .split(',')
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const allows = (param: string) => advertised.has(param);
   const parts: string[] = [`t=${opts.t}`];
   if (opts.q) parts.push(`q=${encodeURIComponent(opts.q)}`);
   if (opts.season != null) parts.push(`season=${opts.season}`);
   if (opts.ep != null) parts.push(`ep=${opts.ep}`);
   parts.push(`cat=${opts.cat}`);
   parts.push(`apikey=${encodeURIComponent(opts.apiKey)}`);
-  if (opts.tvdbId) parts.push(`tvdbid=${opts.tvdbId}`);
-  if (opts.imdbId) {
+  if (opts.tvdbId && allows('tvdbid')) parts.push(`tvdbid=${opts.tvdbId}`);
+  if (opts.imdbId && allows('imdbid')) {
     const stripped = opts.imdbId.replace(/^tt/i, '');
     if (stripped) parts.push(`imdbid=${stripped}`);
   }
-  if (opts.tmdbId) parts.push(`tmdbid=${opts.tmdbId}`);
+  if (opts.tmdbId && allows('tmdbid')) parts.push(`tmdbid=${opts.tmdbId}`);
   return parts.join('&');
 }
 

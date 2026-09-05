@@ -93,6 +93,8 @@ export class IndexerService {
       capsTvSearch: false,
       capsSearchFallback: false,
       capsProbedAt: null,
+      capsMovieSearchParams: null,
+      capsTvSearchParams: null,
     });
 
     // Fire-and-forget: a failed probe — or a row deleted while it was in flight — must never
