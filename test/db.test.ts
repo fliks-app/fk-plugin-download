@@ -240,7 +240,7 @@ test('indexers repository: insert, findById, refreshCaps, markSearchFallback, up
   assert.equal(found?.name, 'Test Indexer');
   assert.equal(found?.enableInteractiveSearch, true);
 
-  await repos.indexers.refreshCaps(created.id, { capsMovieSearch: true, capsTvSearch: false, capsSearchFallback: false });
+  await repos.indexers.refreshCaps(created.id, { capsMovieSearch: true, capsTvSearch: false, capsSearchFallback: false, capsMovieSearchParams: null, capsTvSearchParams: null });
   assert.equal((await repos.indexers.findById(created.id))?.capsMovieSearch, true);
 
   await repos.indexers.markSearchFallback(created.id);

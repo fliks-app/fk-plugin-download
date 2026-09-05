@@ -2,9 +2,30 @@ import type { IndexerRow } from '../db/rows';
 import type { IndexerRelease } from './types';
 import { decodeHtmlEntities } from './decode-html-entities';
 
+/** Parses a `supportedParams` attribute into a lookup. A tracker handed an id it does not
+ *  index answers 200 with an empty feed rather than an error, so an unsupported param is a
+ *  silent zero-result search — always filter against this before sending one. Null means the
+ *  caps predate the column, so nothing beyond `q` is assumed. */
+export function parseSupportedParams(attr: string | null | undefined): Set<string> {
+  return new Set(
+    (attr ?? '')
+      .split(',')
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+/** Reads `supportedParams` off a caps element, e.g. `<movie-search available="yes"
+ *  supportedParams="q,imdbid" />`. Null when the element or the attribute is absent. */
+export function supportedParamsOf(capsBody: string, element: string): string | null {
+  const el = capsBody.match(new RegExp(`<${element}\\s[^>]*>`, 'i'))?.[0];
+  return el?.match(/supportedParams="([^"]*)"/i)?.[1]?.trim() || null;
+}
+
 /** Builds a Torznab query string, dropping null/undefined optional params so
  *  external-id filters are only sent when known. IMDb IDs lose their `tt`
- *  prefix — what every Newznab-spec indexer expects on the wire. */
+ *  prefix — what every Newznab-spec indexer expects on the wire.
+ *  `supportedParams`, when given, additionally drops any id the indexer does not advertise. */
 export function buildTorznabQuery(opts: {
   t: string;
   q?: string;
@@ -15,19 +36,21 @@ export function buildTorznabQuery(opts: {
   tvdbId?: number | null;
   imdbId?: string | null;
   tmdbId?: number | null;
+  supportedParams?: Set<string>;
 }): string {
+  const allows = (param: string) => !opts.supportedParams || opts.supportedParams.has(param);
   const parts: string[] = [`t=${opts.t}`];
   if (opts.q) parts.push(`q=${encodeURIComponent(opts.q)}`);
   if (opts.season != null) parts.push(`season=${opts.season}`);
   if (opts.ep != null) parts.push(`ep=${opts.ep}`);
   parts.push(`cat=${opts.cat}`);
   parts.push(`apikey=${encodeURIComponent(opts.apiKey)}`);
-  if (opts.tvdbId) parts.push(`tvdbid=${opts.tvdbId}`);
-  if (opts.imdbId) {
+  if (opts.tvdbId && allows('tvdbid')) parts.push(`tvdbid=${opts.tvdbId}`);
+  if (opts.imdbId && allows('imdbid')) {
     const stripped = opts.imdbId.replace(/^tt/i, '');
     if (stripped) parts.push(`imdbid=${stripped}`);
   }
-  if (opts.tmdbId) parts.push(`tmdbid=${opts.tmdbId}`);
+  if (opts.tmdbId && allows('tmdbid')) parts.push(`tmdbid=${opts.tmdbId}`);
   return parts.join('&');
 }
 

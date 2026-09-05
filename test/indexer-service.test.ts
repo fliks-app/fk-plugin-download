@@ -93,6 +93,8 @@ test('refuses an unregistered implementation on update, naming it', async () => 
     capsTvSearch: false,
     capsSearchFallback: false,
     capsProbedAt: null,
+    capsMovieSearchParams: null,
+    capsTvSearchParams: null,
   });
   await assert.rejects(
     () => service.update(created.id, { implementation: 'fliks.missing-plugin.tracker' }),
@@ -116,6 +118,8 @@ test('update() keeps the stored apiKey when the incoming settings omit it', asyn
     capsTvSearch: false,
     capsSearchFallback: false,
     capsProbedAt: null,
+    capsMovieSearchParams: null,
+    capsTvSearchParams: null,
   });
   await service.update(created.id, { settings: { baseUrl: 'https://y.tld' } });
   const stored = await repo.findOne(created.id);
@@ -139,6 +143,8 @@ test('a redacted row reports whether an apiKey is stored, so the editor can mask
     capsTvSearch: false,
     capsSearchFallback: false,
     capsProbedAt: null,
+    capsMovieSearchParams: null,
+    capsTvSearchParams: null,
   });
   const [withKey] = await service.findAll();
   assert.deepEqual(withKey?.settings.secretsSet, ['apiKey']);
@@ -164,6 +170,8 @@ test('update() erases the stored apiKey when the incoming settings send an expli
     capsTvSearch: false,
     capsSearchFallback: false,
     capsProbedAt: null,
+    capsMovieSearchParams: null,
+    capsTvSearchParams: null,
   });
   await service.update(created.id, { settings: { baseUrl: 'https://x.tld', apiKey: null } });
   const stored = await repo.findOne(created.id);
@@ -186,6 +194,8 @@ test('update() never persists the read-only marker a client echoes back', async 
     capsTvSearch: false,
     capsSearchFallback: false,
     capsProbedAt: null,
+    capsMovieSearchParams: null,
+    capsTvSearchParams: null,
   });
   await service.update(created.id, { settings: { baseUrl: 'https://x.tld', secretsSet: ['apiKey'] } });
   const stored = await repo.findOne(created.id);
@@ -218,6 +228,8 @@ test('VERDICT: testConnection on a saved row uses the stored apiKey when none is
     capsTvSearch: false,
     capsSearchFallback: false,
     capsProbedAt: null,
+    capsMovieSearchParams: null,
+    capsTvSearchParams: null,
   });
 
   // The client never receives the key on read, so testing an edit submits none.
@@ -284,6 +296,8 @@ test('findAll() reports the three gates as the set of usages the editor renders'
     capsTvSearch: false,
     capsSearchFallback: false,
     capsProbedAt: null,
+    capsMovieSearchParams: null,
+    capsTvSearchParams: null,
   };
   await repo.insert({ ...base, name: 'all three', enableRss: true, enableSearch: true, enableInteractiveSearch: true });
   await repo.insert({ ...base, name: 'rss only', enableRss: true, enableSearch: false, enableInteractiveSearch: false });

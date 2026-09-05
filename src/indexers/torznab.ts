@@ -1,6 +1,12 @@
 import type { IndexerRow } from '../db/rows';
 import type { IndexerConnectionTestResult, IndexerRelease, IndexerRepository, IndexerStatsRecorder, SearchKind } from './types';
-import { buildTorznabQuery, describeTorznabQuery, parseTorznabItems } from './torznab-parse';
+import {
+  buildTorznabQuery,
+  describeTorznabQuery,
+  parseSupportedParams,
+  parseTorznabItems,
+  supportedParamsOf,
+} from './torznab-parse';
 import { IndexerThrottle } from './throttle';
 import { searchFetchTimeoutMs } from '../search-budget';
 import { log } from '../log';
@@ -146,11 +152,24 @@ export class TorznabClient {
 
     const capsMovieSearch = /<movie-search\s[^>]*available="yes"/i.test(res.body);
     const capsTvSearch = /<tv-search\s[^>]*available="yes"/i.test(res.body);
-    log.info(`[${indexer.name}] caps refreshed — movieSearch=${capsMovieSearch}, tvSearch=${capsTvSearch}`);
+    const capsMovieSearchParams = supportedParamsOf(res.body, 'movie-search');
+    const capsTvSearchParams = supportedParamsOf(res.body, 'tv-search');
+    log.info(
+      `[${indexer.name}] caps refreshed — movieSearch=${capsMovieSearch} (${capsMovieSearchParams ?? 'q'}), ` +
+        `tvSearch=${capsTvSearch} (${capsTvSearchParams ?? 'q'})`,
+    );
 
-    await this.deps.repo.refreshCaps(indexer.id, { capsMovieSearch, capsTvSearch, capsSearchFallback: false });
+    await this.deps.repo.refreshCaps(indexer.id, {
+      capsMovieSearch,
+      capsTvSearch,
+      capsSearchFallback: false,
+      capsMovieSearchParams,
+      capsTvSearchParams,
+    });
     indexer.capsMovieSearch = capsMovieSearch;
     indexer.capsTvSearch = capsTvSearch;
+    indexer.capsMovieSearchParams = capsMovieSearchParams;
+    indexer.capsTvSearchParams = capsTvSearchParams;
     indexer.capsSearchFallback = false;
     indexer.capsProbedAt = new Date().toISOString();
   }
@@ -366,6 +385,7 @@ export class TorznabClient {
       apiKey,
       tvdbId: useTvSearch ? externalIds?.tvdbId : undefined,
       imdbId: useTvSearch ? externalIds?.imdbId : undefined,
+      supportedParams: useTvSearch ? parseSupportedParams(indexer.capsTvSearchParams) : undefined,
     })}`;
 
     const { results, torznabError } = await this.execSearch(typedUrl, 'season', indexer);
@@ -416,6 +436,7 @@ export class TorznabClient {
       apiKey,
       tvdbId: useTvSearch ? externalIds?.tvdbId : undefined,
       imdbId: useTvSearch ? externalIds?.imdbId : undefined,
+      supportedParams: useTvSearch ? parseSupportedParams(indexer.capsTvSearchParams) : undefined,
     })}`;
 
     const { results, torznabError } = await this.execSearch(typedUrl, 'tvsearch', indexer);
@@ -454,6 +475,7 @@ export class TorznabClient {
       apiKey,
       imdbId: useMovieSearch ? externalIds?.imdbId : undefined,
       tmdbId: useMovieSearch ? externalIds?.tmdbId : undefined,
+      supportedParams: useMovieSearch ? parseSupportedParams(indexer.capsMovieSearchParams) : undefined,
     })}`;
 
     const { results, torznabError } = await this.execSearch(typedUrl, 'search', indexer);

@@ -21,6 +21,8 @@ const indexer = (over: Partial<IndexerRow> = {}): IndexerRow =>
     capsTvSearch: false,
     capsSearchFallback: false,
     capsProbedAt: null,
+    capsMovieSearchParams: null,
+    capsTvSearchParams: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...over,
@@ -49,7 +51,7 @@ function makeClient() {
   const statRows: Omit<IndexerStatRow, 'id' | 'queryDate'>[] = [];
   const updates: { id: number; patch: Partial<IndexerRow> }[] = [];
   const stats: IndexerStatsRecorder = { record: async (s) => void statRows.push(s) };
-  const capsWrites: { id: number; caps: Record<string, boolean> }[] = [];
+  const capsWrites: { id: number; caps: Parameters<IndexerRepository['refreshCaps']>[1] }[] = [];
   const fallbackMarks: number[] = [];
   const repo: Pick<IndexerRepository, 'update' | 'refreshCaps' | 'markSearchFallback'> = {
     update: async (id, patch) => {
@@ -409,6 +411,8 @@ test('VERDICT: searchSeries queries a special as plain text, with no season/ep f
       indexer({
         capsTvSearch: true,
         capsProbedAt: '2026-01-01T00:00:00.000Z',
+        capsMovieSearchParams: null,
+        capsTvSearchParams: null,
         settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
       }),
       'auto',
@@ -440,6 +444,8 @@ test('a numbered season still goes out as tvsearch with its season and episode',
       indexer({
         capsTvSearch: true,
         capsProbedAt: '2026-01-01T00:00:00.000Z',
+        capsMovieSearchParams: null,
+        capsTvSearchParams: null,
         settings: { baseUrl: 'https://tracker.tld/api', apiKey: 'k' },
       }),
       'auto',
@@ -454,5 +460,68 @@ test('a numbered season still goes out as tvsearch with its season and episode',
     assert.ok(url.includes('ep=3'), url);
   } finally {
     stub.restore();
+  }
+});
+
+// A tracker handed an id it does not index answers 200 with an empty feed, not an error, so
+// the error-driven t=search fallback never fires and the search silently returns nothing.
+// Regression: every typed query used to carry imdbid/tmdbid regardless of the caps.
+
+const capsBody = (movieParams: string) =>
+  `<?xml version="1.0"?><caps><searching>` +
+  `<movie-search available="yes" supportedParams="${movieParams}" />` +
+  `<tv-search available="yes" supportedParams="q,season,ep" />` +
+  `</searching></caps>`;
+
+test('searchMovie sends no external ids to a tracker advertising only q', async () => {
+  const { client } = makeClient();
+  const fetchStub = stubFetch((url) =>
+    url.includes('t=caps')
+      ? { status: 200, body: capsBody('q') }
+      : { status: 200, body: emptyTorznabBody },
+  );
+  try {
+    await client.searchMovie(indexer({ settings: { baseUrl: 'https://ix.tld/api' } }), 'auto', 'Braveheart 1995', {
+      imdbId: 'tt0112573',
+      tmdbId: 197,
+    });
+    const search = fetchStub.calls.find((c) => !c.includes('t=caps'))!;
+    assert.ok(!search.includes('imdbid='), `imdbid must not be sent: ${search}`);
+    assert.ok(!search.includes('tmdbid='), `tmdbid must not be sent: ${search}`);
+    assert.ok(search.includes('q=Braveheart'), search);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('searchMovie sends imdbid but not tmdbid when the caps list only imdbid', async () => {
+  const { client } = makeClient();
+  const fetchStub = stubFetch((url) =>
+    url.includes('t=caps')
+      ? { status: 200, body: capsBody('q,imdbid') }
+      : { status: 200, body: emptyTorznabBody },
+  );
+  try {
+    await client.searchMovie(indexer({ settings: { baseUrl: 'https://ix.tld/api' } }), 'auto', 'Braveheart 1995', {
+      imdbId: 'tt0112573',
+      tmdbId: 197,
+    });
+    const search = fetchStub.calls.find((c) => !c.includes('t=caps'))!;
+    assert.ok(search.includes('imdbid=0112573'), search);
+    assert.ok(!search.includes('tmdbid='), `tmdbid must not be sent: ${search}`);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('the caps probe persists the supportedParams it read', async () => {
+  const { client, capsWrites } = makeClient();
+  const fetchStub = stubFetch(() => ({ status: 200, body: capsBody('q,imdbid') }));
+  try {
+    await client.refreshCaps(indexer({ settings: { baseUrl: 'https://ix.tld/api' } }));
+    assert.equal(capsWrites[0]?.caps.capsMovieSearchParams, 'q,imdbid');
+    assert.equal(capsWrites[0]?.caps.capsTvSearchParams, 'q,season,ep');
+  } finally {
+    fetchStub.restore();
   }
 });
