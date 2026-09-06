@@ -3,10 +3,9 @@
  * `files` (sha256 of the built bundle + logo) are filled in by
  * `scripts/build.ts` — this template is not the manifest itself.
  *
- * `fliks` covers the whole 3.x line, cut off before an unknown-shape 4.0 — the upper bound
- * is mandatory, both here and in the catalog's CI. Plugins are a 3.0 feature; the 2.x range
- * this carried before only ever served development. `test/manifest.test.ts` re-checks the
- * range against a sibling checkout's real version when one is present.
+ * `fliks` covers the 4.x line; the upper bound is mandatory, both here and in the catalog's
+ * CI. `test/manifest.test.ts` re-checks the range against a sibling checkout's real version
+ * when one is present.
  */
 export const PLUGIN_ID = 'fliks.download';
 
@@ -1163,12 +1162,9 @@ export const MANIFEST_TEMPLATE = {
   // rather than handing the picker an absent bound.
   pluginApi: 1,
   name: 'Download',
-  // 3.7.0 is the first core that reads `visibleWhen`, `confirmToggle` and `progressField`, and
-  // the first whose data table substitutes `:id` into a proxy row action. An older client ignores
-  // all four in silence — which would render every control unconditionally and drop the
-  // "delete the files" answer. 3.8.0 raises it again: it is the first core that applies the whole
-  // quality profile itself, which is what lets the picker trust `rejections` alone.
-  fliks: '>=3.8.0 <4.0.0',
+  // 4.0.0 is the first core that applies the whole quality profile itself, which is what lets the
+  // picker trust `rejections` alone. It is also the first that accepts `pluginApi` 1 at all.
+  fliks: '>=4.0.0 <5.0.0',
   author: 'Fliks',
   description: 'Indexer search, download-client management and the acquisition grab pipeline for Fliks.',
   license: 'AGPL-3.0-or-later',
