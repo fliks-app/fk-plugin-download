@@ -23,7 +23,6 @@ export const PERMISSIONS = {
   releases: 'releases',
   indexers: 'indexers',
   downloadClients: 'download-clients',
-  delayProfiles: 'delay-profiles',
   queue: 'queue',
   /** Separate from `queue`: reading what is downloading and reaching into the download client
    *  to stop or delete it are different powers, and core grants `Manage` on any plugin
@@ -35,10 +34,6 @@ export const PERMISSIONS = {
 function subjectFor(name: string): string {
   return `plugin:${PLUGIN_ID}:${name}`;
 }
-
-/** Hides every control from a viewer who could not use it anyway — the routes themselves are
- *  CASL-guarded, so this is presentation, not the boundary. */
-const WHEN_QUEUE_CONTROL = [`hasPermission:${subjectFor(PERMISSIONS.queueControl)}`];
 
 /** Shared by both tables. Every value is already on the row, so this needs no route — and a row
  *  that carries none of a field simply omits the line, which is what lets one declaration serve a
@@ -115,21 +110,26 @@ export const POLICY = {
   indexersManage: `manage:${subjectFor(PERMISSIONS.indexers)}`,
   downloadClientsRead: `read:${subjectFor(PERMISSIONS.downloadClients)}`,
   downloadClientsManage: `manage:${subjectFor(PERMISSIONS.downloadClients)}`,
-  delayProfilesRead: `read:${subjectFor(PERMISSIONS.delayProfiles)}`,
   queueRead: `read:${subjectFor(PERMISSIONS.queue)}`,
   queueControl: `manage:${subjectFor(PERMISSIONS.queueControl)}`,
   blocklistRead: `read:${subjectFor(PERMISSIONS.blocklist)}`,
   blocklistManage: `manage:${subjectFor(PERMISSIONS.blocklist)}`,
 } as const;
 
+/** Hides every control from a viewer who could not use it anyway — the routes themselves are
+ *  CASL-guarded, so this is presentation, not the boundary. Naming the route's own policy (not
+ *  the bare subject) keeps the entry visible to a role granted just that action. */
+const whenFor = (policy: string) => [`hasPermission:${policy}`];
+
+const WHEN_QUEUE_CONTROL = whenFor(POLICY.queueControl);
+
+
 /**
  * The 8 `Action.Grab`-era routes core keeps as declared aliases for one
  * major version (`media.controller.ts:198-302`), mirrored exactly —
  * `:id`/`:seasonId`/`:episodeId` match that controller's own param names —
  * plus the indexers/download-clients/blocklist admin CRUD this plugin backs
- * directly, the queue and each provider's `implementations` route. `GET
- * /delay-profiles` is not declared at all — `delay-profiles` stays core's
- * table, and no page here needs it yet.
+ * directly, the queue and each provider's `implementations` route.
  *
  * `/indexers/cooldowns`, `/indexers/implementations`,
  * `/download-clients/implementations` and `/blocklist/all` are declared
@@ -285,6 +285,7 @@ export const UI_CONTRIBUTIONS = [
     weight: 110,
     labelKey: 'download.config.indexers.title',
     icon: 'search',
+    when: whenFor(POLICY.indexersRead),
     action: { kind: 'route' as const, path: settingsPagePath('indexers') },
   },
   {
@@ -293,6 +294,7 @@ export const UI_CONTRIBUTIONS = [
     weight: 115,
     labelKey: 'download.config.indexer_sources.title',
     icon: 'server',
+    when: whenFor(POLICY.indexersRead),
     action: { kind: 'route' as const, path: settingsPagePath('indexer-sources') },
   },
   {
@@ -301,6 +303,7 @@ export const UI_CONTRIBUTIONS = [
     weight: 120,
     labelKey: 'download.config.download_clients.title',
     icon: 'server',
+    when: whenFor(POLICY.downloadClientsRead),
     action: { kind: 'route' as const, path: settingsPagePath('download-clients') },
   },
   {
@@ -310,6 +313,7 @@ export const UI_CONTRIBUTIONS = [
     weight: 100,
     labelKey: 'download.config.queue.title',
     icon: 'download',
+    when: whenFor(POLICY.queueRead),
     action: { kind: 'route' as const, path: `/plugins/${PLUGIN_ID}/queue` },
   },
   {
@@ -318,6 +322,7 @@ export const UI_CONTRIBUTIONS = [
     weight: 130,
     labelKey: 'download.config.history.title',
     icon: 'history',
+    when: whenFor(POLICY.queueRead),
     action: { kind: 'route' as const, path: settingsPagePath('history') },
   },
   {
@@ -378,8 +383,7 @@ export const UI_CONTRIBUTIONS = [
  * Four pages: one real, plugin-owned setting (`requests_auto_grab_on_approval`,
  * per the plan's "Gets split" table); the indexers and download-clients admin
  * surfaces, each a `providers` page over this plugin's own CRUD + `implementations`
- * routes; and a read-only `table` page over `GET /queue`. `delay-profiles` has
- * no page — no route backs it yet.
+ * routes; and a read-only `table` page over `GET /queue`.
  */
 export const CONFIG_PAGES = [
   {
@@ -721,6 +725,7 @@ export const CONFIG_PAGES = [
         method: 'DELETE' as const,
         path: '/history/all',
         confirmKey: 'download.config.history.actions.clear_confirm',
+        when: WHEN_QUEUE_CONTROL,
       },
     ],
   },
