@@ -35,9 +35,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Local install path: our archive is unsigned, so it only passes with this id allowlisted,
-  // exactly as a real admin would set FLIKS_UNSIGNED_PLUGINS=fliks.download for a local install.
-  const result = await inspect(buffer, { unsignedProcessAllowlist: ['fliks.download'] });
+  // Local install path: our archive is unsigned, so it only passes with the switch a real admin
+  // flips for a local install (`plugins.allow_unsigned`).
+  const result = await inspect(buffer, { allowUnsigned: true });
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exit(1);
   if (result.kind !== 'process') {

@@ -1175,9 +1175,7 @@ function wrap(handler: RouteHandler): RouteHandler {
 }
 
 /**
- * Every route this plugin actually backs with a handler. `GET /delay-profiles` is not
- * declared in the manifest at all — `delay-profiles` stays core's table, no page here
- * needs it — so it 404s like any other unrecognised path.
+ * Every route this plugin actually backs with a handler. Anything else 404s.
  *
  * `/indexers/cooldowns`, `/indexers/implementations`, `/download-clients/implementations`
  * and `/blocklist/all` are declared ahead of their `:id` siblings: `createRouteTable`
