@@ -44,10 +44,10 @@ export function attachDispatcher(
         }
         handler(frame.p)
           .then((r) => socket.write(encodeFrame({ i: frame.i, r })))
-          .catch((err: Error) => {
+          .catch((err: Error | undefined) => {
             const c = err instanceof FrameTooLargeError ? 'ERR_RESULT_TOO_LARGE' : 'ERR';
             // Bounded: the reason for refusing an oversize frame must not itself be one.
-            socket.write(encodeFrame({ i: frame.i, e: { c, m: err.message.slice(0, 4096) } }));
+            socket.write(encodeFrame({ i: frame.i, e: { c, m: String(err?.message ?? err).slice(0, 4096) } }));
           });
       } else if (isNote(frame)) {
         const noteFrame = frame as Note;
