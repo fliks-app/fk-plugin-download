@@ -99,8 +99,8 @@ function buildZip(entries: Entry[]): Buffer {
  * `official`. A second signing path here would need a second key and could only ever produce an
  * archive the catalog does not vouch for.
  *
- * What this is for: a local install, which core admits through its `FLIKS_UNSIGNED_PLUGINS`
- * allowlist rather than through a signature.
+ * What this is for: a local install, which core admits through the admin setting
+ * `plugins.allow_unsigned` rather than through a signature.
  */
 export function packageArchive(): string {
   const manifestBytes = fs.readFileSync(path.join(DIST, 'plugin.json'));
