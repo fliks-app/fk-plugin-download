@@ -61,10 +61,15 @@ function fakeIndexerDriver(releases: { title: string; downloadUrl: string; index
   };
 }
 
-function buildDeps(opts: { releases?: { title: string; downloadUrl: string; indexerId: number }[]; isFullSeason?: boolean } = {}) {
+function buildDeps(
+  opts: { releases?: { title: string; downloadUrl: string; indexerId: number }[]; isFullSeason?: boolean; paused?: () => boolean } = {},
+) {
   const historyRepo = new FakeHistoryRepo();
   const driver = new FakeDriver();
-  const host = new FakeHost().on('events.publish', () => undefined).on('notifications.dispatch', () => undefined);
+  const host = new FakeHost()
+    .on('events.publish', () => undefined)
+    .on('notifications.dispatch', () => undefined)
+    .on('config.get', () => (opts.paused?.() ? { auto_acquisition_paused: 'true' } : {}));
   host.on('releases.score', (p: unknown) => {
     const releases = (p as { releases: { id: string }[] }).releases;
     return releases.map((r) => ({ id: r.id, qualityId: 5, qualityName: '1080p', rank: 30, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageName: null, languageAllowed: true, isFullSeason: opts.isFullSeason ?? false, sizeDeviation: 0, videoCodec: null, rejections: [] }));
@@ -187,6 +192,49 @@ describe('searchMissing — a partially available season', () => {
 
     // The pack's source title never matches an episode pattern, so without the season-pack
     // check this episode would be grabbed alongside the pack already in flight.
+    assert.equal(historyRepo.insertCalls.length, 0);
+  });
+});
+
+describe('automatic acquisition paused', () => {
+  const release = { title: 'Movie.2020.1080p', downloadUrl: 'u1', indexerId: 1 };
+
+  test('searchMissing grabs nothing and never lists candidates', async () => {
+    const { deps, host, historyRepo } = buildDeps({ releases: [release], paused: () => true });
+    let listed = false;
+    host.on('acquisition.candidates', () => {
+      listed = true;
+      return { items: [target()], cursor: null };
+    });
+    await searchMissing(deps);
+    assert.equal(listed, false);
+    assert.equal(historyRepo.insertCalls.length, 0);
+  });
+
+  test('a pause taken during a sweep stops it at the next page', async () => {
+    let paused = false;
+    const { deps, host } = buildDeps({ releases: [release], paused: () => paused });
+    let pages = 0;
+    host.on('acquisition.candidates', () => {
+      pages++;
+      paused = true;
+      return { items: [target({ want: skipWant })], cursor: 'next' };
+    });
+    await searchMissing(deps);
+    assert.equal(pages, 1);
+  });
+
+  test('rssSync fetches no feed', async () => {
+    const { deps, historyRepo } = buildDeps({ releases: [release], paused: () => true });
+    let fetched = false;
+    deps.indexersRepo = {
+      listEnabled: async () => {
+        fetched = true;
+        return [];
+      },
+    } as never;
+    await rssSync(deps);
+    assert.equal(fetched, false);
     assert.equal(historyRepo.insertCalls.length, 0);
   });
 });

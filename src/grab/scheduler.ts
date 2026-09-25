@@ -12,6 +12,16 @@ export interface SchedulerDeps extends ReleasePipelineDeps {
   historyRepo: DownloadHistoryRepository;
 }
 
+/** Plugin-owned toggle; unset reads as running. Imports, cleanup and manual grabs ignore it. */
+export const AUTO_ACQUISITION_PAUSED_KEY = 'auto_acquisition_paused';
+
+export async function autoAcquisitionPaused(host: HostCaller, job: string): Promise<boolean> {
+  const values = await host.call('config.get', { keys: [AUTO_ACQUISITION_PAUSED_KEY] });
+  const paused = values[AUTO_ACQUISITION_PAUSED_KEY] === 'true';
+  if (paused) log.info(`${job}: automatic acquisition is paused, skipped`);
+  return paused;
+}
+
 function pickClient(deps: SchedulerDeps, clients: DownloadClientRow[]): DownloadClientRow | null {
   return clients.find((c) => deps.driver.supports(c)) ?? null;
 }
@@ -27,6 +37,7 @@ function pickClient(deps: SchedulerDeps, clients: DownloadClientRow[]): Download
  * re-derive pack grouping. Flagged as a trust assumption in the port report.
  */
 export async function searchMissing(deps: SchedulerDeps, mediaIds?: number[]): Promise<void> {
+  if (await autoAcquisitionPaused(deps.host, 'SearchMissing')) return;
   const clients = await deps.clientsRepo.listEnabled();
   const client = pickClient(deps, clients);
   if (!client) {
@@ -50,7 +61,8 @@ export async function searchMissing(deps: SchedulerDeps, mediaIds?: number[]): P
       if (grabbed && target.season && !target.episode) seasonsGrabbedAsPack.add(target.season.id);
     }
     cursor = page.cursor;
-  } while (cursor);
+    // Re-read per page so a pause stops a sweep already under way.
+  } while (cursor && !(await autoAcquisitionPaused(deps.host, 'SearchMissing')));
 
   log.info(`SearchMissing: ${count} candidate(s) checked`);
 }
@@ -91,6 +103,7 @@ async function pendingCheck(historyRepo: DownloadHistoryRepository, target: Acqu
  * brief — see the port report.
  */
 export async function rssSync(deps: SchedulerDeps): Promise<void> {
+  if (await autoAcquisitionPaused(deps.host, 'RssSync')) return;
   const indexers = await deps.indexersRepo.listEnabled();
   const clients = await deps.clientsRepo.listEnabled();
   const client = pickClient(deps, clients);
@@ -104,6 +117,7 @@ export async function rssSync(deps: SchedulerDeps): Promise<void> {
   const feeds = await rssAcrossIndexers(deps.indexer, ready, 'RssSync');
   for (const { releases } of feeds) {
     if (!releases.length) continue;
+    if (await autoAcquisitionPaused(deps.host, 'RssSync')) return;
     const matched = await identifyOrphans(
       deps.host,
       releases.map((r) => r.title),

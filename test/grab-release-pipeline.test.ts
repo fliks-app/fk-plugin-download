@@ -191,7 +191,7 @@ describe('grabRelease — auto-pick', () => {
     });
     const result = await grabRelease(deps, 1);
     assert.equal(result.torrentHash, driver.nextHash);
-    assert.equal(historyRepo.insertCalls[0]?.grabSource, 'auto');
+    assert.equal(historyRepo.insertCalls[0]?.grabSource, 'manual');
     assert.equal(historyRepo.insertCalls[0]?.sourceTitle, 'Movie.2020.1080p');
   });
 

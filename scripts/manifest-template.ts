@@ -380,7 +380,7 @@ export const UI_CONTRIBUTIONS = [
 ];
 
 /**
- * Four pages: one real, plugin-owned setting (`requests_auto_grab_on_approval`,
+ * Four pages: the plugin-owned settings (`requestsAutoGrabOnApproval` among them,
  * per the plan's "Gets split" table); the indexers and download-clients admin
  * surfaces, each a `providers` page over this plugin's own CRUD + `implementations`
  * routes; and a read-only `table` page over `GET /queue`.
@@ -393,10 +393,17 @@ export const CONFIG_PAGES = [
     icon: 'download',
     fields: [
       {
+        key: 'auto_acquisition_paused',
+        type: 'toggle' as const,
+        labelKey: 'download.config.general.auto_acquisition_paused',
+        hint: 'download.config.general.auto_acquisition_paused_hint',
+        default: false,
+      },
+      {
         key: 'requestsAutoGrabOnApproval',
         type: 'toggle' as const,
-        labelKey: 'download.config.general.auto_grab_on_approval',
-        hint: 'download.config.general.auto_grab_on_approval_hint',
+        labelKey: 'download.config.general.immediate_search',
+        hint: 'download.config.general.immediate_search_hint',
         default: true,
       },
       {
@@ -798,9 +805,12 @@ export const I18N = {
     'download.config.stall.include_manual_grabs_hint':
       'A stalled download is removed either way \u2014 this only decides whether a replacement is searched for.',
     'download.config.general.title': 'General',
-    'download.config.general.auto_grab_on_approval': 'Auto-grab on request approval',
-    'download.config.general.auto_grab_on_approval_hint':
-      'Start a search automatically when an admin approves a request.',
+    'download.config.general.auto_acquisition_paused': 'Pause automatic downloads',
+    'download.config.general.auto_acquisition_paused_hint':
+      'No new release is grabbed on its own. Downloads in progress finish and are imported, and you can still grab a release yourself.',
+    'download.config.general.immediate_search': 'Search as soon as a title needs a download',
+    'download.config.general.immediate_search_hint':
+      'When a request is approved, a file is identified or new episodes appear. Off, the next scheduled search handles it.',
     'download.jobs.search_missing': 'Search missing',
     'download.jobs.rss_sync': 'RSS sync',
     'download.jobs.import_completed': 'Import completed downloads',
@@ -1018,9 +1028,12 @@ export const I18N = {
     'download.config.stall.include_manual_grabs_hint':
       'Un téléchargement bloqué est supprimé dans tous les cas \u2014 ceci décide seulement si une autre release est cherchée.',
     'download.config.general.title': 'Général',
-    'download.config.general.auto_grab_on_approval': 'Télécharger automatiquement après l’approbation d’une demande',
-    'download.config.general.auto_grab_on_approval_hint':
-      'Lance une recherche automatiquement quand un administrateur approuve une demande.',
+    'download.config.general.auto_acquisition_paused': 'Suspendre les téléchargements automatiques',
+    'download.config.general.auto_acquisition_paused_hint':
+      'Aucune release n’est plus récupérée d’elle-même. Les téléchargements en cours se terminent et sont importés, et vous pouvez toujours en récupérer une vous-même.',
+    'download.config.general.immediate_search': 'Chercher dès qu’un titre doit être téléchargé',
+    'download.config.general.immediate_search_hint':
+      'Quand une demande est approuvée, qu’un fichier est identifié ou que de nouveaux épisodes sortent. Désactivé, la prochaine recherche planifiée s’en charge.',
     'download.jobs.search_missing': 'Recherche des médias manquants',
     'download.jobs.rss_sync': 'Synchronisation RSS',
     'download.jobs.import_completed': 'Import des téléchargements terminés',

@@ -343,7 +343,8 @@ export async function grabRelease(
         size: candidate.size,
         infoUrl: candidate.infoUrl,
         indexerId: candidate.indexerId,
-        grabSource: 'auto',
+        // A user asked for it; the auto-pick only chose the release.
+        grabSource: 'manual',
       });
     } catch (e) {
       if (!(e instanceof ReleaseUnobtainableError)) throw e;
