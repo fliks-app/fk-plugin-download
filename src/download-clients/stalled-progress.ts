@@ -6,9 +6,10 @@
  * check is plain `number` arithmetic instead of `BigInt`.
  */
 
-/** A stall snapshot reduced to its bytes counter. */
+/** A stall snapshot reduced to its bytes counter and when it was taken. */
 export interface ProgressSample {
   downloadedBytes: number;
+  checkedAt: string;
 }
 
 /**
@@ -31,27 +32,23 @@ export const STALL_ELIGIBLE_STATES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Consecutive-snapshot delta below this counts as "no progress".
- *
- * 30 MiB tolerates the trickle of wasted bytes a stalled torrent keeps
- * receiving from churning peers (re-requested / discarded pieces). Over the
- * shortest snapshot interval (20 minutes) it draws the progress line at
- * ~26 KiB/s — a download crawling slower than that across a full window is
- * treated as stuck.
+ * Average speed between two snapshots below which the step counts as "no progress". Measured over
+ * the real gap, so it means the same at any interval; 8 KiB/s is the former 30 MiB-per-hour line.
  */
-export const STALL_PROGRESS_TOLERANCE_BYTES = 30 * 1024 * 1024; // 30 MiB
+export const DEFAULT_STALL_MIN_SPEED_KIB = 8;
 
 /**
- * Whether the step from `olderBytes` to `newerBytes` counts as no progress.
+ * Whether the step from `older` to `newer` averages under `minBytesPerSecond`.
  *
  * A negative delta means the client reset its `downloaded` counter (qBit
  * does this on recheck) — treated as progress so the strike run restarts
  * from the reset rather than counting the drop as a flat step.
  */
-export function isNoProgress(olderBytes: number, newerBytes: number): boolean {
-  const delta = newerBytes - olderBytes;
+export function isNoProgress(older: ProgressSample, newer: ProgressSample, minBytesPerSecond: number): boolean {
+  const delta = newer.downloadedBytes - older.downloadedBytes;
   if (delta < 0) return false;
-  return delta < STALL_PROGRESS_TOLERANCE_BYTES;
+  const seconds = (Date.parse(newer.checkedAt) - Date.parse(older.checkedAt)) / 1000;
+  return delta < minBytesPerSecond * seconds;
 }
 
 /**
@@ -61,13 +58,11 @@ export function isNoProgress(olderBytes: number, newerBytes: number): boolean {
  * A lone snapshot counts as 1 strike; N flat snapshots count as N. The
  * stalled cleanup fires when the count reaches the profile's `samples`.
  */
-export function countStalledStrikes(samplesDescByCheckedAt: ProgressSample[]): number {
+export function countStalledStrikes(samplesDescByCheckedAt: ProgressSample[], minBytesPerSecond: number): number {
   if (!samplesDescByCheckedAt.length) return 0;
   let strikes = 1;
   for (let i = 0; i + 1 < samplesDescByCheckedAt.length; i++) {
-    const newer = samplesDescByCheckedAt[i]!.downloadedBytes;
-    const older = samplesDescByCheckedAt[i + 1]!.downloadedBytes;
-    if (!isNoProgress(older, newer)) break;
+    if (!isNoProgress(samplesDescByCheckedAt[i + 1]!, samplesDescByCheckedAt[i]!, minBytesPerSecond)) break;
     strikes++;
   }
   return strikes;

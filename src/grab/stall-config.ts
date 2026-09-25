@@ -1,4 +1,5 @@
 import type { HostCaller } from './types';
+import { DEFAULT_STALL_MIN_SPEED_KIB } from '../download-clients/stalled-progress';
 
 /**
  * Ported from `backend/src/plugins/download/stall-config.util.ts`. The original
@@ -12,30 +13,40 @@ export const STALL_SAMPLES_KEY = 'stall_samples';
 export const STALL_INTERVAL_MINUTES_KEY = 'stall_interval_minutes';
 export const STALL_AUTO_RESTART_KEY = 'stall_auto_restart';
 export const STALL_INCLUDE_MANUAL_GRABS_KEY = 'stall_include_manual_grabs';
+export const STALL_MIN_SPEED_KIB_KEY = 'stall_min_speed_kib';
 
 export interface StallConfig {
   samples: number;
   intervalMinutes: number;
   autoRestart: boolean;
   includeManualGrabs: boolean;
+  minBytesPerSecond: number;
 }
 
 /** `null` means cleanup stays off. Samples unset (every fresh install) must
  *  never fall back to a default that starts deleting torrents. */
 export async function getStallConfig(host: HostCaller): Promise<StallConfig | null> {
   const values = await host.call('config.get', {
-    keys: [STALL_SAMPLES_KEY, STALL_INTERVAL_MINUTES_KEY, STALL_AUTO_RESTART_KEY, STALL_INCLUDE_MANUAL_GRABS_KEY],
+    keys: [
+      STALL_SAMPLES_KEY,
+      STALL_INTERVAL_MINUTES_KEY,
+      STALL_AUTO_RESTART_KEY,
+      STALL_INCLUDE_MANUAL_GRABS_KEY,
+      STALL_MIN_SPEED_KIB_KEY,
+    ],
   });
 
   const samples = parseInt(values[STALL_SAMPLES_KEY] ?? '', 10);
   if (!Number.isFinite(samples) || samples < 2) return null;
 
   const intervalMinutes = parseInt(values[STALL_INTERVAL_MINUTES_KEY] ?? '', 10);
+  const minSpeedKib = parseFloat(values[STALL_MIN_SPEED_KIB_KEY] ?? '');
   return {
     samples,
     intervalMinutes: Number.isFinite(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : 60,
     // Absent means unsaved, not off: the manifest field defaults this toggle to on.
     autoRestart: values[STALL_AUTO_RESTART_KEY] !== 'false',
     includeManualGrabs: values[STALL_INCLUDE_MANUAL_GRABS_KEY] === 'true',
+    minBytesPerSecond: (Number.isFinite(minSpeedKib) && minSpeedKib > 0 ? minSpeedKib : DEFAULT_STALL_MIN_SPEED_KIB) * 1024,
   };
 }

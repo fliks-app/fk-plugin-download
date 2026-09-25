@@ -1,6 +1,6 @@
 import type { DownloadClientRow } from '../db/rows';
 import type { DownloadClientDriver } from './contract';
-import { countStalledStrikes, STALL_ELIGIBLE_STATES } from './stalled-progress';
+import { countStalledStrikes, STALL_ELIGIBLE_STATES, type ProgressSample } from './stalled-progress';
 import {
   BLOCK_REASON_KEY,
   DownloadClientNotFoundError,
@@ -212,7 +212,7 @@ export class DownloadClientsService {
     const hashes = eligible.map((it) => it.hash);
     const rows = await this.deps.stalledSnapshots.findRecentForHashes(hashes);
     // Global DESC order (by checkedAt) preserves each hash's own DESC order on grouping.
-    const snapsByHash = new Map<string, { downloadedBytes: number }[]>();
+    const snapsByHash = new Map<string, ProgressSample[]>();
     for (const row of rows) {
       const key = row.torrentHash.toLowerCase();
       const list = snapsByHash.get(key);
@@ -222,7 +222,7 @@ export class DownloadClientsService {
 
     for (const it of eligible) {
       const snaps = snapsByHash.get(it.hash.toLowerCase()) ?? [];
-      it.stalledStrikes = Math.min(countStalledStrikes(snaps), stallConfig.samples);
+      it.stalledStrikes = Math.min(countStalledStrikes(snaps, stallConfig.minBytesPerSecond), stallConfig.samples);
       it.stalledStrikesRequired = stallConfig.samples;
     }
   }

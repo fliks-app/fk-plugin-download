@@ -365,14 +365,14 @@ test('annotateStalledStrikes: no-op when stallConfig is null', async () => {
 test('annotateStalledStrikes: skips items whose state is not stall-eligible', async () => {
   const { service } = makeService();
   const items = [torrent({ state: 'pausedDL' })];
-  await service.annotateStalledStrikes(items, { samples: 3 });
+  await service.annotateStalledStrikes(items, { samples: 3, minBytesPerSecond: 8192 });
   assert.equal(items[0]?.stalledStrikes, undefined);
 });
 
 test('annotateStalledStrikes: skips items already at 100% progress', async () => {
   const { service } = makeService();
   const items = [torrent({ progress: 1 })];
-  await service.annotateStalledStrikes(items, { samples: 3 });
+  await service.annotateStalledStrikes(items, { samples: 3, minBytesPerSecond: 8192 });
   assert.equal(items[0]?.stalledStrikes, undefined);
 });
 
@@ -380,15 +380,15 @@ test('annotateStalledStrikes: fills strikes and the required count for an eligib
   const { service } = makeService({
     stalledSnapshots: {
       findRecentForHashes: async () => [
-        { torrentHash: 'h1', downloadedBytes: 1000, checkedAt: '3' },
-        { torrentHash: 'h1', downloadedBytes: 1000, checkedAt: '2' },
-        { torrentHash: 'h1', downloadedBytes: 1000, checkedAt: '1' },
-        { torrentHash: 'h1', downloadedBytes: 1000, checkedAt: '0' },
+        { torrentHash: 'h1', downloadedBytes: 1000, checkedAt: '2026-01-01T03:00:00.000Z' },
+        { torrentHash: 'h1', downloadedBytes: 1000, checkedAt: '2026-01-01T02:00:00.000Z' },
+        { torrentHash: 'h1', downloadedBytes: 1000, checkedAt: '2026-01-01T01:00:00.000Z' },
+        { torrentHash: 'h1', downloadedBytes: 1000, checkedAt: '2026-01-01T00:00:00.000Z' },
       ],
     },
   });
   const items = [torrent({ hash: 'h1' })];
-  await service.annotateStalledStrikes(items, { samples: 3 });
+  await service.annotateStalledStrikes(items, { samples: 3, minBytesPerSecond: 8192 });
   assert.equal(items[0]?.stalledStrikes, 3); // 4 flat snapshots, clamped to samples=3
   assert.equal(items[0]?.stalledStrikesRequired, 3);
 });
@@ -396,6 +396,6 @@ test('annotateStalledStrikes: fills strikes and the required count for an eligib
 test('annotateStalledStrikes: does not query stalledSnapshots at all when nothing is eligible', async () => {
   let called = false;
   const { service } = makeService({ stalledSnapshots: { findRecentForHashes: async () => { called = true; return []; } } });
-  await service.annotateStalledStrikes([torrent({ progress: 1 })], { samples: 3 });
+  await service.annotateStalledStrikes([torrent({ progress: 1 })], { samples: 3, minBytesPerSecond: 8192 });
   assert.equal(called, false);
 });
