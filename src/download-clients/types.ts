@@ -93,6 +93,7 @@ export type StalledAnnotatable = Pick<ClientTorrent, 'hash' | 'progress' | 'stat
  *  of the real stall-cleanup config (interval, auto-restart, …) on its own. */
 export interface StallConfigLike {
   samples: number;
+  minBytesPerSecond: number;
 }
 
 export interface DownloadClientsServiceDeps {

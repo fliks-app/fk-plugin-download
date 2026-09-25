@@ -430,6 +430,15 @@ export const CONFIG_PAGES = [
         max: 1440,
       },
       {
+        key: 'stall_min_speed_kib',
+        type: 'number' as const,
+        labelKey: 'download.config.stall.min_speed_kib',
+        hint: 'download.config.stall.min_speed_kib_hint',
+        default: 8,
+        min: 1,
+        max: 102400,
+      },
+      {
         key: 'stall_auto_restart',
         type: 'toggle' as const,
         labelKey: 'download.config.stall.auto_restart',
@@ -778,6 +787,9 @@ export const I18N = {
     'download.config.stall.interval_minutes': 'Minutes between checks',
     'download.config.stall.interval_minutes_hint':
       'How long to wait before sampling a download\u2019s progress again.',
+    'download.config.stall.min_speed_kib': 'Minimum average speed (KiB/s)',
+    'download.config.stall.min_speed_kib_hint':
+      'A check that averages less than this since the previous one counts as stalled, even if the download is still moving.',
     'download.config.stall.auto_restart': 'Search again after cleanup',
     'download.config.stall.auto_restart_hint':
       'Look for another release once a stalled download has been removed.',
@@ -995,6 +1007,9 @@ export const I18N = {
     'download.config.stall.interval_minutes': 'Minutes entre deux vérifications',
     'download.config.stall.interval_minutes_hint':
       'Délai d’attente avant de vérifier à nouveau la progression d’un téléchargement.',
+    'download.config.stall.min_speed_kib': 'Vitesse moyenne minimale (Kio/s)',
+    'download.config.stall.min_speed_kib_hint':
+      'Une vérification sous cette moyenne depuis la précédente compte comme bloquée, même si le téléchargement avance encore.',
     'download.config.stall.auto_restart': 'Relancer une recherche après nettoyage',
     'download.config.stall.auto_restart_hint':
       'Cherche une autre release une fois le téléchargement bloqué supprimé.',

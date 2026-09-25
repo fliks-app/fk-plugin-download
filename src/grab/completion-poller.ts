@@ -94,6 +94,11 @@ export class DownloadCompletionPoller {
    *  included, which is what keeps the model from depending on a field that a restart clears. */
   private firstProgressTick = true;
 
+  /** Why the last CleanStalled run did nothing, logged when it changes so a 5-minute job stays quiet. */
+  private stallSkipReason: string | null = null;
+  /** Stall-eligible torrents with no history row on the previous run, each logged once. */
+  private untrackedStallHashes = new Set<string>();
+
   constructor(private readonly deps: CompletionPollerDeps) {}
 
   /** Every enabled client's torrents in one read, with whether all of them answered. A failed
@@ -613,14 +618,16 @@ export class DownloadCompletionPoller {
    */
   async cleanStalled(): Promise<void> {
     const stallConfig = await getStallConfig(this.deps.host);
-    if (!stallConfig) return;
+    if (!stallConfig) return this.skipStalled('off, the number of checks before cleanup is not set');
 
     // After the config, not before: the horizon has to cover the window the config asks for.
     await this.pruneOldStalledChecks(stallConfig);
 
     const clients = await this.deps.clientsRepo.listEnabled();
     const qbitClients = clients.filter((c) => this.deps.driver.supports(c));
-    if (!qbitClients.length) return;
+    if (!qbitClients.length) return this.skipStalled('no enabled download client supports it');
+    this.skipStalled(null);
+    const untracked = new Set<string>();
 
     const histories = await this.deps.historyRepo.findByStatuses(['grabbed', 'failed', 'warning', 'importing']);
     const mediaToResearch = new Set<number>();
@@ -635,12 +642,18 @@ export class DownloadCompletionPoller {
 
       for (const t of downloading) {
         const history = await this.deps.historyMatcher.matchAndHeal(t, histories);
-        if (!history) continue; // untracked torrent — not our business
+        if (!history) {
+          untracked.add(t.hash);
+          if (!this.untrackedStallHashes.has(t.hash)) log.info(`StalledCleanup: "${t.name}" is not a download this plugin grabbed, ignored`);
+          continue;
+        }
 
         const stalled = await this.evaluateStalled(t, stallConfig, now);
         if (!stalled) continue;
 
-        log.warn(`StalledCleanup: "${t.name}" stalled (samples=${stallConfig.samples}, interval=${stallConfig.intervalMinutes}m)`);
+        log.warn(
+          `StalledCleanup: "${t.name}" stalled (under ${stallConfig.minBytesPerSecond / 1024} KiB/s for ${stallConfig.samples} checks, interval=${stallConfig.intervalMinutes}m)`,
+        );
         try {
           await this.deps.driver.deleteTorrent(client, t.hash, true);
         } catch (e) {
@@ -652,14 +665,17 @@ export class DownloadCompletionPoller {
         // Blocklist + markFailed before the notify: a failed publish must not skip recording that.
         await this.autoBlocklist(history, 'Auto-blocklist: stalled torrent');
         await this.deps.historyRepo.markFailed(history.id, 'Stalled — removed by stalled-download cleanup');
-        await this.deps.host.call('events.publish', [{ type: 'acquisition.queue.changed' }]).catch((e: Error) =>
-          log.warn(`StalledCleanup: failed to publish acquisition.queue.changed: ${e.message}`),
-        );
+        // Core also refreshes the queue on this event.
+        await this.deps.host
+          .call('events.publish', [{ type: 'acquisition.stalled.removed', mediaId: history.mediaId, title: history.sourceTitle }])
+          .catch((e: Error) => log.warn(`StalledCleanup: failed to publish acquisition.stalled.removed: ${e.message}`));
 
         const shouldRestart = stallConfig.autoRestart && (history.grabSource === 'auto' || stallConfig.includeManualGrabs);
         if (shouldRestart && history.mediaId != null) mediaToResearch.add(history.mediaId);
       }
     }
+
+    this.untrackedStallHashes = untracked;
 
     if (mediaToResearch.size > 0) {
       log.info(`StalledCleanup: searching for a replacement for ${mediaToResearch.size} media(s)`);
@@ -667,7 +683,12 @@ export class DownloadCompletionPoller {
     }
   }
 
-  private async evaluateStalled(torrent: ClientTorrent, config: { samples: number; intervalMinutes: number }, now: number): Promise<boolean> {
+  private skipStalled(reason: string | null): void {
+    if (reason && reason !== this.stallSkipReason) log.info(`StalledCleanup: skipped, ${reason}`);
+    this.stallSkipReason = reason;
+  }
+
+  private async evaluateStalled(torrent: ClientTorrent, config: StallConfig, now: number): Promise<boolean> {
     const hash = torrent.hash;
     const currentBytes = torrent.downloaded ?? 0;
 
@@ -678,7 +699,7 @@ export class DownloadCompletionPoller {
 
     const recent = await this.deps.stalledChecksRepo.findRecent(hash, config.samples);
     if (recent.length < config.samples) return false;
-    return countStalledStrikes(recent) >= config.samples;
+    return countStalledStrikes(recent, config.minBytesPerSecond) >= config.samples;
   }
 
   /**

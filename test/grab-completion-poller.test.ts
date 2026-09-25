@@ -187,11 +187,34 @@ describe('DownloadCompletionPoller.cleanStalled — adversarial table', () => {
     h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'stuck', downloaded: 1000, progress: 0.3, state: 'downloading' })] });
     h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'stuck', status: 'grabbed', mediaId: 9 }));
 
+    const published: unknown[] = [];
+    h.host.on('events.publish', (events) => published.push(...(events as unknown[])));
+
     await h.poller.cleanStalled();
 
     assert.deepEqual(h.driver.deleted, [{ clientId: 1, hash: 'stuck', deleteFiles: true }]);
     assert.equal(h.historyRepo.rows[0]?.status, 'failed');
     assert.equal(h.blocklistRepo.inserted.length, 1);
+    assert.deepEqual(published, [
+      { type: 'acquisition.stalled.removed', mediaId: 9, title: h.historyRepo.rows[0]?.sourceTitle },
+    ]);
+  });
+
+  test('a download crawling under the minimum speed is removed although its counter moves', async () => {
+    const h = buildPoller();
+    withConfig(h);
+    h.clientsRepo.rows.push(makeClient({ id: 1 }));
+    h.stalledChecksRepo.rows.push({ id: 1, torrentHash: 'crawl', downloadedBytes: 0, checkedAt: HOUR_AGO });
+    const crawled = 5 * 1024 * 3600; // an hour at 5 KiB/s, under the 8 KiB/s default
+    h.driver.torrentsByClient.set(1, {
+      ok: true,
+      torrents: [makeTorrent({ hash: 'crawl', downloaded: crawled, progress: 0.3, state: 'downloading' })],
+    });
+    h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'crawl', status: 'grabbed', mediaId: 9 }));
+
+    await h.poller.cleanStalled();
+
+    assert.deepEqual(h.driver.deleted, [{ clientId: 1, hash: 'crawl', deleteFiles: true }]);
   });
 
   test('ok:true, torrent present but still progressing, history present -> nothing deleted', async () => {

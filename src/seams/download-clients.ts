@@ -15,7 +15,7 @@ export { DownloadClientsService } from '../download-clients/service';
 export { extractMagnetInfoHash, computeInfoHash } from '../download-clients/torrent-hash';
 export {
   STALL_ELIGIBLE_STATES,
-  STALL_PROGRESS_TOLERANCE_BYTES,
+  DEFAULT_STALL_MIN_SPEED_KIB,
   countStalledStrikes,
   isNoProgress,
 } from '../download-clients/stalled-progress';
