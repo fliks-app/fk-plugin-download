@@ -2,16 +2,16 @@ import type { HostCaller } from './types';
 import { log } from '../log';
 
 /** Plugin-owned, `plugin.<id>.`-prefixed server-side by `config.get`. Unset reads as enabled,
- *  matching the manifest field's declared default. */
-export const AUTO_GRAB_ON_APPROVAL_KEY = 'requestsAutoGrabOnApproval';
+ *  matching the manifest field's declared default. The stored name predates the other triggers. */
+export const IMMEDIATE_SEARCH_KEY = 'requestsAutoGrabOnApproval';
 
 /** The one core event this plugin acts on. Core states the fact for every approval, import
  *  that satisfied a request, and season drop; acting on it is this plugin's decision. */
 export const ACQUISITION_REQUESTED = 'media.acquisition.requested';
 
-export async function autoGrabOnApprovalEnabled(host: HostCaller): Promise<boolean> {
-  const values = await host.call('config.get', { keys: [AUTO_GRAB_ON_APPROVAL_KEY] });
-  return values[AUTO_GRAB_ON_APPROVAL_KEY] !== 'false';
+export async function immediateSearchEnabled(host: HostCaller): Promise<boolean> {
+  const values = await host.call('config.get', { keys: [IMMEDIATE_SEARCH_KEY] });
+  return values[IMMEDIATE_SEARCH_KEY] !== 'false';
 }
 
 export interface AcquisitionRequestedDeps {
@@ -45,8 +45,8 @@ export function createAcquisitionRequestedHandler(deps: AcquisitionRequestedDeps
 
     void (async () => {
       try {
-        if (!(await autoGrabOnApprovalEnabled(deps.host))) {
-          log.info(`${name}: auto-grab on approval is off — not searching`);
+        if (!(await immediateSearchEnabled(deps.host))) {
+          log.info(`${name}: immediate search is off, left to the next scheduled search`);
           return;
         }
         fresh.forEach((id) => inFlight.add(id));

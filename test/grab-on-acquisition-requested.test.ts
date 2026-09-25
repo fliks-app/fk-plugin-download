@@ -7,7 +7,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACQUISITION_REQUESTED,
-  AUTO_GRAB_ON_APPROVAL_KEY,
+  IMMEDIATE_SEARCH_KEY,
   createAcquisitionRequestedHandler,
 } from '../src/grab/on-acquisition-requested';
 import type { HostCaller } from '../src/grab/types';
@@ -17,7 +17,7 @@ function makeHandler(opts: { setting?: string; onSearch?: (ids: number[]) => Pro
   const host = {
     call: async (method: string) => {
       assert.equal(method, 'config.get');
-      return opts.setting === undefined ? {} : { [AUTO_GRAB_ON_APPROVAL_KEY]: opts.setting };
+      return opts.setting === undefined ? {} : { [IMMEDIATE_SEARCH_KEY]: opts.setting };
     },
   } as unknown as HostCaller;
   const searchMissing = async (mediaIds: number[]) => {
