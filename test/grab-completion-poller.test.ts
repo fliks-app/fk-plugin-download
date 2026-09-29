@@ -533,20 +533,25 @@ describe('DownloadCompletionPoller.poll — import hand-off', () => {
     assert.equal(h.historyRepo.rows[0]?.status, 'completed');
   });
 
-  test('VERDICT: a core error reply fails the row, and never blocklists on core\'s own state', async () => {
+  test('VERDICT: a core error reply marks the import failed once, and never blocklists on core\'s own state', async () => {
     const h = buildPoller();
     h.clientsRepo.rows.push(makeClient({ id: 1 }));
     h.driver.torrentsByClient.set(1, { ok: true, torrents: [makeTorrent({ hash: 'done', progress: 1, state: 'stalledUP' })] });
     h.driver.filesByHash.set('done', [{ name: 'Movie.mkv', size: 100, progress: 1, priority: 1 }]);
     h.historyRepo.rows.push(makeHistoryRow({ id: 1, torrentHash: 'done', status: 'grabbed', mediaId: 5, sourceTitle: 'Movie' }));
+    let ingestCalls = 0;
     h.host.on('library.ingest', () => {
-      throw new HostCallError('ERR_INGEST: media no longer exists', 'rejected');
+      ingestCalls++;
+      throw new HostCallError('ERR_INGEST: EACCES: permission denied', 'rejected');
     });
 
     await h.poller.poll();
+    await h.poller.poll();
 
     const row = h.historyRepo.rows[0]!;
-    assert.equal(row.status, 'failed');
+    assert.equal(row.status, 'import_failed');
+    assert.match(row.statusMessage ?? '', /permission denied/);
+    assert.equal(ingestCalls, 1, 'the next tick must not retry it on its own');
     assert.equal(h.blocklistRepo.inserted.length, 0);
   });
 

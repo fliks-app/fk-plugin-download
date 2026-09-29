@@ -407,6 +407,7 @@ describe('route table — GET /queue', () => {
         bytesPerSecond: null,
         size: null,
         clientReachable: true,
+        statusMessage: null,
         mediaId: null,
         seasonId: null,
         episodeId: null,
@@ -651,6 +652,7 @@ describe('route table — GET /queue', () => {
         bytesPerSecond: 12345,
         size: 1000,
         clientReachable: true,
+        statusMessage: null,
         mediaId: null,
         seasonId: null,
         episodeId: null,
@@ -1092,6 +1094,64 @@ describe('route table — download history', () => {
     const resolved = table.resolve('GET', '/history')!;
     await resolved.handler(req({ path: '/history' }), resolved.params);
     assert.deepEqual(seen, [{}]);
+  });
+});
+
+describe('retry import', () => {
+  function retryDeps(row: DownloadHistoryRow | null) {
+    const writes: { ids: number[]; status: string; message: string | null }[] = [];
+    const published: unknown[] = [];
+    const deps = fakeDeps({
+      downloadHistory: {
+        findById: async () => row,
+        updateStatusByIds: async (ids: number[], status: string, message: string | null) => {
+          writes.push({ ids, status, message });
+        },
+      },
+      host: {
+        call: async (method: string, params: unknown) => {
+          if (method === 'events.publish') published.push(params);
+          return {};
+        },
+      },
+    } as never);
+    return { deps, writes, published };
+  }
+
+  test('re-arms a failed import for the next tick and announces the queue change', async () => {
+    const { deps, writes, published } = retryDeps(historyRow({ id: 4, status: 'import_failed', statusMessage: 'EACCES' }));
+    const resolved = createRouteTable(deps).resolve('POST', '/queue/4/retry-import')!;
+    const res = await resolved.handler(req({ method: 'POST' }), resolved.params);
+    assert.equal(res.status, 200);
+    assert.deepEqual(writes, [{ ids: [4], status: 'grabbed', message: null }]);
+    assert.deepEqual(published, [[{ type: 'acquisition.queue.changed' }]]);
+  });
+
+  test('refuses any other status with a 409, writing nothing', async () => {
+    const { deps, writes } = retryDeps(historyRow({ id: 4, status: 'failed' }));
+    const resolved = createRouteTable(deps).resolve('POST', '/queue/4/retry-import')!;
+    const res = await resolved.handler(req({ method: 'POST' }), resolved.params);
+    assert.equal(res.status, 409);
+    assert.equal(writes.length, 0);
+  });
+
+  test('the queue keeps a failed import, with its reason, whatever the client says', async () => {
+    const deps = fakeDeps({
+      downloadHistory: {
+        findByStatuses: async (statuses: string[]) =>
+          statuses.includes('import_failed')
+            ? [historyRow({ id: 5, status: 'import_failed', statusMessage: 'EACCES', torrentHash: 'h', downloadClientId: 1 })]
+            : [],
+        listPage: async () => ({ rows: [], total: 0 }),
+      },
+    });
+    const resolved = createRouteTable(deps).resolve('GET', '/queue')!;
+    const res = await resolved.handler(req({ path: '/queue' }), resolved.params);
+    const body = res.body as { data: QueueItemDto[]; clientsUnreachable: boolean };
+    assert.equal(body.data.length, 1);
+    assert.equal(body.data[0]!.state, 'import_failed');
+    assert.equal(body.data[0]!.statusMessage, 'EACCES');
+    assert.equal(body.clientsUnreachable, false);
   });
 });
 

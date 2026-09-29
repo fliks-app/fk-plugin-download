@@ -75,6 +75,8 @@ export type DownloadHistoryStatus =
   | 'importing'
   | 'completed'
   | 'failed'
+  /** The ingest refused with the torrent still complete in its client: only a manual retry re-arms it. */
+  | 'import_failed'
   | 'warning';
 export type GrabSource = 'auto' | 'manual';
 

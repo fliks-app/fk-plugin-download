@@ -194,7 +194,7 @@ export class DownloadHistoryRepository {
   /** Terminal rows only — a row still in flight is in the queue, not in what "clear" means. */
   async clearTerminal(): Promise<number> {
     const { rowCount } = await this.pool.query(
-      `DELETE FROM "download_history" WHERE "status" IN ('completed', 'failed', 'warning')`,
+      `DELETE FROM "download_history" WHERE "status" IN ('completed', 'failed', 'import_failed', 'warning')`,
     );
     return rowCount ?? 0;
   }
