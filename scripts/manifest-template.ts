@@ -538,7 +538,7 @@ export const CONFIG_PAGES = [
     list: '/indexer-sources',
     implementations: '/indexer-sources/implementations',
     testConnection: { route: '/indexer-sources/test-connection' },
-    // Nothing consumes a source in priority order: the import is manual, one source at a time.
+    // Nothing consumes a source in priority order: the import runs one source at a time.
     showPriority: false,
     labels: {
       newKey: 'download.config.indexer_sources.labels.new',
@@ -555,6 +555,8 @@ export const CONFIG_PAGES = [
         method: 'POST' as const,
         route: '/indexer-sources/:id/import',
         scope: 'row' as const,
+        successKey: 'download.config.indexer_sources.actions.import_done',
+        afterSave: true,
       },
     ],
   },
@@ -833,6 +835,7 @@ export const I18N = {
     'download.config.indexer_sources.labels.create_title': 'New indexer source',
     'download.config.indexer_sources.labels.edit_title': 'Edit the source',
     'download.config.indexer_sources.actions.import': 'Import the indexers',
+    'download.config.indexer_sources.actions.import_done': '{{created}} indexers added, {{updated}} updated',
     'download.config.indexer_sources.errors.disabled':
       'This source is disabled. Enable it before importing.',
     'download.indexer_sources.test.ok': 'Indexer list read, connection OK',
@@ -1054,6 +1057,7 @@ export const I18N = {
     'download.config.indexer_sources.labels.create_title': 'Nouvelle source d’indexeurs',
     'download.config.indexer_sources.labels.edit_title': 'Modifier la source',
     'download.config.indexer_sources.actions.import': 'Importer les indexeurs',
+    'download.config.indexer_sources.actions.import_done': '{{created}} indexeurs ajoutés, {{updated}} mis à jour',
     'download.config.indexer_sources.errors.disabled':
       'Cette source est désactivée. Activez-la avant d’importer.',
     'download.indexer_sources.test.ok': 'Liste des indexeurs lue, connexion OK',

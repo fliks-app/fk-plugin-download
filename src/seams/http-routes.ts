@@ -457,8 +457,8 @@ async function handleTestIndexerSourceConnection(deps: RouteDeps, req: PluginHtt
   return jsonResponse(200, await deps.indexerSourceService.testConnection(input));
 }
 
-/** The one-click refresh. Answers the counts so a caller can report them; the page itself only
- *  reloads the list, and a failure is what the admin needs to see (see `wrap`). */
+/** The one-click refresh, also run on every save of an enabled source. Answers the counts the
+ *  page toasts; a failure is what the admin needs to see (see `wrap`). */
 async function handleImportFromIndexerSource(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
   const id = requireIntParam(params, 'id');
   if (id === null) return badRequest('id');
