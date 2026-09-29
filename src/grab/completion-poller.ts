@@ -171,7 +171,7 @@ export class DownloadCompletionPoller {
 
     await this.autoMatchOrphanTorrents(allTorrents);
 
-    const grabbed = await this.deps.historyRepo.findByStatuses(['grabbed', 'failed', 'warning']);
+    const grabbed = await this.deps.historyRepo.findByStatuses(['grabbed', 'failed', 'import_failed', 'warning']);
     const importing = await this.deps.historyRepo.findByStatuses(['importing']);
 
     if (allClientsResponded) {
@@ -189,7 +189,8 @@ export class DownloadCompletionPoller {
     for (const torrent of completedTorrents) {
       const history = await this.deps.historyMatcher.matchAndHeal(torrent, grabbed);
       if (!history) continue;
-      if (history.status !== 'grabbed' && history.status !== 'failed' && history.status !== 'warning') continue;
+      // A failed row is only re-armed by the orphan sweep or a manual retry, never re-imported as is.
+      if (history.status !== 'grabbed' && history.status !== 'warning') continue;
 
       const client = torrentClient.get(torrent._clientId);
       log.info(`Import: torrent "${torrent.name}" -> history #${history.id} (mediaId=${history.mediaId}, status=${history.status})`);
@@ -221,7 +222,7 @@ export class DownloadCompletionPoller {
         // An error from core reports core's own state (a full disk, a missing root), never a
         // verdict on the release — the blocklist is left to the branches that inspect the files.
         log.error(`Import: FAILED for "${history.sourceTitle}": ${message}`);
-        await this.deps.historyRepo.markFailed(history.id, message);
+        await this.deps.historyRepo.updateStatusByIds([history.id], 'import_failed', message);
         await this.publishFailed(history, message);
       }
     }
@@ -350,7 +351,10 @@ export class DownloadCompletionPoller {
 
     const cutoff = Date.now() - ORPHAN_GRACE_MS;
     const expired = candidates.filter(
-      (h) => (h.status === 'grabbed' || h.status === 'importing') && !matchedHistoryIds.has(h.id) && new Date(h.updatedAt).getTime() < cutoff,
+      (h) =>
+        (h.status === 'grabbed' || h.status === 'importing' || h.status === 'import_failed') &&
+        !matchedHistoryIds.has(h.id) &&
+        new Date(h.updatedAt).getTime() < cutoff,
     );
     if (expired.length) {
       await this.deps.historyRepo.updateStatusByIds(expired.map((h) => h.id), 'failed', ORPHAN_STATUS_MESSAGE);
@@ -539,7 +543,7 @@ export class DownloadCompletionPoller {
     }
 
     if (history.mediaId == null) {
-      await this.deps.historyRepo.markFailed(history.id, 'Import failed: no media linked to this download');
+      await this.deps.historyRepo.updateStatusByIds([history.id], 'import_failed', 'Import failed: no media linked to this download');
       return;
     }
 
@@ -569,7 +573,7 @@ export class DownloadCompletionPoller {
     if (!result.imported.length) {
       const statusMessage = `Import failed: no file could be placed under the library root for "${torrent.name}"`;
       log.error(`Import[${history.sourceTitle}]: ${statusMessage}`);
-      await this.deps.historyRepo.markFailed(history.id, statusMessage);
+      await this.deps.historyRepo.updateStatusByIds([history.id], 'import_failed', statusMessage);
       await this.publishFailed(history, statusMessage);
       return;
     }

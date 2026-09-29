@@ -91,7 +91,7 @@ export interface RouteDeps {
   blocklist: Pick<BlocklistRepository, 'list' | 'findById' | 'remove' | 'clear'>;
   downloadHistory: Pick<
     DownloadHistoryRepository,
-    'findByStatuses' | 'listPage' | 'findById' | 'remove' | 'clearTerminal' | 'markFailed'
+    'findByStatuses' | 'listPage' | 'findById' | 'remove' | 'clearTerminal' | 'markFailed' | 'updateStatusByIds'
   >;
   /** Raw rows (credentials included) — unlike `downloadClientsService`, which redacts
    *  them before a driver call ever happens. `listAll`, not `listEnabled`: a disabled
@@ -613,6 +613,23 @@ async function handleQueueRemove(deps: RouteDeps, req: PluginHttpRequest, params
   return jsonResponse(200, {});
 }
 
+/** Hands a refused import back to the next `ImportCompleted` tick, which is the only thing that
+ *  imports: running it here would race the cron over the same row. */
+async function handleRetryImport(deps: RouteDeps, params: Record<string, string>): Promise<PluginHttpResponse> {
+  const id = requireIntParam(params, 'id');
+  if (id === null) return badRequest('id');
+  const row = await deps.downloadHistory.findById(id);
+  if (!row) return notFoundResponse(String(id));
+  if (row.status !== 'import_failed') {
+    return jsonResponse(409, { error: { key: 'download.queue.errors.not_retryable', detail: row.status } });
+  }
+  await deps.downloadHistory.updateStatusByIds([row.id], 'grabbed', null);
+  await deps.host
+    .call('events.publish', [{ type: 'acquisition.queue.changed' }])
+    .catch((e: Error) => log.warn(`queue-changed publish failed: ${e.message}`));
+  return jsonResponse(200, {});
+}
+
 /**
  * Deletes one history row outright. Refused only while a client is positively still holding its
  * torrent: the row is the only link between that torrent and its media, so dropping it would not
@@ -656,7 +673,9 @@ export interface QueueItemDto extends MediaLabelled {
   /** The tracker's page for this release; null when the feed named none, or on a row grabbed
    *  before the column existed. Never the download URL, which carries the API key. */
   infoUrl: string | null;
-  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing';
+  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing' | 'import_failed';
+  /** Why the import was refused; null on every other state. */
+  statusMessage: string | null;
   /** Percent, 0-100 — the table renders it verbatim. Clients report a 0-1 fraction, which
    *  rounded to 0% for everything short of a finished download. */
   progress: number | null;
@@ -734,7 +753,7 @@ async function attachMediaLabels<T extends MediaLabelled>(deps: RouteDeps, items
 }
 
 const QUEUE_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing'];
-const HISTORY_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing', 'completed', 'failed', 'warning'];
+const HISTORY_STATUSES: DownloadHistoryStatus[] = ['grabbed', 'importing', 'completed', 'failed', 'import_failed', 'warning'];
 
 /** `consulted`: was this client asked at all (false for disabled, no driver, or unsupported).
  *  `ok`: did it answer, only ever true once `consulted` is. */
@@ -799,7 +818,7 @@ function liveTorrentFor(
  * download is genuinely over, and the row leaves the queue for good rather than being hidden.
  */
 function isUnverifiable(row: DownloadHistoryRow, byClientId: Map<number, ClientTorrentIndex>): boolean {
-  if (row.status === 'importing') return false;
+  if (row.status === 'importing' || row.status === 'import_failed') return false;
   if (row.downloadClientId == null || !row.torrentHash) return false;
   const index = byClientId.get(row.downloadClientId);
   if (!index || !index.consulted || !index.ok) return true;
@@ -824,7 +843,20 @@ function toQueueItem(
     seasonId: row.seasonId,
     episodeId: row.episodeId,
     mediaType: null as MediaKind | null,
+    statusMessage: null as string | null,
   };
+  // Stays until retried: the files sit in the client, and waiting on an operator.
+  if (row.status === 'import_failed') {
+    return {
+      ...base,
+      state: 'import_failed',
+      statusMessage: row.statusMessage,
+      progress: 100,
+      bytesPerSecond: null,
+      size: row.size || null,
+      clientReachable: true,
+    };
+  }
   if (row.status === 'importing') {
     return { ...base, state: 'importing', progress: 100, bytesPerSecond: null, size: null, clientReachable: true };
   }
@@ -871,7 +903,7 @@ interface HistoryItemDto extends MediaLabelled {
   /** Live client state, for a row still running. Null on every terminal row, and on a running
    *  one whose client did not answer — which is what gates the controls: an unknown state
    *  offers none, rather than a Pause that cannot know whether it applies. */
-  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing' | null;
+  state: 'queued' | 'active' | 'stalled' | 'paused' | 'importing' | 'import_failed' | null;
   progress: number | null;
 }
 
@@ -936,7 +968,12 @@ async function handleHistory(deps: RouteDeps, req: PluginHttpRequest): Promise<P
       infoUrl: row.infoUrl,
       // `importing` is definitive whatever the client says: the download is done, the files
       // are being moved. Same rule as the queue's own `toQueueItem`.
-      state: row.status === 'importing' ? 'importing' : live ? torrentProgressState(live) : null,
+      state:
+        row.status === 'importing' || row.status === 'import_failed'
+          ? row.status
+          : live
+            ? torrentProgressState(live)
+            : null,
       progress: row.status === 'importing' ? 100 : live ? live.progress * 100 : null,
       mediaId: row.mediaId,
       seasonId: row.seasonId,
@@ -958,7 +995,7 @@ async function handleQueue(deps: RouteDeps, req: PluginHttpRequest): Promise<Plu
   const pageSize = readPageSize(req.query['pageSize']);
 
   const [rows, { byClientId, anyUnreachable }, indexers] = await Promise.all([
-    deps.downloadHistory.findByStatuses(QUEUE_STATUSES),
+    deps.downloadHistory.findByStatuses([...QUEUE_STATUSES, 'import_failed']),
     indexClientTorrents(deps),
     deps.indexerService.findAll(),
   ]);
@@ -1227,6 +1264,7 @@ function canonicalRoutes(deps: RouteDeps): { method: string; path: string; handl
     { method: 'POST', path: '/queue/:id/pause', handler: (_req, params) => handleQueueControl(deps, params, 'pause') },
     { method: 'POST', path: '/queue/:id/resume', handler: (_req, params) => handleQueueControl(deps, params, 'resume') },
     { method: 'DELETE', path: '/queue/:id', handler: (req, params) => handleQueueRemove(deps, req, params) },
+    { method: 'POST', path: '/queue/:id/retry-import', handler: (_req, params) => handleRetryImport(deps, params) },
     { method: 'DELETE', path: '/history/all', handler: () => handleClearHistory(deps) },
     { method: 'DELETE', path: '/history/:id', handler: (_req, params) => handleDeleteHistoryEntry(deps, params) },
     { method: 'GET', path: '/blocklist', handler: (req) => handleListBlocklist(deps, req) },

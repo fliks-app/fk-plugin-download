@@ -65,7 +65,7 @@ const DETAIL_ACTION = {
   ],
 };
 
-/** Shared by both tables: the same three controls, gated on the row's live state. `importing`
+/** Shared by both tables: the same controls, gated on the row's live state. `importing`
  *  appears in none of them: its files are already being moved. */
 const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
   {
@@ -83,6 +83,14 @@ const QUEUE_CONTROL_ACTIONS = (stateKey: 'state') => [
     path: '/queue/:id/resume',
     when: WHEN_QUEUE_CONTROL,
     visibleWhen: { key: stateKey, in: ['paused'] },
+  },
+  {
+    kind: 'proxy' as const,
+    labelKey: 'download.config.queue.actions.retry_import',
+    method: 'POST' as const,
+    path: '/queue/:id/retry-import',
+    when: WHEN_QUEUE_CONTROL,
+    visibleWhen: { key: stateKey, in: ['import_failed'] },
   },
   {
     kind: 'proxy' as const,
@@ -191,6 +199,7 @@ export const ROUTES: { method: string; path: string; policy: string; objectGuard
   { method: 'POST', path: '/queue/:id/pause', policy: POLICY.queueControl },
   { method: 'POST', path: '/queue/:id/resume', policy: POLICY.queueControl },
   { method: 'DELETE', path: '/queue/:id', policy: POLICY.queueControl },
+  { method: 'POST', path: '/queue/:id/retry-import', policy: POLICY.queueControl },
   { method: 'DELETE', path: '/history/all', policy: POLICY.queueControl },
   { method: 'DELETE', path: '/history/:id', policy: POLICY.queueControl },
   { method: 'GET', path: '/blocklist', policy: POLICY.blocklistRead },
@@ -613,6 +622,7 @@ export const CONFIG_PAGES = [
           stalled: 'download.config.queue.states.stalled',
           paused: 'download.config.queue.states.paused',
           importing: 'download.status.importing',
+          import_failed: 'download.status.import_failed',
         },
         badges: {
           queued: 'neutral' as const,
@@ -620,8 +630,11 @@ export const CONFIG_PAGES = [
           stalled: 'warning' as const,
           paused: 'ghost' as const,
           importing: 'primary' as const,
+          import_failed: 'error' as const,
           // Ghost, not warning: nothing is wrong, the row is simply unverifiable.
         },
+        detailField: 'statusMessage',
+        detailTitleKey: 'download.config.history.detail_title',
         // The percentage fills this badge instead of holding a column of its own: it says what
         // the state beside it is doing, and a column of bare numbers read as unrelated to it.
         progressField: 'progress',
@@ -663,6 +676,7 @@ export const CONFIG_PAGES = [
           { value: 'importing', labelKey: 'download.status.importing' },
           { value: 'completed', labelKey: 'download.config.history.filters.status_completed' },
           { value: 'failed', labelKey: 'download.config.history.filters.status_failed' },
+          { value: 'import_failed', labelKey: 'download.status.import_failed' },
           { value: 'warning', labelKey: 'download.config.history.filters.status_warning' },
         ],
       },
@@ -697,6 +711,7 @@ export const CONFIG_PAGES = [
           importing: 'download.status.importing',
           completed: 'download.config.history.filters.status_completed',
           failed: 'download.config.history.filters.status_failed',
+          import_failed: 'download.status.import_failed',
           warning: 'download.config.history.filters.status_warning',
         },
         badges: {
@@ -708,6 +723,7 @@ export const CONFIG_PAGES = [
           importing: 'primary' as const,
           completed: 'success' as const,
           failed: 'error' as const,
+          import_failed: 'error' as const,
           warning: 'warning' as const,
         },
         // The reason a grab failed reads in a dialog; as a column it stretched every row.
@@ -761,6 +777,7 @@ export const I18N = {
     'download.config.queue.states.stalled': 'Stalled',
     'download.config.queue.states.paused': 'Paused',
     'download.status.importing': 'Importing',
+    'download.status.import_failed': 'Import failed',
     'download.config.history.title': 'Download history',
     'download.config.history.detail_title': 'Reason',
     'download.config.history.columns.date': 'Date',
@@ -879,6 +896,7 @@ export const I18N = {
     'download.queue.removed_by_user': 'Removed from the queue by a user',
     'download.queue.retired_unverifiable': 'Retired from the queue, no download client could confirm it',
     'download.queue.errors.not_controllable': 'This download can no longer be controlled',
+    'download.queue.errors.not_retryable': 'Only a failed import can be retried',
     'download.queue.errors.no_torrent': 'No download client holds this release yet',
     'download.grab.errors.quality_not_allowed': "This release's quality is not allowed by the profile",
     'download.grab.errors.no_eligible_release': 'No eligible release was found',
@@ -955,6 +973,7 @@ export const I18N = {
     'download.config.history.grab_source.manual': 'Manual',
     'download.config.queue.actions.pause': 'Pause',
     'download.config.queue.actions.resume': 'Resume',
+    'download.config.queue.actions.retry_import': 'Retry the import',
     'download.config.queue.actions.cancel': 'Cancel download',
     'download.config.queue.actions.cancel_confirm':
       'Stop this download and remove it from its download client? It leaves the queue either way.',
@@ -985,6 +1004,7 @@ export const I18N = {
     'download.config.queue.states.stalled': 'Bloqué',
     'download.config.queue.states.paused': 'En pause',
     'download.status.importing': 'Import en cours',
+    'download.status.import_failed': 'Échec de l’import',
     'download.config.history.title': 'Historique des téléchargements',
     'download.config.history.detail_title': 'Raison',
     'download.config.history.columns.date': 'Date',
@@ -1098,6 +1118,7 @@ export const I18N = {
     'download.queue.retired_unverifiable':
       "Retiré de la file d'attente, aucun client de téléchargement n'a pu le confirmer",
     'download.queue.errors.not_controllable': 'Ce téléchargement ne peut plus être piloté',
+    'download.queue.errors.not_retryable': 'Seul un import en échec peut être relancé',
     'download.queue.errors.no_torrent': 'Aucun client de téléchargement ne détient encore cette release',
     'download.grab.errors.quality_not_allowed': 'La qualité de cette release n’est pas autorisée par le profil',
     'download.grab.errors.no_eligible_release': 'Aucune release éligible n’a été trouvée',
@@ -1172,6 +1193,7 @@ export const I18N = {
     'download.config.history.grab_source.manual': 'Manuelle',
     'download.config.queue.actions.pause': 'Mettre en pause',
     'download.config.queue.actions.resume': 'Reprendre',
+    'download.config.queue.actions.retry_import': 'Relancer l’import',
     'download.config.queue.actions.cancel': 'Annuler le téléchargement',
     'download.config.queue.actions.cancel_confirm':
       "Arrêter ce téléchargement et le retirer de son client ? Il quitte la file d'attente dans tous les cas.",
