@@ -1,14 +1,15 @@
 import type { DownloadClientDriver } from '../download-clients/contract';
 import type { DownloadClientRow, GrabSource } from '../db/rows';
 import type { DownloadHistoryRepository } from '../db/repositories';
-import { buildGrabHistoryRow } from './grab-history';
+import { buildGrabHistoryRow, toCoverageColumns } from './grab-history';
+import type { ReleaseCoverage } from '../host-methods';
 import type { HostCaller } from './types';
 import { log } from '../log';
 
 export interface GrabExecutorDeps {
   host: HostCaller;
   driver: DownloadClientDriver;
-  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab' | 'findLatestByTorrentHash'>;
+  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab' | 'findLatestByTorrentHash' | 'fillCoverage'>;
 }
 
 export interface GrabArgs {
@@ -34,6 +35,8 @@ export interface GrabArgs {
   episodeNumber?: number;
   seasonId?: number | null;
   episodeId?: number | null;
+  /** What the release title covers; absent when core sent none. */
+  coverage?: ReleaseCoverage | null;
   /** Off for user-driven grabs, where re-adding a release on purpose is
    *  legitimate — mirrors `DownloadClientDriver.addTorrentUrl`'s own flag. */
   rejectIfAlreadyPresent?: boolean;
@@ -70,6 +73,7 @@ export async function grabAndRecord(deps: GrabExecutorDeps, args: GrabArgs): Pro
   const existing = await deps.historyRepo.findLatestByTorrentHash(torrentHash);
   if (existing && existing.mediaId === args.mediaId && (existing.status === 'grabbed' || existing.status === 'importing')) {
     log.info(`AutoGrab[${args.mediaType}]: "${args.sourceTitle}" is already in flight as history #${existing.id}`);
+    await deps.historyRepo.fillCoverage(existing.id, toCoverageColumns(args.coverage));
     return { torrentHash };
   }
 
@@ -86,6 +90,7 @@ export async function grabAndRecord(deps: GrabExecutorDeps, args: GrabArgs): Pro
       indexerId: args.indexerId,
       seasonId: args.seasonId,
       episodeId: args.episodeId,
+      coverage: args.coverage,
     }),
   );
 

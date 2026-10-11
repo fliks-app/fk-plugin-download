@@ -127,8 +127,11 @@ test('migrated columns match the Fliks-originals in public, modulo the two decla
   const key = (r: ColumnRow) => `${r.table_name}.${r.column_name}`;
   const originalByKey = new Map(originals.map((r) => [key(r), r]));
   const diffs: string[] = [];
+  // Added by this plugin's 0008; the Fliks originals never had them.
+  const PLUGIN_ONLY = /^download_history\.cover/;
 
   for (const row of mine) {
+    if (PLUGIN_ONLY.test(key(row))) continue;
     const orig = originalByKey.get(key(row));
     if (!orig) {
       diffs.push(`${key(row)}: present in "${SCHEMA}" but missing from "public"`);

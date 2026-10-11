@@ -80,7 +80,17 @@ export type DownloadHistoryStatus =
   | 'warning';
 export type GrabSource = 'auto' | 'manual';
 
-export interface DownloadHistoryRow {
+/** The release's season/episode coverage, flattened. All null = unknown (grabbed before it was
+ *  recorded, or by a core that sent none); `coverCompleteSeries` is non-null exactly when known. */
+export interface DownloadHistoryCoverage {
+  coverSeasonFrom: number | null;
+  coverSeasonTo: number | null;
+  coverEpisodeFrom: number | null;
+  coverEpisodeTo: number | null;
+  coverCompleteSeries: boolean | null;
+}
+
+export interface DownloadHistoryRow extends DownloadHistoryCoverage {
   id: number;
   sourceTitle: string;
   quality: string;

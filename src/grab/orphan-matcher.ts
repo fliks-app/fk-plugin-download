@@ -1,3 +1,4 @@
+import type { ReleaseCoverage } from '../host-methods';
 import type { HostCaller } from './types';
 
 /**
@@ -14,6 +15,7 @@ export interface OrphanMatch {
   seasonNumber?: number;
   episodeNumber?: number;
   isFullSeason: boolean;
+  coverage?: ReleaseCoverage;
 }
 
 /** Batches every unidentified torrent name into one `releases.match` call.
@@ -29,7 +31,7 @@ export async function identifyOrphans(host: HostCaller, titles: string[]): Promi
   for (const r of results) {
     const title = titles[Number(r.id)];
     if (title === undefined) continue;
-    out.set(title, r.mediaId == null ? null : { mediaId: r.mediaId, seasonNumber: r.seasonNumber, episodeNumber: r.episodeNumber, isFullSeason: r.isFullSeason });
+    out.set(title, r.mediaId == null ? null : { mediaId: r.mediaId, seasonNumber: r.seasonNumber, episodeNumber: r.episodeNumber, isFullSeason: r.isFullSeason, coverage: r.coverage });
   }
   return out;
 }

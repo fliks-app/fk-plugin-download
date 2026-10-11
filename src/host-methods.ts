@@ -53,6 +53,16 @@ export interface AcquisitionTarget {
   };
 }
 
+/** What a release title covers, as parsed by core. Ranges are inclusive. */
+export interface ReleaseCoverage {
+  /** Null when the title states no season (a complete-series release, or unparseable). */
+  seasons: { from: number; to: number } | null;
+  /** Episodes within `seasons.from`; null for a season pack or multi-season pack. */
+  episodes: { from: number; to: number } | null;
+  /** Complete series / integral release that names no season: covers every season. */
+  completeSeries: boolean;
+}
+
 /** The verdict on one candidate release, already sorted by relevance. */
 export interface ScoredRelease {
   id: string;
@@ -66,6 +76,8 @@ export interface ScoredRelease {
   languageName: string | null;
   languageAllowed: boolean;
   isFullSeason: boolean;
+  /** Absent on a core that predates it. */
+  coverage?: ReleaseCoverage;
   /** Null when the media carries no runtime to judge against — distinct from 0, which claims the
    *  size is exactly the preferred one. */
   sizeDeviation: number | null;
@@ -135,6 +147,7 @@ export interface PluginHostApi {
       seasonNumber?: number;
       episodeNumber?: number;
       isFullSeason: boolean;
+      coverage?: ReleaseCoverage;
       decision: 'grab' | 'skip';
       skipReason?: 'on-disk' | 'not-monitored' | 'unmatched' | 'too-fresh' | 'not-available' | 'unprofiled';
     }[]

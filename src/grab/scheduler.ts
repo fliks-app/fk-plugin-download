@@ -67,24 +67,21 @@ export async function searchMissing(deps: SchedulerDeps, mediaIds?: number[]): P
   log.info(`SearchMissing: ${count} candidate(s) checked`);
 }
 
-/** Mirrors each scheduler call site's own dedup query — season-pack-by-id
- *  when the target is season-scoped with no episode, episode-tag ILIKE for a
- *  single episode, else the plain "pending grab for this media" check. */
-async function pendingCheck(historyRepo: DownloadHistoryRepository, target: AcquisitionTarget): Promise<boolean> {
-  if (target.season && !target.episode) {
-    const pending = await historyRepo.findPendingSeasonPackGrab(target.mediaId, target.season.id);
-    return !!pending;
+/** Season and episode targets are judged on what pending grabs cover (a multi-season or
+ *  multi-episode release included); anything else falls back to "any pending grab for the media". */
+async function pendingCheck(historyRepo: DownloadHistoryRepository, target: AcquisitionTarget): Promise<string | null> {
+  if (target.season) {
+    return historyRepo.findPendingGrabCovering({
+      mediaId: target.mediaId,
+      seasonId: target.season.id,
+      seasonNumber: target.season.number,
+      episodeNumber: target.episode?.number ?? null,
+      episodeTagPattern: target.episode
+        ? `%S${String(target.season.number).padStart(2, '0')}E${String(target.episode.number).padStart(2, '0')}%`
+        : null,
+    });
   }
-  if (target.season && target.episode) {
-    // A pack still downloading from an earlier run covers this episode, and its source title
-    // ("Show.S01.1080p") never matches the episode pattern below.
-    if (await historyRepo.findPendingSeasonPackGrab(target.mediaId, target.season.id)) return true;
-    const epLabel = `S${String(target.season.number).padStart(2, '0')}E${String(target.episode.number).padStart(2, '0')}`;
-    const pending = await historyRepo.findPendingEpisodeGrab(target.mediaId, `%${epLabel}%`);
-    return !!pending;
-  }
-  const pending = await historyRepo.findPendingGrabForMedia(target.mediaId);
-  return !!pending;
+  return (await historyRepo.findPendingGrabForMedia(target.mediaId))?.sourceTitle ?? null;
 }
 
 /**

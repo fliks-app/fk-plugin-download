@@ -16,17 +16,15 @@ function execDeps(deps: ReleasePipelineDeps): GrabExecutorDeps {
  * used to compute (missing/upgrade + rank window); this function's own job is
  * search, score, dedup-check, pick, and grab — same order as upstream.
  *
- * `pendingCheck` mirrors each scheduler call site's own dedup query (exact
- * source-title, episode-tag ILIKE, season-pack-by-seasonId) — passed in
- * rather than re-derived here, matching how upstream threaded a closure of
- * the same shape into `tryAutoGrab`'s `pendingCheck` argument.
+ * `pendingCheck` is the scheduler's dedup query, passed in; it returns the source title of the
+ * pending grab that already covers the target, or null.
  */
 export async function tryAutoGrab(
   deps: ReleasePipelineDeps,
   target: AcquisitionTarget,
   client: DownloadClientRow,
   searchScored: (target: AcquisitionTarget) => Promise<import('./release-scoring').RankedRelease[]>,
-  pendingCheck?: () => Promise<boolean>,
+  pendingCheck?: () => Promise<string | null>,
 ): Promise<boolean> {
   const logSkip = (reason: string): boolean => {
     log.info(`AutoGrab[${target.kind}]: "${target.title}" skipped — ${reason}`);
@@ -35,7 +33,8 @@ export async function tryAutoGrab(
 
   if (!target.want) return logSkip('no quality/language profile on media');
   if (target.want.decision === 'skip') return logSkip('media already satisfies its profile');
-  if (pendingCheck && (await pendingCheck())) return logSkip('a grab is already pending');
+  const blocking = pendingCheck ? await pendingCheck() : null;
+  if (blocking !== null) return logSkip(`a grab is already pending ("${blocking}")`);
 
   const scored = await searchScored(target);
   if (!scored.length) return logSkip('no releases returned by indexers');
@@ -76,6 +75,7 @@ export async function tryAutoGrab(
       episodeNumber: target.episode?.number,
       seasonId: target.season?.id ?? null,
       episodeId: target.episode?.id ?? null,
+      coverage: candidate.coverage,
       // Only the scheduler/RSS path rejects a hash the client already holds —
       // interactive grabs (`release-pipeline.ts`) leave this off.
       rejectIfAlreadyPresent: true,

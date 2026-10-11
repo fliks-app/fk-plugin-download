@@ -113,10 +113,21 @@ describe('tryAutoGrab', () => {
         searched = true;
         return [release({})];
       },
-      async () => true, // a grab is already pending
+      async () => 'Movie.2020.1080p', // a grab is already pending
     );
     assert.equal(ok, false);
     assert.equal(searched, false);
+  });
+
+  test('a torrent already in flight gets its unknown coverage filled, not a second row', async () => {
+    const { deps, historyRepo } = buildDeps();
+    const first = release({ coverage: undefined });
+    await tryAutoGrab(deps, target({}), makeClient(), async () => [first]);
+    assert.equal(historyRepo.rows[0]!.coverCompleteSeries, null);
+    const cov = { seasons: { from: 1, to: 2 }, episodes: null, completeSeries: false };
+    await tryAutoGrab(deps, target({}), makeClient(), async () => [release({ coverage: cov })]);
+    assert.equal(historyRepo.rows.length, 1);
+    assert.deepEqual([historyRepo.rows[0]!.coverSeasonFrom, historyRepo.rows[0]!.coverSeasonTo], [1, 2]);
   });
 
   test('picks the first eligible release and grabs it, recording the history row', async () => {

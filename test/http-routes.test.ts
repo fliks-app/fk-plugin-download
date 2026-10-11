@@ -38,6 +38,11 @@ function historyRow(over: Partial<DownloadHistoryRow> = {}): DownloadHistoryRow 
     downloadClientId: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
+    coverSeasonFrom: null,
+    coverSeasonTo: null,
+    coverEpisodeFrom: null,
+    coverEpisodeTo: null,
+    coverCompleteSeries: null,
     ...over,
   };
 }

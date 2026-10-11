@@ -1,6 +1,6 @@
 /** Shared in-memory fakes for the `grab-*.test.ts` files — not itself a test
  *  (no `.test.ts` suffix, so `npm test`'s `test/*.test.ts` glob skips it). */
-import type { DownloadHistoryRow, DownloadClientRow, IndexerRow, StalledCheckRow, BlocklistRow } from '../src/db/rows';
+import type { DownloadHistoryCoverage, DownloadHistoryRow, DownloadClientRow, IndexerRow, StalledCheckRow, BlocklistRow } from '../src/db/rows';
 import type { DownloadHistoryRepository, NewDownloadHistoryGrab, HealMatchPatch } from '../src/db/repositories/download-history.repository';
 import type { StalledChecksRepository } from '../src/db/repositories/stalled-checks.repository';
 import type { BlocklistRepository, NewBlocklistEntry } from '../src/db/repositories/blocklist.repository';
@@ -31,6 +31,11 @@ export function makeHistoryRow(over: Partial<DownloadHistoryRow>): DownloadHisto
     downloadClientId: 1,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    coverSeasonFrom: null,
+    coverSeasonTo: null,
+    coverEpisodeFrom: null,
+    coverEpisodeTo: null,
+    coverCompleteSeries: null,
     ...over,
   };
 }
@@ -84,12 +89,19 @@ export class FakeHistoryRepo {
   async findPendingGrabForMedia(mediaId: number): Promise<DownloadHistoryRow | null> {
     return this.rows.find((r) => r.mediaId === mediaId && r.status === 'grabbed') ?? null;
   }
-  async findPendingEpisodeGrab(mediaId: number, pattern: string): Promise<DownloadHistoryRow | null> {
-    const needle = pattern.replace(/%/g, '').toLowerCase();
-    return this.rows.find((r) => r.mediaId === mediaId && r.status === 'grabbed' && r.sourceTitle.toLowerCase().includes(needle)) ?? null;
-  }
-  async findPendingSeasonPackGrab(mediaId: number, seasonId: number): Promise<DownloadHistoryRow | null> {
-    return this.rows.find((r) => r.mediaId === mediaId && r.status === 'grabbed' && r.seasonId === seasonId && r.episodeId == null) ?? null;
+  /** Mirrors the SQL predicate in `DownloadHistoryRepository.findPendingGrabCovering`. */
+  async findPendingGrabCovering(t: { mediaId: number; seasonId: number; seasonNumber: number; episodeNumber: number | null; episodeTagPattern: string | null }): Promise<string | null> {
+    const needle = t.episodeTagPattern?.replace(/%/g, '').toLowerCase();
+    return this.rows.find((r) => {
+      if (r.mediaId !== t.mediaId || (r.status !== 'grabbed' && r.status !== 'importing')) return false;
+      if (r.coverCompleteSeries == null) {
+        return (r.seasonId === t.seasonId && r.episodeId == null) || (needle != null && r.sourceTitle.toLowerCase().includes(needle));
+      }
+      if (r.coverCompleteSeries) return t.seasonNumber > 0;
+      if (r.coverSeasonFrom == null || r.coverSeasonTo == null || t.seasonNumber < r.coverSeasonFrom || t.seasonNumber > r.coverSeasonTo) return false;
+      if (r.coverEpisodeFrom == null) return true;
+      return t.episodeNumber != null && t.seasonNumber === r.coverSeasonFrom && t.episodeNumber >= r.coverEpisodeFrom && t.episodeNumber <= r.coverEpisodeTo!;
+    })?.sourceTitle ?? null;
   }
   async findBySourceTitleForMedia(mediaId: number, sourceTitle: string): Promise<DownloadHistoryRow | null> {
     return this.rows.find((r) => r.mediaId === mediaId && r.sourceTitle === sourceTitle) ?? null;
@@ -133,6 +145,7 @@ export class FakeHistoryRepo {
       indexerId: input.indexerId ?? null,
       downloadClientId: input.downloadClientId ?? null,
       status: 'grabbed',
+      ...input.coverage,
     });
     this.rows.push(row);
     return row;
@@ -168,6 +181,10 @@ export class FakeHistoryRepo {
   async updateTorrentHash(id: number, torrentHash: string): Promise<void> {
     const row = this.rows.find((r) => r.id === id);
     if (row) row.torrentHash = torrentHash;
+  }
+  async fillCoverage(id: number, c: DownloadHistoryCoverage): Promise<void> {
+    const row = this.rows.find((r) => r.id === id);
+    if (row && row.coverCompleteSeries == null && c.coverCompleteSeries != null) Object.assign(row, c);
   }
   async healMatch(id: number, patch: HealMatchPatch): Promise<void> {
     this.healCalls.push({ id, patch });

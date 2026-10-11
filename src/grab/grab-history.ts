@@ -1,6 +1,7 @@
 import { decodeHtmlEntities } from '../indexers/decode-html-entities';
 import type { NewDownloadHistoryGrab } from '../db/repositories';
-import type { GrabSource } from '../db/rows';
+import type { DownloadHistoryCoverage, GrabSource } from '../db/rows';
+import type { ReleaseCoverage } from '../host-methods';
 
 /**
  * Ported from `backend/src/plugins/download/grab-history.util.ts`'s
@@ -12,6 +13,21 @@ import type { GrabSource } from '../db/rows';
  * this plugin has no ORM, so the equivalent is the repository's plain
  * `NewDownloadHistoryGrab` insert shape.
  */
+/** Unparseable coverage (no season, not a complete series) is stored as unknown, so dedup keeps
+ *  judging that row on its seasonId / title rather than treating it as covering nothing. */
+export function toCoverageColumns(coverage: ReleaseCoverage | null | undefined): DownloadHistoryCoverage {
+  if (!coverage || (!coverage.completeSeries && !coverage.seasons)) {
+    return { coverSeasonFrom: null, coverSeasonTo: null, coverEpisodeFrom: null, coverEpisodeTo: null, coverCompleteSeries: null };
+  }
+  return {
+    coverSeasonFrom: coverage.seasons?.from ?? null,
+    coverSeasonTo: coverage.seasons?.to ?? null,
+    coverEpisodeFrom: coverage.episodes?.from ?? null,
+    coverEpisodeTo: coverage.episodes?.to ?? null,
+    coverCompleteSeries: coverage.completeSeries,
+  };
+}
+
 export function buildGrabHistoryRow(args: {
   mediaId: number;
   downloadClientId: number;
@@ -24,6 +40,7 @@ export function buildGrabHistoryRow(args: {
   indexerId?: number | null;
   episodeId?: number | null;
   seasonId?: number | null;
+  coverage?: ReleaseCoverage | null;
 }): NewDownloadHistoryGrab {
   return {
     mediaId: args.mediaId,
@@ -41,5 +58,6 @@ export function buildGrabHistoryRow(args: {
     indexerId: args.indexerId ?? null,
     episodeId: args.episodeId ?? null,
     seasonId: args.seasonId ?? null,
+    coverage: toCoverageColumns(args.coverage),
   };
 }

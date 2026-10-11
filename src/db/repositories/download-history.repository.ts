@@ -1,8 +1,9 @@
 import type { Pool } from 'pg';
-import type { DownloadHistoryRow, DownloadHistoryStatus, GrabSource, IsoTimestamp } from '../rows';
+import type { DownloadHistoryCoverage, DownloadHistoryRow, DownloadHistoryStatus, GrabSource, IsoTimestamp } from '../rows';
 
 const COLUMNS = `"id", "sourceTitle", "quality", "language", "torrentHash", "size", "infoUrl", "status", "statusMessage",
-  "grabSource", "mediaId", "episodeId", "seasonId", "indexerId", "downloadClientId", "createdAt", "updatedAt"`;
+  "grabSource", "mediaId", "episodeId", "seasonId", "indexerId", "downloadClientId", "createdAt", "updatedAt",
+  "coverSeasonFrom", "coverSeasonTo", "coverEpisodeFrom", "coverEpisodeTo", "coverCompleteSeries"`;
 
 export interface NewDownloadHistoryGrab {
   sourceTitle: string;
@@ -17,6 +18,7 @@ export interface NewDownloadHistoryGrab {
   seasonId?: number | null;
   indexerId?: number | null;
   downloadClientId?: number | null;
+  coverage?: DownloadHistoryCoverage;
 }
 
 export interface HealMatchPatch {
@@ -24,6 +26,8 @@ export interface HealMatchPatch {
   episodeId: number | null;
   seasonId: number | null;
   quality: string;
+  /** Fills coverage only on a row that has none; a known one is never overwritten. */
+  coverage?: DownloadHistoryCoverage;
 }
 
 /**
@@ -57,27 +61,35 @@ export class DownloadHistoryRepository {
     return rows[0] ?? null;
   }
 
-  /** `acquisition-scheduler.service.ts:344,636,625` — dedup by episode-tag substring in
-   *  `sourceTitle` (caller builds the ILIKE pattern, e.g. `%S01E03%`). */
-  async findPendingEpisodeGrab(mediaId: number, sourceTitlePattern: string): Promise<DownloadHistoryRow | null> {
-    const { rows } = await this.pool.query<DownloadHistoryRow>(
-      `SELECT ${COLUMNS} FROM "download_history"
-        WHERE "mediaId" = $1 AND "status" IN ('grabbed', 'importing') AND "sourceTitle" ILIKE $2
-        LIMIT 1`,
-      [mediaId, sourceTitlePattern],
+  /** Source title of a pending grab covering the target. Rows with coverage are judged on it
+   *  alone; rows without keep the seasonId / title checks. */
+  async findPendingGrabCovering(target: {
+    mediaId: number;
+    seasonId: number;
+    seasonNumber: number;
+    episodeNumber: number | null;
+    episodeTagPattern: string | null;
+  }): Promise<string | null> {
+    const { rows } = await this.pool.query<{ sourceTitle: string }>(
+      `SELECT "sourceTitle" FROM "download_history"
+          WHERE "mediaId" = $1 AND "status" IN ('grabbed', 'importing')
+            AND (
+              ("coverCompleteSeries" IS NOT NULL AND (
+                 ("coverCompleteSeries" AND $2::int > 0)
+                 OR ($2::int BETWEEN "coverSeasonFrom" AND "coverSeasonTo"
+                     AND ("coverEpisodeFrom" IS NULL
+                          OR ($3::int IS NOT NULL AND $2::int = "coverSeasonFrom"
+                              AND $3::int BETWEEN "coverEpisodeFrom" AND "coverEpisodeTo")))
+              ))
+              OR ("coverCompleteSeries" IS NULL AND (
+                 ("seasonId" = $4 AND "episodeId" IS NULL)
+                 OR ($3::int IS NOT NULL AND "sourceTitle" ILIKE $5)
+              ))
+            )
+          LIMIT 1`,
+      [target.mediaId, target.seasonNumber, target.episodeNumber, target.seasonId, target.episodeTagPattern],
     );
-    return rows[0] ?? null;
-  }
-
-  /** `acquisition-scheduler.service.ts:394` — "is a season-pack grab already pending for this season". */
-  async findPendingSeasonPackGrab(mediaId: number, seasonId: number): Promise<DownloadHistoryRow | null> {
-    const { rows } = await this.pool.query<DownloadHistoryRow>(
-      `SELECT ${COLUMNS} FROM "download_history"
-        WHERE "mediaId" = $1 AND "status" IN ('grabbed', 'importing') AND "seasonId" = $2 AND "episodeId" IS NULL
-        LIMIT 1`,
-      [mediaId, seasonId],
-    );
-    return rows[0] ?? null;
+    return rows[0]?.sourceTitle ?? null;
   }
 
   /** `acquisition-scheduler.service.ts:737` — RSS dedup, exact title match, any status. */
@@ -224,8 +236,9 @@ export class DownloadHistoryRepository {
     const { rows } = await this.pool.query<DownloadHistoryRow>(
       `INSERT INTO "download_history"
          ("sourceTitle", "quality", "language", "torrentHash", "size", "infoUrl", "grabSource",
-          "mediaId", "episodeId", "seasonId", "indexerId", "downloadClientId")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          "mediaId", "episodeId", "seasonId", "indexerId", "downloadClientId",
+          "coverSeasonFrom", "coverSeasonTo", "coverEpisodeFrom", "coverEpisodeTo", "coverCompleteSeries")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        RETURNING ${COLUMNS}`,
       [
         input.sourceTitle,
@@ -240,6 +253,11 @@ export class DownloadHistoryRepository {
         input.seasonId ?? null,
         input.indexerId ?? null,
         input.downloadClientId ?? null,
+        input.coverage?.coverSeasonFrom ?? null,
+        input.coverage?.coverSeasonTo ?? null,
+        input.coverage?.coverEpisodeFrom ?? null,
+        input.coverage?.coverEpisodeTo ?? null,
+        input.coverage?.coverCompleteSeries ?? null,
       ],
     );
     const row = rows[0];
@@ -314,11 +332,29 @@ export class DownloadHistoryRepository {
 
   /** `completion.service.ts:246` — heal an orphan row once its real media/episode/season/quality is known. */
   async healMatch(id: number, patch: HealMatchPatch): Promise<void> {
+    const c = patch.coverage;
     await this.pool.query(
       `UPDATE "download_history"
-         SET "mediaId" = $2, "episodeId" = $3, "seasonId" = $4, "quality" = $5, "updatedAt" = now()
+         SET "mediaId" = $2, "episodeId" = $3, "seasonId" = $4, "quality" = $5, "updatedAt" = now(),
+             "coverSeasonFrom" = CASE WHEN "coverCompleteSeries" IS NULL THEN $6::int ELSE "coverSeasonFrom" END,
+             "coverSeasonTo" = CASE WHEN "coverCompleteSeries" IS NULL THEN $7::int ELSE "coverSeasonTo" END,
+             "coverEpisodeFrom" = CASE WHEN "coverCompleteSeries" IS NULL THEN $8::int ELSE "coverEpisodeFrom" END,
+             "coverEpisodeTo" = CASE WHEN "coverCompleteSeries" IS NULL THEN $9::int ELSE "coverEpisodeTo" END,
+             "coverCompleteSeries" = CASE WHEN "coverCompleteSeries" IS NULL THEN $10::boolean ELSE "coverCompleteSeries" END
        WHERE "id" = $1`,
-      [id, patch.mediaId, patch.episodeId, patch.seasonId, patch.quality],
+      [id, patch.mediaId, patch.episodeId, patch.seasonId, patch.quality, c?.coverSeasonFrom ?? null, c?.coverSeasonTo ?? null, c?.coverEpisodeFrom ?? null, c?.coverEpisodeTo ?? null, c?.coverCompleteSeries ?? null],
+    );
+  }
+
+  /** Records coverage on a row that has none; a known one is left alone. */
+  async fillCoverage(id: number, c: DownloadHistoryCoverage): Promise<void> {
+    if (c.coverCompleteSeries == null) return;
+    await this.pool.query(
+      `UPDATE "download_history"
+         SET "coverSeasonFrom" = $2, "coverSeasonTo" = $3, "coverEpisodeFrom" = $4, "coverEpisodeTo" = $5,
+             "coverCompleteSeries" = $6
+       WHERE "id" = $1 AND "coverCompleteSeries" IS NULL`,
+      [id, c.coverSeasonFrom, c.coverSeasonTo, c.coverEpisodeFrom, c.coverEpisodeTo, c.coverCompleteSeries],
     );
   }
 }

@@ -6,7 +6,7 @@ import type { HostCaller } from './types';
 import { HostCallError, type HostParams } from '../host-client';
 import { TorrentHistoryMatcher, normaliseTorrentName, outranksForTorrent } from './torrent-name-matcher';
 import { identifyOrphans, resolveSeasonEpisodeIds } from './orphan-matcher';
-import { buildGrabHistoryRow } from './grab-history';
+import { buildGrabHistoryRow, toCoverageColumns } from './grab-history';
 
 type ProgressDownload = HostParams<'progress.set'>['downloads'][number];
 
@@ -295,6 +295,7 @@ export class DownloadCompletionPoller {
           episodeId,
           seasonId,
           quality: existingRow.quality,
+          coverage: toCoverageColumns(match.coverage),
         });
         rebound++;
       } else {
@@ -311,6 +312,7 @@ export class DownloadCompletionPoller {
             grabSource: 'manual',
             episodeId,
             seasonId,
+            coverage: match.coverage,
           }),
         );
         bound++;

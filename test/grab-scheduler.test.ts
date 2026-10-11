@@ -12,6 +12,7 @@ import type { AcquisitionTarget } from '../src/grab/release-pipeline';
 import type { IndexerDriver } from '../src/seams/indexers';
 import { FakeHistoryRepo, FakeDriver, FakeHost, FakeBlocklistRepo, makeClient, asHistoryRepo, asBlocklistRepo } from './grab-test-helpers';
 import { log } from '../src/log';
+import type { ReleaseCoverage } from '../src/host-methods';
 
 /** `tryAutoGrab` has its own downstream skip-decision guard (`auto-grab.ts`) —
  *  capturing its log line is what tells "the scheduler's own guard never even
@@ -62,7 +63,7 @@ function fakeIndexerDriver(releases: { title: string; downloadUrl: string; index
 }
 
 function buildDeps(
-  opts: { releases?: { title: string; downloadUrl: string; indexerId: number }[]; isFullSeason?: boolean; paused?: () => boolean } = {},
+  opts: { releases?: { title: string; downloadUrl: string; indexerId: number }[]; isFullSeason?: boolean; coverage?: ReleaseCoverage; paused?: () => boolean } = {},
 ) {
   const historyRepo = new FakeHistoryRepo();
   const driver = new FakeDriver();
@@ -72,7 +73,7 @@ function buildDeps(
     .on('config.get', () => (opts.paused?.() ? { auto_acquisition_paused: 'true' } : {}));
   host.on('releases.score', (p: unknown) => {
     const releases = (p as { releases: { id: string }[] }).releases;
-    return releases.map((r) => ({ id: r.id, qualityId: 5, qualityName: '1080p', rank: 30, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageName: null, languageAllowed: true, isFullSeason: opts.isFullSeason ?? false, sizeDeviation: 0, videoCodec: null, rejections: [] }));
+    return releases.map((r) => ({ id: r.id, qualityId: 5, qualityName: '1080p', rank: 30, allowed: true, customFormatScore: 0, blocklisted: false, languageId: null, languageName: null, languageAllowed: true, isFullSeason: opts.isFullSeason ?? false, coverage: opts.coverage, sizeDeviation: 0, videoCodec: null, rejections: [] }));
   });
   const deps: SchedulerDeps = {
     host,
@@ -106,6 +107,40 @@ describe('searchMissing', () => {
     host.on('acquisition.candidates', () => ({ items: [target()], cursor: null }));
     await searchMissing(deps);
     assert.equal(historyRepo.insertCalls.length, 1);
+  });
+});
+
+describe('searchMissing: multi-season pack', () => {
+  const season = (n: number) => ({ id: 100 + n, number: n, episodeCount: 10 });
+  const episode = (s: number, n: number) => ({ id: 1000 * s + n, number: n, endNumber: null, airDate: null, title: null });
+  const seriesTarget = (s: number, e?: number) => target({ kind: 'series', season: season(s), ...(e ? { episode: episode(s, e) } : {}) });
+  const pack = { title: 'Show.S01-S04.1080p', downloadUrl: 'u1', indexerId: 1 };
+
+  async function sweep(coverage: ReleaseCoverage | undefined) {
+    const ctx = buildDeps({ releases: [pack], isFullSeason: true, coverage });
+    ctx.host.on('acquisition.candidates', () => ({
+      items: [seriesTarget(1), seriesTarget(2), seriesTarget(2, 3), seriesTarget(3), seriesTarget(4, 1)],
+      cursor: null,
+    }));
+    await searchMissing(ctx.deps);
+    return ctx;
+  }
+
+  test('seasons 2-4 and their episodes are skipped once the pack is recorded with its coverage', async () => {
+    const { historyRepo, driver } = await sweep({ seasons: { from: 1, to: 4 }, episodes: null, completeSeries: false });
+    assert.equal(driver.added.length, 1);
+    assert.equal(historyRepo.insertCalls.length, 1);
+    assert.deepEqual(
+      [historyRepo.insertCalls[0]!.coverage?.coverSeasonFrom, historyRepo.insertCalls[0]!.coverage?.coverSeasonTo, historyRepo.insertCalls[0]!.coverage?.coverCompleteSeries],
+      [1, 4, false],
+    );
+  });
+
+  test('a core that sends no coverage still grabs per season, as before', async () => {
+    const { historyRepo, driver } = await sweep(undefined);
+    assert.equal(historyRepo.insertCalls[0]!.coverage?.coverCompleteSeries, null);
+    // Without coverage the S1 row only blocks S1: the later seasons each go to the client again.
+    assert.equal(driver.added.length, 4);
   });
 });
 
