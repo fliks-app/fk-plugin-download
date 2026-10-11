@@ -44,7 +44,7 @@ export interface ReleasePipelineDeps {
   driver: DownloadClientDriver;
   indexersRepo: Pick<IndexersRepository, 'listEnabled'>;
   clientsRepo: Pick<DownloadClientsRepository, 'listEnabled'>;
-  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab' | 'findLatestByTorrentHash'>;
+  historyRepo: Pick<DownloadHistoryRepository, 'insertGrab' | 'findLatestByTorrentHash' | 'fillCoverage'>;
   /** The plugin's own `blocklist` table — core cannot see it, so every
    *  `releases.score` call declares `blocked` per release itself
    *  (`src/host-methods.ts`'s doc-comment on that field). */
@@ -313,6 +313,7 @@ export async function grabRelease(
       infoUrl: manual.infoUrl,
       indexerId: manual.indexerId,
       grabSource: 'manual',
+      coverage: scored.coverage,
     });
   }
 
@@ -345,6 +346,7 @@ export async function grabRelease(
         indexerId: candidate.indexerId,
         // A user asked for it; the auto-pick only chose the release.
         grabSource: 'manual',
+        coverage: candidate.coverage,
       });
     } catch (e) {
       if (!(e instanceof ReleaseUnobtainableError)) throw e;

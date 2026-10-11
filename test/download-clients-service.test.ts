@@ -246,6 +246,11 @@ test('blockTorrent: history found by hash directly -> blocklists, deletes with f
     downloadClientId: saved.id,
     createdAt: 'now',
     updatedAt: 'now',
+    coverSeasonFrom: null,
+    coverSeasonTo: null,
+    coverEpisodeFrom: null,
+    coverEpisodeTo: null,
+    coverCompleteSeries: null,
   });
 
   await service.blockTorrent(saved.id, 'abc');
@@ -297,6 +302,11 @@ test('blockTorrent: falls back to scanning enabled clients\' live torrents by ha
     downloadClientId: saved.id,
     createdAt: 'now',
     updatedAt: 'now',
+    coverSeasonFrom: null,
+    coverSeasonTo: null,
+    coverEpisodeFrom: null,
+    coverEpisodeTo: null,
+    coverCompleteSeries: null,
   });
 
   await service.blockTorrent(saved.id, 'deadbeef');
@@ -336,6 +346,11 @@ test('blockTorrent: an already-blocklisted release (insert throws) still gets de
     downloadClientId: saved.id,
     createdAt: 'now',
     updatedAt: 'now',
+    coverSeasonFrom: null,
+    coverSeasonTo: null,
+    coverEpisodeFrom: null,
+    coverEpisodeTo: null,
+    coverCompleteSeries: null,
   });
   setBlocklistThrows(true);
   await service.blockTorrent(saved.id, 'abc');
