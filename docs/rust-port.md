@@ -12,7 +12,7 @@ decision of this port, `[assumed]` a guess to confirm in the S8 spike. The host 
 
 Contents: 1 inventory, 2 mapping onto the WIT world, 3 state and where it moves, 4 database,
 5 crate layout, 6 SDK requirements, 7 test plan, 8 packaging and catalog, 9 deviations,
-10 open questions.
+10 decisions and open questions.
 
 ## 0. Findings that shape the port
 
@@ -31,11 +31,13 @@ Contents: 1 inventory, 2 mapping onto the WIT world, 3 state and where it moves,
    `scheduled` 5 min. `ImportCompleted` therefore stays a declared job (60 min, `job` lane); it is
    not turned into a `schedule-call` poller. Plan §8.3 item 2 wording ("the completion poller
    re-arms from `start` with `schedule-call`") is read as: the boot re-arm (`init`) moves to
-   `start`, plus a lease so a trapped job instance cannot strand rows. Open question 1.
+   `start`, plus a lease so a trapped job instance cannot strand rows. Decided (section 10, D1).
 5. **`fliks.download` newly asks for `network: {internal: true}`** (qBittorrent and Torznab on the
    LAN were reachable by any process plugin before). `plugins.md` rule 4: an upgrade that newly
-   requests it is skipped by catalog auto-update and needs the admin's confirm. After a Fliks 5
-   upgrade the plugin stays `failed incompatible-api` until then. Open question 3.
+   requests it is skipped by catalog auto-update and needs the admin's confirm. Decided (D3): on an
+   upgrade from a pluginApi 1 package with the same id and the same signing key the host carries the
+   grant forward (specified in `plugins.md`, not here), so auto-update installs this version; any
+   permission requested later still fails closed.
 
 ## 1. Inventory of behaviour
 
@@ -396,8 +398,9 @@ All additive, all `IF NOT EXISTS`/`ADD COLUMN` so a replay is harmless; no exist
 `down` scripts are dropped (`db.migrate` takes `{name, up}` only) and with them `npm run migrate down`;
 rollback is a database restore (DL11).
 
-Requirements on the host `migrate`: it must run each `up` as a multi-statement script (`0001` has 9
-statements, `0006` has comments and an `UPDATE`) inside the per-migration transaction. Open question 6.
+Requirements on the host `migrate`: it runs each `up` as a multi-statement script (`0001` has 9
+statements, `0006` has comments and an `UPDATE`) inside the per-migration transaction (decided, D6;
+the host docs are corrected elsewhere to say 8 migrations, then 11).
 
 The `public` references (`media`, `episodes`, `seasons`, `users`) and the `REFERENCES`-only grant are
 provisioned by the host from `coreRefs`; `db-cross-schema-fk` and `0001`'s `ON DELETE` actions stay as
@@ -474,7 +477,7 @@ marks what the notify port also needs (its spec refers to this list).
 | SDK-10 | Logging | `info!/warn!/error!/debug!` to the host `log` import, single line, plus `redact_url(&str)` (drops userinfo and query; DL10). | yes |
 | SDK-11 | Testing | native `FakeHost`, `FakeDb`, `FakeHttp`, `FakeClock`; native `PgDb` over a scratch Postgres with the same type decoding as the host driver; component harness that runs the built `.wasm` under the real host code with a controllable clock for scheduled calls, programmable core imports with call recording, outbound allow-list including `network.internal`, direct invocation of every export, and inspection of `plugin_scheduled_calls`; golden-vector loader. | yes |
 | SDK-12 | Build tooling (`cargo xtask`-style library or `cargo fliks-plugin`) | release build for `wasm32-wasip2`, optional `wasm-opt`, `plugin.json` from template plus `version` and `files` (sha256 of `plugin.wasm`, logo), deterministic store-only zip honouring the archive guard (<= 4 entries, exact names, no ZIP64, no data descriptor, fixed DOS time), optional dev signature, `verify` that runs the host's own `inspect` and checks the component imports exactly the `plugin` world, size budget. Replaces three hand-copied zip writers today (`scripts/package-archive.ts` here and in notify, `scripts/package-plugin.mjs` in the catalog). | yes |
-| SDK-13 | Licence, versioning | permissive licence on the SDK crate (open question 5); git tag per WIT minor; toolchain and wasi minor pinned and documented. | yes |
+| SDK-13 | Licence, versioning | SDK crate licensed `MIT OR Apache-2.0` (D5); git tag per WIT minor; toolchain and wasi minor pinned and documented. | yes |
 
 ## 7. Test plan
 
@@ -543,7 +546,7 @@ Catalog repository (`~/Documents/clement/code/fliks-plugin-catalog`), changes to
    component magic (`\0asm`, version `0d 00`, layer `01 00`) and the size caps before signing.
 3. `plugins/fliks.download/src/`: replace `plugin.js` with `plugin.wasm`, replace `plugin.json` and
    keep `logo.svg`.
-4. New file `plugins/fliks.download/versions/0.13.0.json` (version [assumed]); the other fields are
+4. New file `plugins/fliks.download/versions/1.0.0.json` (version decided, D7); the other fields are
    copied from `0.12.1.json` because `name`, `description`, `author`, `kind`, `logo` must be identical
    across versions:
 
@@ -551,9 +554,9 @@ Catalog repository (`~/Documents/clement/code/fliks-plugin-catalog`), changes to
    {
      "id": "fliks.download", "name": "Download",
      "description": "Indexer search, download-client management and the acquisition grab pipeline for Fliks.",
-     "author": "Fliks", "kind": "process", "version": "0.13.0",
+     "author": "Fliks", "kind": "process", "version": "1.0.0",
      "pluginApi": 2, "fliks": ">=5.0.0 <6.0.0",
-     "zipUrl": "https://fliks-app.github.io/fliks-plugin-catalog/plugins/fliks.download/dist/fliks.download-0.13.0.fkplugin",
+     "zipUrl": "https://github.com/fliks-app/fk-plugin-download/releases/download/v1.0.0/fliks.download-1.0.0.fkplugin",
      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
      "logo": "https://fliks-app.github.io/fliks-plugin-catalog/plugins/fliks.download/logo.svg"
    }
@@ -563,14 +566,16 @@ Catalog repository (`~/Documents/clement/code/fliks-plugin-catalog`), changes to
    one [catalog `scripts/build-catalog.mjs:23-27`]. Versions `0.1.4` to `0.12.1` stay untouched
    (published versions are immutable); a Fliks 4 server keeps being offered `0.12.1`, a Fliks 5 server
    only the `pluginApi 2` entries, through the `fliks` range filter.
-5. Repository size: each archive is committed under `dist/` so GitHub Pages serves it; a 4 to 8 MiB
-   `.wasm` per version grows the git history quickly. Alternative: `zipUrl` pointing at a GitHub
-   Release asset (the catalog README already shows that form). Open question 4.
+5. Archive storage (decided, D4): the signed `.fkplugin` is a GitHub Release asset of this repository
+   (`v<version>` tag) and `zipUrl` points there; the catalog no longer stores archives. The
+   `Package plugin` workflow signs with the catalog key, uploads the asset and records the sha256 in the
+   version entry; it stops committing under `dist/`. `plugins/fliks.download/dist/` and the older
+   archives stay as they are, only new versions use releases.
 6. Not needed: `schema/plugin.schema.v0.json` and `validate-entry.mjs` accept any integer `pluginApi`.
    Cosmetic: the schema description and the README still say `pluginApi` is currently 0.
 
-Plugin repository after the port: Rust on `main`; the Node code stays reachable at tag `v0.12.1`
-and on a `maintenance/0.12` branch for Fliks 4 fixes [assumed]. `docs/development.md` and the README
+Plugin repository after the port: Rust on `main`; the Node code stays reachable at tag `v0.12.1`.
+No maintenance branch (D7): Fliks 4 keeps `0.12.x` with no further work. `docs/development.md` and the README
 need a rewrite of the build, test and publish sections (not part of this PR).
 
 ## 9. Behaviour changes (deviations)
@@ -584,7 +589,7 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 | DL5 | long jobs run to completion | `SearchMissing`, `ImportCompleted` and `search:<id>` stop at their budget and resume | deadline is a trap |
 | DL6 | an indexer past the search budget keeps running to its own fetch timeout | its request is cancelled; a request still waiting for the throttle slot never starts | futures cancel on drop |
 | DL7 | plugin router case-sensitive, no trailing slash, query nested by `qs` | SDK router (case-insensitive, optional trailing `/`, as the host); query is a flat ordered list, first value wins | one matcher, host rule 37 |
-| DL8 | any address reachable | outbound guard in the host; private ranges only with the granted `network.internal`; link-local, reserved, 6to4, Teredo, documentation ranges always refused (F67) | sandbox |
+| DL8 | any address reachable | outbound guard in the host; private ranges only with the granted `network.internal`; link-local, reserved, 6to4, Teredo, documentation ranges always refused (F67); the grant is carried forward on upgrade from the pluginApi 1 package (D3) | sandbox |
 | DL9 | scopes: 7 | 6 (`requests:progress` dropped) | never called |
 | DL10 | `grab-executor.ts:61` logs the download URL, which carries `apikey=`; log redaction of DSNs | URL logged through `redact_url`; DSN redaction removed (no DSN) | secrets out of logs (cf. F66) |
 | DL11 | `down` migrations, `npm run migrate`, unreachable code of 1.10 | not shipped | no caller |
@@ -595,27 +600,25 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 | DL16 | 120 s client-side ingest timeout constant (31 min) | host `ERR_TIMEOUT` (30 min) | host owns the deadline |
 | DL17 | fan-out of client reads in `Promise.all` | joined by the SDK executor; semantics unchanged | |
 
-## 10. Open questions
+## 10. Decisions and remaining questions
 
-1. **`ImportCompleted` as a job or a scheduled poller.** Plan §8.3 says the poller re-arms with
-   `schedule-call`; the `scheduled` deadline (5 min [assumed]) is shorter than one ingest (30 min). I
-   kept the job, moved `init` into `start`, added the lease. Confirm, or give `scheduled` a longer
-   per-key deadline.
-2. **`scheduled` deadline and the resume key.** If the spike settles on a different value the
-   budgets of 3.3 change, not the design.
-3. **`network.internal` and the upgrade.** Catalog auto-update skips the download upgrade (it newly
-   asks for the grant), so every Fliks 4 to 5 user stays on `failed incompatible-api` until an admin
-   confirms the install sheet. Accept that, or let the host carry the grant forward when the previous
-   package of the same id was a pluginApi 1 `process` plugin?
-4. **Where archives live.** Keep committing each wasm archive in the catalog git tree, or point
-   `zipUrl` at GitHub Release assets?
-5. **SDK licence.** The Fliks repository is AGPL-3.0; `fk-plugin-notify` declares MIT, this plugin
-   AGPL. A git-tagged SDK crate inside the AGPL repository forces AGPL on both unless the crate (or
-   its WIT and guest helpers) is dual-licensed permissively. Which?
-6. **Host `migrate` details.** Does it use the simple query protocol so multi-statement `up` scripts
-   (with comments) run as in Node? `plan` §8.3 and spike criterion 5 say "7 migrations"; there are 8 (and
-   11 after this port): fix the text.
-7. **Versions and branches.** `0.13.0` (continue 0.x) or `1.0.0` for the first pluginApi 2 build?
-   `maintenance/0.12` branch for Fliks 4?
-8. **Memory.** `memoryMb: 128` per instance with up to 13 instances is a guess; the spike measures a
+Decided by the user after review:
+
+- **D1** `ImportCompleted` stays a cron job with the import lease; its boot re-arm lives in `start`.
+- **D2** Long work uses time budgets plus resume keys (3.3). If the spike changes the `scheduled`
+  deadline, only the budget constants change.
+- **D3** On upgrade from a pluginApi 1 package with the same id and the same signing key, the host
+  carries the `network.internal` grant forward. A permission requested later still fails closed.
+  Recorded in `plugins.md` by the host work; referenced here only.
+- **D4** Signed wasm archives are GitHub Release assets; catalog `zipUrl` points there; the catalog
+  repository stops storing `dist/` archives.
+- **D5** The SDK crate is `MIT OR Apache-2.0`; this plugin stays AGPL-3.0-or-later.
+- **D6** Migration counts in the host docs are corrected elsewhere (8, then 11); the host `migrate`
+  runs multi-statement scripts.
+- **D7** Both plugins ship as `1.0.0`; no maintenance branch; Fliks 4 keeps download `0.12.x`.
+- **D8** (notify only) see its spec.
+
+Still open:
+
+1. **Memory.** `memoryMb: 128` per instance with up to 13 instances is a guess; the spike measures a
    real instance (a 5 MB Torznab response, a 10 MB `.torrent` buffered then multipart-encoded).
