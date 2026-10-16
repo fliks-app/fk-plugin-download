@@ -62,7 +62,8 @@ Contents: 1 inventory, 2 mapping onto the WIT world, 3 state and where it moves,
 The manifest stops being generated from TypeScript. It becomes a checked-in JSON template
 (`plugin.template.json`, section 5) holding every key except `version` and `files`, which the build
 adds. A test diffs the template against the published `0.12.1` `plugin.json` in the catalog (every
-key outside the five changed above must be equal).
+key outside `pluginApi`, `fliks`, `runtime`, `memoryMb`, `scopes`, `network`, `version`, `files`
+must be equal).
 
 ### 1.2 Routes (39), proxied through `ALL /api/plugins/fliks.download/*`
 
@@ -181,7 +182,7 @@ then exits. Logging goes to stdout/stderr, one line per call, DSN credentials re
   [ts:src/download-clients/qbittorrent-driver.ts:142-165]; qBittorrent Web API v2 (login cookie,
   `torrents/info|files|add|delete|stop|start|pause|resume`) [ts:src/download-clients/qbittorrent-driver.ts:61-426];
   Prowlarr `GET /api/v1/indexer`, Jackett `GET /api/v2.0/indexers?configured=true` with a hand-walked
-  cookie jar over redirects [ts:src/indexer-sources/drivers.ts:42-95, 143-230].
+  cookie jar over redirects [ts:src/indexer-sources/drivers.ts:42-95, 139-213].
 - No inbound network, no filesystem, no environment (the plugin used `FLIKS_*` env for sockets and
   the DSN only).
 
@@ -200,12 +201,12 @@ reviewer wants one back, it comes back with its route.
 | Export | Download behaviour |
 |---|---|
 | `hello(core-version, config)` | SDK answers `manifest-check {id, version, plugin-api}`. Nothing else: no database access (Node waited for migrations before replying [ts:src/plugin.ts:80-84]). |
-| `start()` (once per plugin start, on the `core` instance, 15 min) | 1. `db.migrate` with the 11 migrations of section 4. 2. Re-arm: `UPDATE download_history SET status='grabbed', "importLeaseUntil"=NULL WHERE status='importing'` (replaces `completionPoller.init()` [ts:src/plugin.ts:60]). 3. `poller_state['progressResync'] = true` (replaces `firstProgressTick`). Errors fail `start`, which the host treats as a crash. |
-| `health()` | `SELECT 1`; `ok:false` with the error text if it fails. Two misses degrade the plugin (proxy 503) [plugins.md rule 42]. |
+| `start()` (once per plugin start, on the `core` instance, 15 min) | 1. `db.migrate` with the 11 migrations of section 4. 2. Re-arm: the lease sweep of 3.4 (replaces `completionPoller.init()` [ts:src/plugin.ts:60]; unconditional would re-arm a row whose ingest core may still be running after a restart). 3. `poller_state['progressResync'] = true` (replaces `firstProgressTick`). Errors fail `start`, which the host treats as a crash. |
+| `health()` | `SELECT 1`; `ok:false` with the error text if it fails. Two misses degrade the plugin (proxy 503) [plugins.md rule 42]. DL17. |
 | `job(name, job-id, args)` | `SearchMissing`, `RssSync`, `ImportCompleted`, `CleanStalled`, `CleanSeeded`; any other name is `Err("no handler registered for job ...")` [ts:src/plugin.ts:93-100]. Budgets in 3.3. |
 | `scheduled(key, payload, attempt)` | Dispatch on the key prefix: `search:<mediaId>`, `caps:<indexerId>`, `grab-started:<historyId>`. Unknown prefix: warn and `Ok` (drops a call written by a later version). Handlers are idempotent and accept unknown payload fields (calls survive upgrades, rule 55). |
 | `http(request)` | The 39-route router (SDK `Router`), `principal` threaded into search streaming. |
-| `event(name, payload)` | `media.acquisition.requested` only: `config.get(requestsAutoGrabOnApproval)`, then `schedule-call("search:<id>", 0, {})` per distinct integer id. Everything else is ignored silently. |
+| `event(name, payload)` | `media.acquisition.requested` only: `config.get(requestsAutoGrabOnApproval)`, then `schedule-call("search:<id>", 0, {})` per distinct integer id. Everything else is ignored silently. Events arriving before `ready` wait in the host ring (DL16). |
 | `config-changed(keys)` | log at info, nothing else. |
 | `shutdown()` | nothing to flush; all state is in the database. |
 
@@ -230,7 +231,7 @@ can touch the same row at the same time. Every cross-call invariant is in Postgr
 | `reportedMediaIds`, `firstProgressTick` | `grab/completion-poller.ts:90-95` | correctness | `poller_state` rows `reportedMediaIds`, `progressResync` |
 | Stranded `importing` rows | `completionPoller.init()` `plugin.ts:60` | correctness | `start` re-arm plus `"importLeaseUntil"` sweep, 3.4 |
 | Search budget (`budgetMs`) | `search-budget.ts:19` | derived | re-read from `config.get` at the top of each search and passed down as a value; no global |
-| `scopeCache` (history id to season/episode numbers) | `completion-poller.ts:87,379-403` | derived | dropped: one batched `media.resolve` (<= 50 ids) per tick over in-flight rows only |
+| `scopeCache` (history id to season/episode numbers) | `completion-poller.ts:87,379-403` | derived | dropped: `media.resolve` per call over the in-flight rows only, batched as today (50 season ids plus 50 episode ids per call) |
 | `unidentifiedHashes`, `untrackedStallHashes`, `stallSkipReason` | `completion-poller.ts:84,98,100` | cosmetic (log dedupe) | stay in the `job` instance; a re-created instance logs the line again |
 | `normalisedTitles` WeakMap | `grab/torrent-name-matcher.ts:82` | perf | local memo per call |
 | `seasonsGrabbedAsPack` | `grab/scheduler.ts:53` | per call | local; across a resumed slice the pending-grab check (coverage columns) makes it redundant |
@@ -246,17 +247,22 @@ No instance holds anything a later call needs.
 Node semantics to keep [ts:src/indexers/throttle.ts:7-19, 36-179]:
 one request in flight per indexer; the wait before a request is `min(nextAllowedAt - now, requestDelay)`
 (a long penalty window is the caller's to respect through `filterReadyIndexers`, never slept out);
-after every request `nextAllowedAt = end + requestDelay`; failures escalate 30 s, 2 min, 15 min, 1 h,
-6 h, at most one step per elapsed window and none while a window is open; a 429/503 `Retry-After`
-(seconds or HTTP date) opens a `rate-limit` window and, being open, suppresses failure escalation;
-success resets the ladder and the window; `clearCooldown` also clears `nextAllowedAt`; every bump is
-monotonic.
+after every request, success or throw, `nextAllowedAt = end + requestDelay` (a plain assignment that
+overwrites an earlier bump); failures escalate 30 s, 2 min, 15 min, 1 h, 6 h, at most one step per
+elapsed window and none while a window is open; a 429/503 `Retry-After` (seconds or HTTP date) opens
+a `rate-limit` window and, being open, suppresses failure escalation; success resets the ladder and
+the window; `clearCooldown` also clears `nextAllowedAt`; the cooldown bump (`bumpCooldown`) is
+monotonic on both `cooldownUntil` and `nextAllowedAt`. Order matters and is kept: the post-request
+assignment runs inside `run`, and `setRetryAfter`/`notifyFailure` run after it, outside the slot
+[ts:src/indexers/torznab.ts:131-143, 262-266]. "Success" is the transport: a 200 carrying a Torznab
+`<error>` resets the ladder, then `notifyFailure` opens step 1 again (kept as is).
 
 Table (migration `0009`):
 
 ```sql
-CREATE TABLE "indexer_throttle" (
+CREATE TABLE IF NOT EXISTS "indexer_throttle" (
   "indexerId"            integer PRIMARY KEY REFERENCES "indexers"("id") ON DELETE CASCADE,
+  "busyToken"            text,
   "busyUntil"            timestamptz,
   "nextAllowedAt"        timestamptz,
   "failureCount"         integer NOT NULL DEFAULT 0,
@@ -274,31 +280,38 @@ Each transition is one statement (finding 2). The claim is the serialisation poi
 
 ```sql
 -- claim: 0 rows = another instance holds the slot; the caller sleeps ~250 ms and retries
--- $1 indexer id, $2 lease seconds (request timeout + 10), $3 requestDelay in ms
-INSERT INTO "indexer_throttle" ("indexerId", "busyUntil")
-VALUES ($1, now() + make_interval(secs => $2))
+-- $1 indexer id, $2 token (16 random bytes, hex), $3 lease seconds, $4 requestDelay in ms
+INSERT INTO "indexer_throttle" ("indexerId", "busyToken", "busyUntil")
+VALUES ($1, $2, now() + make_interval(secs => $3))
 ON CONFLICT ("indexerId") DO UPDATE
-   SET "busyUntil" = EXCLUDED."busyUntil", "updatedAt" = now()
+   SET "busyToken" = EXCLUDED."busyToken", "busyUntil" = EXCLUDED."busyUntil", "updatedAt" = now()
  WHERE "indexer_throttle"."busyUntil" IS NULL OR "indexer_throttle"."busyUntil" <= now()
-RETURNING GREATEST(0, LEAST($3::bigint, COALESCE(
+RETURNING GREATEST(0, LEAST($4::bigint, COALESCE(
   (EXTRACT(EPOCH FROM ("indexer_throttle"."nextAllowedAt" - now())) * 1000)::bigint, 0))) AS "waitMs"
 ```
 
-After the claim the guest sleeps `waitMs` (wasi monotonic clock), sends, then releases:
+The lease covers the whole hold: `requestDelay` (the longest `waitMs`) plus the request's own
+timeout plus 10 s [assumed margin]. After the claim the guest sleeps `waitMs` (wasi monotonic clock),
+sends, then releases, fenced by its token so a holder whose lease ran out cannot free a later
+holder's slot:
 
 ```sql
--- release; $2 = requestDelay seconds, $3 = request succeeded
+-- release; $2 token, $3 requestDelay seconds, $4 outcome: true resolved, false threw, null cancelled
 UPDATE "indexer_throttle"
-   SET "busyUntil" = NULL,
-       "nextAllowedAt" = GREATEST(COALESCE("nextAllowedAt", '-infinity'), now() + make_interval(secs => $2)),
-       "failureCount" = CASE WHEN $3 THEN 0 ELSE "failureCount" END,
-       "cooldownUntil" = CASE WHEN $3 THEN NULL ELSE "cooldownUntil" END,
-       "cooldownReason" = CASE WHEN $3 THEN NULL ELSE "cooldownReason" END,
-       "cooldownFailureCount" = CASE WHEN $3 THEN NULL ELSE "cooldownFailureCount" END,
-       "cooldownDetail" = CASE WHEN $3 THEN NULL ELSE "cooldownDetail" END,
+   SET "busyToken" = NULL, "busyUntil" = NULL,
+       "nextAllowedAt" = now() + make_interval(secs => $3),
+       "failureCount" = CASE WHEN $4 THEN 0 ELSE "failureCount" END,
+       "cooldownUntil" = CASE WHEN $4 THEN NULL ELSE "cooldownUntil" END,
+       "cooldownReason" = CASE WHEN $4 THEN NULL ELSE "cooldownReason" END,
+       "cooldownFailureCount" = CASE WHEN $4 THEN NULL ELSE "cooldownFailureCount" END,
+       "cooldownDetail" = CASE WHEN $4 THEN NULL ELSE "cooldownDetail" END,
        "updatedAt" = now()
- WHERE "indexerId" = $1
+ WHERE "indexerId" = $1 AND "busyToken" = $2
 ```
+
+The claim returns a guard; its `Drop` runs the release with outcome `null` (`db` imports are
+synchronous, so `Drop` can call them). A request cancelled by its budget (DL6) therefore frees the
+slot at once; only a trapped instance leaves the slot to the lease.
 
 Failure escalation reads then writes, so it is a CTE with `FOR UPDATE` (same statement):
 
@@ -306,34 +319,43 @@ Failure escalation reads then writes, so it is a CTE with `FOR UPDATE` (same sta
 -- notifyFailure: no-op while a window is open (0 rows), otherwise one ladder step
 WITH cur AS (
   SELECT "failureCount" + 1 AS n FROM "indexer_throttle"
-   WHERE "indexerId" = $1 AND ("cooldownUntil" IS NULL OR "cooldownUntil" <= now()) FOR UPDATE)
-UPDATE "indexer_throttle" t SET
-  "failureCount" = cur.n,
-  "cooldownUntil" = now() + CASE LEAST(cur.n, 5) WHEN 1 THEN interval '30 seconds'
+   WHERE "indexerId" = $1 AND ("cooldownUntil" IS NULL OR "cooldownUntil" <= now()) FOR UPDATE),
+step AS (
+  SELECT n, now() + CASE LEAST(n, 5) WHEN 1 THEN interval '30 seconds'
      WHEN 2 THEN interval '2 minutes' WHEN 3 THEN interval '15 minutes'
-     WHEN 4 THEN interval '1 hour' ELSE interval '6 hours' END,
-  "cooldownReason" = 'failures', "cooldownFailureCount" = cur.n, "cooldownDetail" = $2, "updatedAt" = now()
-FROM cur WHERE t."indexerId" = $1
+     WHEN 4 THEN interval '1 hour' ELSE interval '6 hours' END AS until FROM cur)
+UPDATE "indexer_throttle" t SET
+  "failureCount" = step.n, "cooldownUntil" = step.until,
+  "nextAllowedAt" = GREATEST(COALESCE(t."nextAllowedAt", '-infinity'), step.until),
+  "cooldownReason" = 'failures', "cooldownFailureCount" = step.n, "cooldownDetail" = $2, "updatedAt" = now()
+FROM step WHERE t."indexerId" = $1
 ```
 
-`setRetryAfter` is the same shape with `until = now() + $2 ms`, applied only when `until` exceeds
-the stored `cooldownUntil`, `cooldownReason = 'rate-limit'`, `cooldownFailureCount = NULL`. Both also
-raise `nextAllowedAt` to `GREATEST(nextAllowedAt, until)`. `clearCooldown(id)` is
-`UPDATE ... SET cooldown* = NULL, failureCount = 0, nextAllowedAt = NULL ... RETURNING` of the old
-`cooldownUntil > now()` (the "had" flag); `clearAll` does the same for every row with a cooldown or a
-non-zero ladder and returns how many had an open window.
+A racing second failure blocks on the row lock, re-evaluates the `cur` filter against the committed
+row, finds the window open and updates nothing.
+
+`setRetryAfter` is one `UPDATE` with `until = now() + $2 ms`: `nextAllowedAt = GREATEST(nextAllowedAt,
+until)` always, and the `cooldown*` columns (`reason 'rate-limit'`, `cooldownFailureCount NULL`,
+`detail` the header) only when `until` exceeds the stored `cooldownUntil` (row-level `CASE`, no
+read needed). `clearCooldown(id)` must answer the old state, which a plain `UPDATE ... RETURNING`
+cannot (it returns the new row), so it is
+`WITH old AS (SELECT "indexerId", COALESCE("cooldownUntil" > now(), false) AS had ... FOR UPDATE)
+UPDATE ... SET cooldown* = NULL, "failureCount" = 0, "nextAllowedAt" = NULL FROM old ... RETURNING old.had`;
+`clearAll` is the same over every row with a cooldown or a non-zero ladder, wrapped in
+`SELECT count(*) FILTER (WHERE had)`.
 
 Readers: `filterReadyIndexers` is one `SELECT` of rows with `"cooldownUntil" > now()` (remaining ms
 computed in SQL); `GET /indexers` left-joins the table to build the `cooldown` object
-(`reason, remainingMs, until, failureCount?, detail?`) [ts:src/indexers/service.ts:111-129].
+(`reason, remainingMs, until, failureCount?, detail?`, the optional keys absent, not null, when the
+column is null) [ts:src/indexers/service.ts:111-129].
 
 Waiting for the slot is bounded by the caller's budget: past it the indexer contributes
 `{failed: 'timeout'}` to the round, exactly as `runOne` does [ts:src/grab/release-search.ts:49-63];
-unlike Node the queued work never starts. A crashed holder frees the slot at lease expiry (request
-timeout + 10 s [assumed]).
+unlike Node the queued work never starts.
 
 Existing data: none (the throttle was memory only). Migration `0009` backfills one row per existing
-indexer with all columns null/0.
+indexer with all columns null/0 (`INSERT ... SELECT "id" FROM "indexers" ON CONFLICT DO NOTHING`); an
+indexer created later gets its row from its first claim.
 
 ### 3.3 Time budgets and resume (deadlines are traps)
 
@@ -344,12 +366,15 @@ Budgets are fractions of the host deadlines (`plugins.md` rule 43); the SDK carr
 | `http` | 180 s | 150 s, passed to every outbound request as `min(own timeout, remaining)` | structured 502/504-style body from the handler, never a trap (C105: a 504 would drop the instance and count toward the breaker) |
 | `event` | 60 s | 50 s | n/a (a few host calls) |
 | `scheduled` | 5 min [assumed] | 4 min | `search:<id>`: re-schedule the same key with `{resume: {seasonId, episodeId}}`, then `Ok` |
-| `job` | 60 min | 50 min | `SearchMissing`: store `poller_state['searchMissingResume']` (last `(mediaId, seasonId, episodeId)` handled; candidates are sorted by exactly that tuple, `plugins.md` rule 31) and stop; the next run starts after it and clears the key when it reaches the end. `ImportCompleted`: start no new import with less than 32 min left (ingest is up to 30 min); remaining rows wait for the next tick. |
+| `job` | 60 min | 50 min | `SearchMissing`: store `poller_state['searchMissingResume']` (last `(mediaId, seasonId, episodeId)` handled; candidates are sorted by exactly that tuple, `plugins.md` rule 31) and stop; the next run starts after it and clears the key when it reaches the end. The resume key belongs to the unscoped sweep only (a `mediaIds` run starts from the top); a season pack is `(mediaId, seasonId, null)` and sorts before its episodes. `ImportCompleted`: start no new import with less than 32 min left before the 60 min host deadline (ingest is up to 30 min); remaining rows wait for the next tick. `RssSync`: stop at the budget; the next tick re-reads the feeds, so nothing is resumed. |
 
 Resuming is safe because auto-grab is idempotent: a target that was grabbed is skipped by the
 pending-grab check [ts:src/grab/scheduler.ts:72-85], so replaying a slice only re-searches targets
-that found nothing. `RssSync`, `CleanStalled`, `CleanSeeded` are bounded by indexer and client count
-and need no resume.
+that found nothing. `RssSync` is not bounded by the indexer count: every matched release runs a
+full `searchScored` round [ts:src/grab/scheduler.ts:142], so a large feed can outlast the deadline;
+it stops at its budget. `CleanStalled` hands its re-search to `search:<mediaId>` scheduled calls
+instead of awaiting `searchMissing` inline [ts:src/grab/completion-poller.ts:686-689]; it and
+`CleanSeeded` are then bounded by the client count and need no budget logic.
 
 ### 3.4 Import lease
 
@@ -380,21 +405,24 @@ A guest cannot run after its call returns. Each detached promise has a durable o
 | `void stats.record(...)` (5 sites, [ts:src/indexers/torznab.ts:243,254,267,336,347]) | awaited inline, one `INSERT` |
 | `void markSearchFallback` [ts:src/indexers/torznab.ts:289] | awaited inline |
 | `media.acquisition.requested` runs `searchMissing` detached | `search:<mediaId>` scheduled call (3.3 for the time budget) |
+| `void emit(...)`, `void rankAndEmit()` of the search streamer [ts:src/grab/search-stream.ts:95,108,111] | spawned on the SDK executor inside the `http` call and joined before the response returns (a trailing `search.partial` is never cut off by the instance going idle) |
 
 ## 4. Database changes and migrations
 
 Existing user data is kept as follows: the 8 shipped migrations are carried unchanged as
-`migrations/0001_initial_schema.sql` ... `0008_download_history_coverage.sql`, extracted from the `up`
-strings, names identical to the ledger entries Node wrote. `db.migrate` skips every recorded name
+`migrations/0001_initial_schema.sql` ... `0008_download_history_coverage.sql`, each file the exact
+bytes of its `up` string (leading and trailing newlines and indentation included; a golden vector
+dumped at `v0.12.1` pins it, section 7), names identical to the ledger entries Node wrote. `db.migrate` skips every recorded name
 (`plugins.md` rule 35), so an adopted schema only runs the new ones. Three are added:
 
 | Migration | Content |
 |---|---|
-| `0009_indexer_throttle` | table of 3.2, backfill `INSERT INTO "indexer_throttle" ("indexerId") SELECT "id" FROM "indexers"` |
-| `0010_poller_state` | `CREATE TABLE "poller_state" ("key" text PRIMARY KEY, "value" jsonb NOT NULL, "updatedAt" timestamptz NOT NULL DEFAULT now())` for `reportedMediaIds`, `progressResync`, `searchMissingResume` |
+| `0009_indexer_throttle` | table of 3.2, backfill `INSERT INTO "indexer_throttle" ("indexerId") SELECT "id" FROM "indexers" ON CONFLICT DO NOTHING` |
+| `0010_poller_state` | `CREATE TABLE IF NOT EXISTS "poller_state" ("key" text PRIMARY KEY, "value" jsonb NOT NULL, "updatedAt" timestamptz NOT NULL DEFAULT now())` for `reportedMediaIds`, `progressResync`, `searchMissingResume` |
 | `0011_download_history_import_lease` | `ALTER TABLE "download_history" ADD COLUMN IF NOT EXISTS "importLeaseUntil" timestamptz` |
 
-All additive, all `IF NOT EXISTS`/`ADD COLUMN` so a replay is harmless; no existing row is rewritten.
+All additive and written to be replay-safe (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`); no existing
+row is rewritten.
 `down` scripts are dropped (`db.migrate` takes `{name, up}` only) and with them `npm run migrate down`;
 rollback is a database restore (DL11).
 
@@ -444,7 +472,7 @@ Dependencies (wasip2-compatible, no threads, no native TLS, no async runtime of 
 |---|---|
 | `fliks-plugin-sdk` (git tag) | everything in section 6 |
 | `serde`, `serde_json` | JSON bodies, `settings` jsonb, host payloads |
-| `regex` (default features off, `std` + `unicode-case`, size to verify) | the Torznab and caps regexes are ported verbatim; a real XML parser would reject the feeds the regexes tolerate [ts:src/indexers/torznab-parse.ts:88-157] |
+| `regex` (default features off, `std` + `unicode-case` + `unicode-perl`, size to verify; JS `\d`/`\b` are ASCII, so those spell `(?-u:\d)`/`(?-u:\b)`, and the `torznab-items` vectors pin the result) | the Torznab and caps regexes are ported verbatim; a real XML parser would reject the feeds the regexes tolerate [ts:src/indexers/torznab-parse.ts:88-157] |
 | `url` | WHATWG `new URL`, `searchParams.set`, form encoding (identical to `URLSearchParams`) |
 | `percent-encoding` | `encodeURIComponent` needs a custom `AsciiSet` (keeps `!'()*`); covered by a vector |
 | `sha1` | `.torrent` info-hash [ts:src/download-clients/torrent-hash.ts:66-77] |
@@ -469,12 +497,12 @@ marks what the notify port also needs (its spec refers to this list).
 | SDK-2 | Typed `host` imports | all 15 methods plus `schedule-call`/`cancel-call`; `HostError {code, message}` with an enum for `ERR_NO_METHOD, ERR_TIMEOUT, ERR_NOT_FOUND, ERR_DENIED, ERR_VALIDATION, ERR`, and `is_unknown_outcome()` (= `ERR_TIMEOUT`). WIT types re-exported with serde derives (`wit-bindgen` `additional_derives`), not re-declared; the `wit-sync` test already guards drift. Adapters for the JSON the client expects: `rejections[].params` as an object, `coverage.seasons`/`episodes` as `{from, to}` (WIT: `span {first, last}`), `sourceId`/`sourceName` rename stays plugin code. | partly (config-get) |
 | SDK-3 | Scheduled calls | `schedule(key, delay, &T)`, `cancel(key)`, key rules (1-128 chars), payload size check before the call (64 KiB), typed decode tolerant of unknown fields and of an older payload, and a dispatcher keyed by prefix (`"search:" => handler`). | yes |
 | SDK-4 | `db` | `Db` trait with the WIT-backed impl; `Param` conversions (`i32`, `i64`, `f64`, `bool`, `&str`, `Option<T>` as null, `Json`, `&[String]`, `&[i64]`, `Vec<u8>`); `Row` with typed getters by column name (`int4/int8` to `i64`, `bool`, `text`, `jsonb` to `serde_json::Value`, `timestamptz` to its RFC 3339 string); `execute` count; `migrate(&[Migration])` with `Migration::new(name, include_str!(...))`; errors keep the host `db-error` code. Doc comment: one statement per call, no transaction across calls. | yes |
-| SDK-5 | Async runtime and budgets | single-threaded executor over `wasi:io/poll`: `block_on`, `join_all`, `timeout(dur, fut)`, `sleep(dur)`, dropping a future cancels its pollable (an in-flight request is abandoned, not left running). `Deadline`/`Budget` (`remaining()`, `expired()`, `child(fraction)`), with the per-export defaults of section 3.3 as constants mirrored from `plugins.md` rule 43. Needed for the search fan-out, stream coalescing, throttle waits and the 4 s settle loop. | no (one sync request) |
+| SDK-5 | Async runtime and budgets | single-threaded executor over `wasi:io/poll`: `block_on`, `join_all`, `timeout(dur, fut)`, `sleep(dur)`, dropping a future cancels its pollable (an in-flight request is abandoned, not left running), `spawn_local` for work joined before the export returns (search streamer). `wstd` (Bytecode Alliance) already provides the executor, timers and a `wasi:http` client; build on it before writing one. `Deadline`/`Budget` (`remaining()`, `expired()`, `child(fraction)`), with the per-export defaults of section 3.3 as constants mirrored from `plugins.md` rule 43. Needed for the search fan-out, stream coalescing, throttle waits and the 4 s settle loop. | no (one sync request) |
 | SDK-6 | Clock and random | `now_utc()` (wall), `Instant` (monotonic), `today_utc()` (`YYYY-MM-DD`), RFC 3339 with milliseconds, `random_bytes(n)` (multipart boundary, jitter). | yes |
 | SDK-7 | HTTP client over `wasi:http` | builder (method, URL, headers, body bytes, `form`, `json`, multipart builder), `RequestOptions` timeouts (connect, first byte, between bytes) plus an overall deadline; no redirect following (3xx returned, `Location` readable); response with status, case-insensitive multi-value headers (`get_all("set-cookie")`), body read with a size cap (default 32 MiB), `text()` (lossy UTF-8), `json()`; sends `Accept-Encoding: identity` and inflates `gzip` if a server answers it anyway (`flate2`, pure Rust backend); error taxonomy from `wasi:http` error codes: `Denied` (the host guard, `HttpRequestDenied`), `Dns`, `Refused`, `Timeout`, `Tls`, `Other(text)`, each with a Node-comparable message because they are stored in `indexer_stats."errorMessage"` and shown to admins. | yes (single POST) |
 | SDK-8 | HTTP server side | `Request` (method, raw path, query pairs with first-wins `get`, body bytes, `json::<T>()`, `principal`), `Response::json/empty/with_header`, and a `Router` whose matcher is the same code the host uses for `plugin-route-match` (first match wins, `:name` and `*name`, percent-decode after splitting, optional trailing `/`, case-insensitive). One implementation, host and guests (plan §0 rule 2). | yes |
 | SDK-9 | Config | `config::get(key) -> Option<String>`, `get_many`, typed parsers with the exact Node rules (`only "true"`, `only "false"`, clamped int, positive float). | yes |
-| SDK-10 | Logging | `info!/warn!/error!/debug!` to the host `log` import, single line, plus `redact_url(&str)` (drops userinfo and query; DL10). | yes |
+| SDK-10 | Logging | `info!/warn!/error!/debug!` to the host `log` import, single line, every line scrubbed of `scheme://user:pass@` as `log.ts` does today [ts:src/log.ts:3-5], plus `redact_url(&str)` (drops userinfo and query; DL10). | yes |
 | SDK-11 | Testing | native `FakeHost`, `FakeDb`, `FakeHttp`, `FakeClock`; native `PgDb` over a scratch Postgres with the same type decoding as the host driver; component harness that runs the built `.wasm` under the real host code with a controllable clock for scheduled calls, programmable core imports with call recording, outbound allow-list including `network.internal`, direct invocation of every export, and inspection of `plugin_scheduled_calls`; golden-vector loader. | yes |
 | SDK-12 | Build tooling (`cargo xtask`-style library or `cargo fliks-plugin`) | release build for `wasm32-wasip2`, optional `wasm-opt`, `plugin.json` from template plus `version` and `files` (sha256 of `plugin.wasm`, logo), deterministic store-only zip honouring the archive guard (<= 4 entries, exact names, no ZIP64, no data descriptor, fixed DOS time), optional dev signature, `verify` that runs the host's own `inspect` and checks the component imports exactly the `plugin` world, size budget. Replaces three hand-copied zip writers today (`scripts/package-archive.ts` here and in notify, `scripts/package-plugin.mjs` in the catalog). | yes |
 | SDK-13 | Licence, versioning | SDK crate licensed `MIT OR Apache-2.0` (D5); git tag per WIT minor; toolchain and wasi minor pinned and documented. | yes |
@@ -490,8 +518,9 @@ Suites run on `main` CI; local runs go through `fliks-heavy` (two slots), as for
    `html-entities`, `torrent-hash` (magnet hex/base32, `.torrent` info hash),
    `torrent-name` (`normaliseTorrentName`, `findMatch`), `stall-strikes`, `qbit-base-url`,
    `retry-after`, `throttle-ladder`, `progress-state`, `pick-release`, `coverage-columns`,
-   `route-match` (`matchOne` including `%2F` inside a segment), `encode-uri-component`, `manifest-diff`.
-2. **Ported unit tests.** The 262 TS tests map to Rust modules one for one; the large files first:
+   `route-match` (`matchOne` including `%2F` inside a segment), `encode-uri-component`, `manifest-diff`,
+   `migrations` (the 8 `up` strings byte for byte, compared with the `.sql` files).
+2. **Ported unit tests.** The 490 TS tests map to Rust modules one for one; the large files first:
    `http-routes.test.ts` (100) to `tests/http_routes.rs` with the same status and body assertions;
    `grab-completion-poller` (57), `qbittorrent-driver` (40), `torznab` (25), `download-clients-service`
    (25), `release-pipeline` (22), `torznab-parse` (21), `indexer-service`/`indexer-sources-service` (13
@@ -502,8 +531,8 @@ Suites run on `main` CI; local runs go through `fliks-heavy` (two slots), as for
    migrations on an empty schema; **ledger adoption** (apply `0001`-`0008` and write the ledger the
    way the Node runner did, then `migrate` and assert only `0009`-`0011` ran); backfill of
    `0009`; the existing `ON DELETE` and coverage-dedup tests; the throttle statements under
-   contention (two sessions racing the claim, the lease expiring, escalation applied once per
-   window, `clearAll` count).
+   contention (two sessions racing the claim, the lease expiring, a stale holder's release
+   changing nothing (token), escalation applied once per window, `clearAll` count).
 4. **Component tests under the SDK harness** (real host code): `start` runs migrations once and
    re-arms `importing`; every route answers the contract through `http`; a fake qBittorrent and a
    fake Torznab server (port of `test/fake-qbittorrent-server.ts`); two `http` instances searching
@@ -541,7 +570,7 @@ Catalog repository (`~/Documents/clement/code/fliks-plugin-catalog`), changes to
    new row is added, never an existing one edited", yet the `0` row was edited to `retired` when core
    4.0.0 dropped it; whether row `1` becomes `retired: core 5.0.0 dropped it` is the host release's
    decision. `scripts/ci/check-compatibility-table.mjs` fails any entry whose `pluginApi` has no row.
-2. `scripts/package-plugin.mjs`: today a `process` plugin must ship `plugin.js` (lines 164-167). Accept
+2. `scripts/package-plugin.mjs`: today a `process` plugin must ship `plugin.js` (lines 164-167, 177). Accept
    `manifest.runtime === 'wasm'` with `plugin.wasm` instead (and refuse the mixes), check the
    component magic (`\0asm`, version `0d 00`, layer `01 00`) and the size caps before signing.
 3. `plugins/fliks.download/src/`: replace `plugin.js` with `plugin.wasm`, replace `plugin.json` and
@@ -569,7 +598,9 @@ Catalog repository (`~/Documents/clement/code/fliks-plugin-catalog`), changes to
 5. Archive storage (decided, D4): the signed `.fkplugin` is a GitHub Release asset of this repository
    (`v<version>` tag) and `zipUrl` points there; the catalog no longer stores archives. The
    `Package plugin` workflow signs with the catalog key, uploads the asset and records the sha256 in the
-   version entry; it stops committing under `dist/`. `plugins/fliks.download/dist/` and the older
+   version entry; it stops committing under `dist/`. A GitHub Release download URL answers 302 to
+   `objects.githubusercontent.com`, and `plugins.md` rule 28 fetches `zipUrl` with no redirect: the host
+   must follow https redirects for this fetch (the signed sha256 stays the gate) before D4 works. `plugins/fliks.download/dist/` and the older
    archives stay as they are, only new versions use releases.
 6. Not needed: `schema/plugin.schema.v0.json` and `validate-entry.mjs` accept any integer `pluginApi`.
    Cosmetic: the schema description and the README still say `pluginApi` is currently 0.
@@ -582,23 +613,23 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 
 | # | Today | Port | Why |
 |---|---|---|---|
-| DL1 | detached promises (3.5) | inline await, or a scheduled call for the caps probe and `grab.started` | a guest cannot outlive its call |
+| DL1 | detached promises (3.5); `CleanStalled` awaits its re-search inline | inline await, a joined task for the search stream, or a scheduled call for the caps probe, `grab.started` and the `CleanStalled` re-search | a guest cannot outlive its call |
 | DL2 | throttle and cooldowns in memory, reset at every restart | in `indexer_throttle`, shared by all instances, survive restarts; a restart no longer clears a 6 h cooldown | state must not live in an instance |
 | DL3 | in-flight dedupe of `media.acquisition.requested` by a memory set (ignored while a search runs) | a second event for the same media replaces the pending `search:<id>` call; an event arriving during the search schedules one more pass | durable dedupe by key |
-| DL4 | `importing` rows re-armed at process start only | also by a 35 min lease | a job instance can trap without a restart |
-| DL5 | long jobs run to completion | `SearchMissing`, `ImportCompleted` and `search:<id>` stop at their budget and resume | deadline is a trap |
+| DL4 | `importing` rows re-armed at process start only, all of them | re-armed when their 35 min lease has expired, by `start` and every `ImportCompleted` tick; after a restart a row whose lease is still running waits for it | a job instance can trap without a restart, and core may still be ingesting |
+| DL5 | long jobs run to completion | `SearchMissing`, `ImportCompleted` and `search:<id>` stop at their budget and resume; `RssSync` stops at its budget | deadline is a trap |
 | DL6 | an indexer past the search budget keeps running to its own fetch timeout | its request is cancelled; a request still waiting for the throttle slot never starts | futures cancel on drop |
 | DL7 | plugin router case-sensitive, no trailing slash, query nested by `qs` | SDK router (case-insensitive, optional trailing `/`, as the host); query is a flat ordered list, first value wins | one matcher, host rule 37 |
 | DL8 | any address reachable | outbound guard in the host; private ranges only with the granted `network.internal`; link-local, reserved, 6to4, Teredo, documentation ranges always refused (F67); the grant is carried forward on upgrade from the pluginApi 1 package (D3) | sandbox |
 | DL9 | scopes: 7 | 6 (`requests:progress` dropped) | never called |
-| DL10 | `grab-executor.ts:61` logs the download URL, which carries `apikey=`; log redaction of DSNs | URL logged through `redact_url`; DSN redaction removed (no DSN) | secrets out of logs (cf. F66) |
+| DL10 | `grab-executor.ts:61` logs the download URL, which carries `apikey=` | URL logged through `redact_url`; the line-level userinfo scrub of `log.ts` stays | secrets out of logs (cf. F66) |
 | DL11 | `down` migrations, `npm run migrate`, unreachable code of 1.10 | not shipped | no caller |
 | DL12 | `hello` blocks on migrations | migrations in `start`; routes answer 503 until `ready` | host contract |
 | DL13 | `.torrent`/Torznab responses decoded by `fetch` | `Accept-Encoding: identity`, gzip inflated if forced | no `fetch` |
 | DL14 | `path.join(save_path, name)` with the host OS rules | textual join using the separator of `save_path` (backslash if it has a drive letter or `\`) | wasm std is POSIX [assumed] |
 | DL15 | `pubDate` parsed by `new Date(string)` (very lenient) | RFC 2822 and RFC 3339 only; anything else is `null`, as an unparseable date is today | no JS engine |
-| DL16 | 120 s client-side ingest timeout constant (31 min) | host `ERR_TIMEOUT` (30 min) | host owns the deadline |
-| DL17 | fan-out of client reads in `Promise.all` | joined by the SDK executor; semantics unchanged | |
+| DL16 | an event received before the database is ready is dropped [ts:src/plugin.ts:122-126] | it waits in the host ring and is handled once the plugin is `ready` | host contract (`plugins.md` rule 46) |
+| DL17 | `health` answers ok whenever the core socket is up | `health` runs `SELECT 1`; a database outage degrades the plugin (proxy 503) | health reports what the plugin needs |
 
 ## 10. Decisions and remaining questions
 
@@ -622,3 +653,7 @@ Still open:
 
 1. **Memory.** `memoryMb: 128` per instance with up to 13 instances is a guess; the spike measures a
    real instance (a 5 MB Torznab response, a 10 MB `.torrent` buffered then multipart-encoded).
+2. **Remaining deadline.** The `http` deadline counts the queue wait (`plugins.md` rule 40), which
+   the guest cannot see, so a fixed 150 s budget can still end in a 504 after a long wait. The host
+   should hand the guest its remaining deadline per call (a field or a host function); until then
+   the budget is measured from the start of the export call.
