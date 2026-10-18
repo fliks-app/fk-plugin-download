@@ -10,7 +10,7 @@ use std::time::Duration;
 pub const USER_AGENT: &str = "Fliks/1.0";
 
 thread_local! {
-    static EXPORT: Cell<Budget> = Cell::new(Budget::new(rt::budgets::HTTP));
+    static EXPORT: Cell<Budget> = Cell::new(Budget::new(Duration::ZERO));
 }
 
 /// Set on entry by every export that sends: no request outlives what the export is allowed.

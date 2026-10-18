@@ -101,7 +101,7 @@ fn token() -> String {
 }
 
 /// How a slot ends.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy)]
 pub enum Outcome {
     Resolved,
     Threw,
