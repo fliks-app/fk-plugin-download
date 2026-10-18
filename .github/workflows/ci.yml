@@ -43,8 +43,8 @@ jobs:
         run: cargo xtask package --max-mib 12 --out dist
       - uses: actions/upload-artifact@v4
         with:
-          name: plugin.wasm
-          path: target/wasm32-wasip2/release/fk_plugin_download.wasm
+          name: dist
+          path: dist/
 
   release:
     needs: verify
@@ -53,22 +53,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
-          name: plugin.wasm
-      - name: Build plugin.json and publish the release assets
+          name: dist
+          path: dist
+      - name: Publish the archive that verify checked
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "fk-plugin-download") | .version')
-          [ "$TAG" = "v$version" ] || { echo "::error::tag $TAG is not v$version"; exit 1; }
-          mv fk_plugin_download.wasm plugin.wasm
-          jq --arg v "$version" \
-             --arg wasm "$(sha256sum plugin.wasm | cut -d' ' -f1)" \
-             --arg logo "$(sha256sum logo.svg | cut -d' ' -f1)" \
-             '. + {version: $v, files: {"plugin.wasm": $wasm, "logo.svg": $logo}}' \
-             plugin.template.json > plugin.json
-          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes \
-            plugin.json plugin.wasm logo.svg
+          archive=$(ls dist/*.fkplugin)
+          [ "$archive" = "dist/fliks.download-${TAG#v}.fkplugin" ] || { echo "::error::$archive does not match tag $TAG"; exit 1; }
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "$archive"
