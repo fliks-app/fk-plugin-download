@@ -1311,6 +1311,7 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 name = "fk-plugin-download"
 version = "1.0.0"
 dependencies = [
+ "fliks-plugin-route",
  "fliks-plugin-sdk",
  "regex 1.13.1",
  "serde",

@@ -330,15 +330,29 @@ pub fn today() -> String {
     now_iso()[..10].to_owned()
 }
 
-/// RFC 3339 first, then RFC 2822 (`Mon, 01 Jan 2024 00:00:00 GMT`), as unix milliseconds.
+/// RFC 3339, RFC 2822 (`Mon, 01 Jan 2024 00:00:00 GMT`), then the obsolete RFC 850 HTTP-date.
 pub fn parse_date_ms(s: &str) -> Option<i64> {
     use time::format_description::well_known::{Rfc2822, Rfc3339};
     let s = s.trim();
     let dt = time::OffsetDateTime::parse(s, &Rfc3339)
         .or_else(|_| time::OffsetDateTime::parse(s, &Rfc2822))
         .or_else(|_| time::OffsetDateTime::parse(&s.replace(" GMT", " +0000"), &Rfc2822))
-        .ok()?;
+        .ok()
+        .or_else(|| rfc850(s))?;
     Some((dt.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+/// `Tuesday, 14-Nov-23 22:15:20 GMT`; a two-digit year is read as 20yy.
+fn rfc850(s: &str) -> Option<time::OffsetDateTime> {
+    let (day, rest) = s.split_once(' ')?;
+    let (dmy, time) = rest.split_once(' ')?;
+    let (dm, yy) = dmy.rsplit_once('-')?;
+    let f = time::format_description::parse_borrowed::<2>(
+        "[weekday repr:long], [day]-[month repr:short]-[year] [hour]:[minute]:[second] GMT",
+    )
+    .ok()?;
+    let full = format!("{day} {dm}-20{yy} {time}");
+    Some(time::PrimitiveDateTime::parse(&full, &f).ok()?.assume_utc())
 }
 
 pub fn pad2(n: u32) -> String {

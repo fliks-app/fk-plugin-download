@@ -2,9 +2,14 @@
 //! and the manifest template against the published 0.12.1 manifest.
 
 use fk_plugin_download::db::{IndexerRow, MIGRATIONS};
-use fk_plugin_download::{grab, poller, qbit, routes, torznab, util};
-use fliks_plugin_sdk::bindings::fliks::plugin::types::{ReleaseCoverage, Span};
-use serde_json::{Value, json};
+use fk_plugin_download::{grab, poller, qbit, routes, throttle, torznab, util};
+use fliks_plugin_route::{Matcher, ParamValue};
+use fliks_plugin_sdk::bindings::fliks::plugin::types::{
+    AcquisitionTarget, MediaKind, Rejection, ReleaseCoverage, ScoredRelease, Span, Want,
+    WantDecision,
+};
+use serde_json::{Map, Value, json};
+use std::collections::HashSet;
 
 fn golden() -> Value {
     serde_json::from_str(include_str!("vectors/golden.json")).unwrap()
@@ -92,17 +97,21 @@ fn torznab_query() {
     }
 }
 
+fn indexer(id: i64, settings: &Value) -> IndexerRow {
+    serde_json::from_value(json!({
+        "id": id, "name": "test-indexer", "implementation": "torznab", "settings": settings,
+        "enableRss": true, "enableSearch": true, "enableInteractiveSearch": true, "priority": 25,
+        "enabled": true, "capsSearchFallback": false, "capsMovieSearch": false, "capsTvSearch": false,
+        "capsMovieSearchParams": null, "capsTvSearchParams": null, "capsProbedAt": null,
+        "requestDelay": 2, "createdAt": "", "updatedAt": "",
+    }))
+    .unwrap()
+}
+
 #[test]
 fn torznab_items() {
     for c in cases(&golden(), "torznabItems") {
-        let ix: IndexerRow = serde_json::from_value(json!({
-            "id": 7, "name": "test-indexer", "implementation": "torznab", "settings": c["settings"],
-            "enableRss": true, "enableSearch": true, "enableInteractiveSearch": true, "priority": 25,
-            "enabled": true, "capsSearchFallback": false, "capsMovieSearch": false, "capsTvSearch": false,
-            "capsMovieSearchParams": null, "capsTvSearchParams": null, "capsProbedAt": null,
-            "requestDelay": 2, "createdAt": "", "updatedAt": "",
-        }))
-        .unwrap();
+        let ix = indexer(7, &c["settings"]);
         let got =
             serde_json::to_value(torznab::parse_items(c["xml"].as_str().unwrap(), &ix)).unwrap();
         assert_eq!(got, c["output"]);
@@ -310,4 +319,227 @@ fn every_job_has_a_handler() {
         );
     }
     assert!(fk_plugin_download::job_handler("Nope").is_none());
+}
+
+fn target(want: Option<WantDecision>) -> AcquisitionTarget {
+    AcquisitionTarget {
+        media_id: 1,
+        kind: MediaKind::Movie,
+        title: String::new(),
+        original_title: None,
+        alternative_titles: vec![],
+        year: None,
+        runtime_minutes: None,
+        imdb_id: None,
+        tmdb_id: None,
+        tvdb_id: None,
+        library_id: 1,
+        want: want.map(|decision| Want {
+            decision,
+            allowed_quality_ids: vec![],
+            allowed_language_ids: vec![],
+            min_resolution: 0,
+            resolution_upgrade_only: false,
+        }),
+        expected_titles: vec![],
+        search_title: String::new(),
+        season: None,
+        episode: None,
+    }
+}
+
+fn ranked(id: u64, rejections: u64) -> grab::Ranked {
+    let raw = release(&json!({ "title": id.to_string() }));
+    let scored = ScoredRelease {
+        id: id.to_string(),
+        quality_id: 0,
+        quality_name: String::new(),
+        rank: 0,
+        allowed: true,
+        custom_format_score: 0,
+        blocklisted: false,
+        language_id: None,
+        language_name: None,
+        language_allowed: true,
+        is_full_season: false,
+        coverage: None,
+        size_deviation: None,
+        video_codec: None,
+        rejections: (0..rejections)
+            .map(|_| Rejection {
+                code: "x".into(),
+                params: vec![],
+            })
+            .collect(),
+    };
+    grab::Ranked { raw, scored }
+}
+
+#[test]
+fn pick_release() {
+    for c in cases(&golden(), "pickRelease") {
+        let want = match c["input"]["want"]["decision"].as_str() {
+            None => None,
+            Some("missing") => Some(WantDecision::Missing),
+            Some("upgrade") => Some(WantDecision::Upgrade),
+            Some("skip") => Some(WantDecision::Skip),
+            Some(d) => panic!("{d}"),
+        };
+        let sorted: Vec<_> = c["input"]["sorted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| ranked(r["id"].as_u64().unwrap(), r["rejections"].as_u64().unwrap()))
+            .collect();
+        let got: Vec<u64> = grab::pick(&sorted, &target(want))
+            .into_iter()
+            .map(|i| sorted[i].scored.id.parse().unwrap())
+            .collect();
+        let expected: Vec<u64> = c["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        assert_eq!(got, expected, "{c}");
+    }
+}
+
+fn release(v: &Value) -> torznab::Release {
+    let mut r = json!({
+        "title": "T", "downloadUrl": "https://t/x", "indexerId": 1, "indexerName": "ix", "size": 10,
+        "seeders": 2, "leechers": 1, "publishDate": "2024-01-01T00:00:00.000Z", "freeleech": false,
+        "downloadVolumeFactor": 1,
+    });
+    r.as_object_mut()
+        .unwrap()
+        .extend(v.as_object().unwrap().clone());
+    torznab::Release {
+        title: r["title"].as_str().unwrap().into(),
+        download_url: r["downloadUrl"].as_str().unwrap().into(),
+        info_url: None,
+        indexer_id: r["indexerId"].as_i64().unwrap(),
+        indexer_name: r["indexerName"].as_str().unwrap().into(),
+        size: r["size"].as_i64().unwrap(),
+        seeders: r["seeders"].as_i64().unwrap(),
+        leechers: r["leechers"].as_i64().unwrap(),
+        publish_date: r["publishDate"].as_str().map(str::to_owned),
+        freeleech: r["freeleech"].as_bool().unwrap(),
+        download_volume_factor: r["downloadVolumeFactor"].as_f64().unwrap(),
+    }
+}
+
+#[test]
+fn score_request() {
+    for c in cases(&golden(), "scoreRequest") {
+        let input = &c["input"];
+        let releases: Vec<_> = input["releases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(release)
+            .collect();
+        let indexers: Vec<_> = input["settings"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(id, s)| indexer(id.parse().unwrap(), s))
+            .collect();
+        let blocked: HashSet<String> = releases
+            .iter()
+            .filter(|r| {
+                input["blocked"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|b| b.as_str().unwrap().eq_ignore_ascii_case(&r.title))
+            })
+            .map(|r| r.title.clone())
+            .collect();
+        let got = grab::score_request(&releases, &indexers, &blocked);
+        let expected = c["output"].as_array().unwrap();
+        assert_eq!(got.len(), expected.len());
+        for (g, e) in got.iter().zip(expected) {
+            assert_eq!(
+                (g.id.as_str(), g.title.as_str(), g.source_ref.as_str()),
+                (
+                    e["id"].as_str().unwrap(),
+                    e["title"].as_str().unwrap(),
+                    e["sourceRef"].as_str().unwrap()
+                )
+            );
+            assert_eq!(
+                (g.size, g.seeders, g.leechers, g.blocked),
+                (
+                    e["size"].as_u64().unwrap(),
+                    e["seeders"].as_u64().unwrap() as u32,
+                    e["leechers"].as_u64().unwrap() as u32,
+                    e["blocked"].as_bool().unwrap()
+                ),
+                "{e}"
+            );
+            assert_eq!(g.publish_date, e["publishDate"].as_str().unwrap());
+            assert_eq!(g.freeleech, e["freeleech"].as_bool());
+            assert_eq!(g.download_volume_factor, e["downloadVolumeFactor"].as_f64());
+            assert_eq!(
+                g.min_seeders.map(f64::from),
+                e["minSeeders"].as_f64().map(f64::ceil),
+                "{e}"
+            );
+            assert_eq!(
+                g.unknown_language_iso_code.as_deref(),
+                e["unknownLanguageIsoCode"].as_str(),
+                "{e}"
+            );
+        }
+    }
+}
+
+#[test]
+fn retry_after() {
+    let now = util::parse_date_ms("2023-11-14T22:13:20Z").unwrap();
+    let different: Vec<String> = cases(&golden(), "retryAfter")
+        .iter()
+        .filter(|c| {
+            throttle::parse_retry_after(c["input"].as_str().unwrap(), now)
+                != c["output"].as_i64().unwrap()
+        })
+        .map(|c| c.to_string())
+        .collect();
+    assert!(different.is_empty(), "{}", different.join("\n"));
+}
+
+/// The host's own matcher, tried in table order with the method upper-cased, as `Router::handle`.
+fn resolve(method: &str, path: &str) -> Option<Map<String, Value>> {
+    let method = method.to_ascii_uppercase();
+    routes::table()
+        .into_iter()
+        .filter(|(m, _, _)| *m == method)
+        .find_map(|(_, p, _)| Matcher::new(p).unwrap().matches(path))
+        .map(|params| {
+            params
+                .into_iter()
+                .map(|(k, v)| match v {
+                    ParamValue::One(s) => (k, json!(s)),
+                    ParamValue::Many(p) => (k, json!(p)),
+                })
+                .collect()
+        })
+}
+
+#[test]
+fn route_match() {
+    let different: Vec<String> = cases(&golden(), "routeMatch")
+        .iter()
+        .filter_map(|c| {
+            let got = resolve(c["method"].as_str().unwrap(), c["path"].as_str().unwrap())
+                .map_or(Value::Null, Value::Object);
+            (got != c["output"]).then(|| format!("{c} -> {got}"))
+        })
+        .collect();
+    // DL7: the host's matcher ignores case and a trailing `/`, and a capture is never empty.
+    assert_eq!(different.len(), 4, "{}", different.join("\n"));
+    for path in ["/1/Releases", "/1/releases", "/queue/", "//releases"] {
+        assert!(different.iter().any(|d| d.contains(path)), "{path}");
+    }
 }

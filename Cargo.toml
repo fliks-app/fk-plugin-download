@@ -22,6 +22,9 @@ url = "2"
 sha1 = { version = "0.10", default-features = false }
 time = { version = "0.3", default-features = false, features = ["parsing", "std"] }
 
+[dev-dependencies]
+fliks-plugin-route = { git = "https://github.com/fliks-app/fliks", rev = "8cb55fee135d7842d816f33625919cd3fb33c58f" }
+
 # Component tests of the built plugin under the real host (SDK-11).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "8cb55fee135d7842d816f33625919cd3fb33c58f", features = ["harness"] }

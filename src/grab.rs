@@ -14,7 +14,7 @@ use fliks_plugin_sdk::bindings::fliks::plugin::types::{
 };
 use fliks_plugin_sdk::host;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 pub fn kind_str(k: MediaKind) -> &'static str {
@@ -116,11 +116,13 @@ pub fn to_wire(r: &Ranked) -> Value {
     Value::Object(o)
 }
 
-/// One `releases.score` request per release; `blocked` comes from this plugin's own table.
-pub fn score_request(releases: &[Release], indexers: &[IndexerRow]) -> R<Vec<CandidateRelease>> {
-    let blocked =
-        blocklist::blocked(&releases.iter().map(|r| r.title.clone()).collect::<Vec<_>>())?;
-    Ok(releases
+/// One `releases.score` request per release; `blocked` holds the titles on this plugin's blocklist.
+pub fn score_request(
+    releases: &[Release],
+    indexers: &[IndexerRow],
+    blocked: &HashSet<String>,
+) -> Vec<CandidateRelease> {
+    releases
         .iter()
         .enumerate()
         .map(|(i, r)| {
@@ -143,7 +145,7 @@ pub fn score_request(releases: &[Release], indexers: &[IndexerRow]) -> R<Vec<Can
                 freeleech: Some(r.freeleech),
                 download_volume_factor: Some(r.download_volume_factor),
                 source_ref: r.download_url.clone(),
-                min_seeders: (min.is_finite() && min > 0.0).then_some(min as u32),
+                min_seeders: (min.is_finite() && min > 0.0).then_some(min.ceil() as u32),
                 unknown_language_iso_code: settings
                     .and_then(|s| s.get("unknownLanguageIsoCode"))
                     .and_then(Value::as_str)
@@ -151,7 +153,7 @@ pub fn score_request(releases: &[Release], indexers: &[IndexerRow]) -> R<Vec<Can
                 blocked: blocked.contains(&r.title),
             }
         })
-        .collect())
+        .collect()
 }
 
 fn rank(
@@ -162,11 +164,13 @@ fn rank(
     if releases.is_empty() {
         return Ok(vec![]);
     }
+    let blocked =
+        blocklist::blocked(&releases.iter().map(|r| r.title.clone()).collect::<Vec<_>>())?;
     let scored = host::releases_score(
         target.media_id,
         target.season.as_ref().map(|s| s.number),
         target.episode.as_ref().map(|e| e.number),
-        &score_request(releases, indexers)?,
+        &score_request(releases, indexers, &blocked),
     )?;
     Ok(scored
         .into_iter()

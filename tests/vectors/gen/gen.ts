@@ -10,6 +10,9 @@ import { buildBaseUrl } from '../../../src/download-clients/qbittorrent-driver';
 import { mapClientStateToProgress } from '../../../src/grab/progress-state';
 import { toCoverageColumns } from '../../../src/grab/grab-history';
 import { mergeSecretSettings, redactSecretSettings } from '../../../src/secret-settings';
+import { buildScoreRequest, pickReleases } from '../../../src/grab/release-scoring';
+import { IndexerThrottle } from '../../../src/indexers/throttle';
+import { createRouteTable, type RouteDeps } from '../../../src/seams/http-routes';
 import type { IndexerRow } from '../../../src/db/rows';
 
 const indexer = (settings: Record<string, unknown>): IndexerRow =>
@@ -49,6 +52,61 @@ const feeds: { xml: string; settings: Record<string, unknown> }[] = [
 </channel></rss>`,
   },
   { settings: {}, xml: `<rss><channel><item><title>Unclosed</title>` },
+  {
+    settings: { apiKey: 'k2' },
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed"><channel>
+  <item><title>Show.S01E01.720p.WEB</title>
+    <link>https://t.example/dl/1?apikey=SECRET&amp;file=a</link>
+    <guid>https://t.example/details/1</guid>
+    <comments>https://t.example/details/1#comments</comments>
+    <pubDate>Wed, 03 Jan 2024 08:00:00 GMT</pubDate>
+    <size>5000</size>
+    <torznab:attr name="size" value="6000" />
+    <torznab:attr name="seeders" value="0" />
+    <torznab:attr name="leechers" value="5" />
+    <torznab:attr name="uploadvolumefactor" value="1" />
+    <torznab:attr name="downloadvolumefactor" value="1" />
+  </item>
+  <item><title>Peers.Only</title><link>https://t.example/dl/2</link>
+    <torznab:attr name="peers" value="9" /><torznab:attr name="seeders" value="4" /></item>
+  <item><title>Neg.Values</title><link>https://t.example/dl/3</link>
+    <torznab:attr name="size" value="-5" /><torznab:attr name="seeders" value="-1" />
+    <torznab:attr name="downloadvolumefactor" value="x" /></item>
+  <item><title>Magnet.Enclosure</title>
+    <enclosure url="magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&amp;dn=m" length="77" type="application/x-bittorrent"/></item>
+  <item><title>   </title><link>https://t.example/dl/4</link></item>
+  <item><link>https://t.example/dl/5</link></item>
+</channel></rss>`,
+  },
+  {
+    settings: {},
+    xml: `<rss><channel>
+  <item><title><![CDATA[Cd&ata <b>Title</b>]]></title><link><![CDATA[https://t.example/dl/6?a=1&b=2]]></link></item>
+  <item><title>Multi
+    Line &#8211; Title &amp;amp; More</title><link>
+      https://t.example/dl/7
+    </link></item>
+  <item><title>Attr.Order</title><link>https://t.example/dl/8</link>
+    <torznab:attr value="33" name="seeders"/><torznab:attr name='leechers' value='2'/></item>
+  <item><title>Freeleech</title><link>https://t.example/dl/9</link>
+    <torznab:attr name="downloadvolumefactor" value="0.0"/><torznab:attr name="seeders" value="1.9"/></item>
+</channel></rss>`,
+  },
+  {
+    settings: { baseUrl: 'https://t.example/api', apiKey: 'zz' },
+    xml: `<rss><channel>
+  <item><title>Relative.Link</title><link>/dl/10</link></item>
+  <item><title>Ftp.Link</title><link>ftp://t.example/dl/11</link></item>
+  <item><title>Lan.Link</title><link>http://127.0.0.1:9117/dl/12</link></item>
+  <item><title>Loopback6</title><link>http://[::1]/dl/13</link></item>
+  <item><title>Info.Hash.Only</title><torznab:attr name="infohash" value="0123456789abcdef0123456789abcdef01234567"/></item>
+  <item><title>Tz.Date</title><link>https://t.example/dl/14</link><pubDate>Fri, 05 Jan 2024 23:30:00 -0500</pubDate></item>
+</channel></rss>`,
+  },
+  { settings: {}, xml: `` },
+  { settings: {}, xml: `<rss><channel></channel></rss>` },
+  { settings: {}, xml: `<error code="100" description="Incorrect user credentials"/>` },
 ];
 
 function bencode(v: unknown): Buffer {
@@ -65,6 +123,78 @@ const torrents = [
   Buffer.from('d4:infoi1ee'),
   Buffer.from('garbage'),
 ];
+
+const sorted = (ids: number[], rej: number[]) => ids.map((id, i) => ({ id, rank: i, rejections: Array.from({ length: rej[i] ?? 0 }, () => ({ code: 'x' })) }));
+const wants = [null, { decision: 'missing' }, { decision: 'upgrade' }, { decision: 'skip' }];
+
+const release = (o: Record<string, unknown>) => ({
+  title: 'T', downloadUrl: 'https://t/x', indexerId: 1, indexerName: 'ix', size: 10, seeders: 2, leechers: 1,
+  publishDate: '2024-01-01T00:00:00.000Z', freeleech: false, downloadVolumeFactor: 1, ...o,
+});
+const scoreCases = [
+  { releases: [release({}), release({ title: 'B', indexerId: 2, publishDate: null, freeleech: true, downloadVolumeFactor: 0 })],
+    settings: { 1: { minSeeders: 5, unknownLanguageIsoCode: 'fr' }, 2: {} }, blocked: ['B'] },
+  { releases: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => release({ title: `R${i}`, indexerId: i })),
+    settings: { 1: { minSeeders: '3' }, 2: { minSeeders: 0 }, 3: { minSeeders: -2 }, 4: { minSeeders: 'abc' }, 5: { minSeeders: null },
+      6: { minSeeders: 2.5 }, 7: { minSeeders: true }, 8: { unknownLanguageIsoCode: 7 } }, blocked: [] },
+  { releases: [release({ title: 'Orphan', indexerId: 99 })], settings: {}, blocked: ['Orphan'] },
+];
+
+// Fixed clock: `Retry-After` dates and the failure ladder are relative to it.
+const NOW = Date.UTC(2023, 10, 14, 22, 13, 20);
+let clock = NOW;
+Date.now = () => clock;
+const tix = indexer({});
+const cooldownMs = (t: IndexerThrottle): number => {
+  const c = t.getCooldown(7);
+  return c ? c.until - clock : 0;
+};
+const retryAfter = [
+  '0', '30', '  45 ', '1.5', '-5', '', 'abc', '1e3', '٣', '007',
+  'Tue, 14 Nov 2023 22:15:20 GMT', 'Tue, 14 Nov 2023 22:00:00 GMT', '2023-11-14T22:14:20Z', '2023-11-14T22:14:20+01:00',
+  'Tuesday, 14-Nov-23 22:15:20 GMT', '2023-11-14T22:14:20.500Z', 'Tue, 14 Nov 2023 22:15:20 +0000',
+].map((input) => {
+  const t = new IndexerThrottle();
+  t.setRetryAfter(tix, input);
+  return { input, output: cooldownMs(t) };
+});
+const ladder = (() => {
+  const t = new IndexerThrottle();
+  const steps: number[] = [];
+  for (let i = 0; i < 7; i++) {
+    t.notifyFailure(tix);
+    steps.push(cooldownMs(t));
+    t.notifyFailure(tix); // inside the open window: no step
+    steps.push(cooldownMs(t));
+    clock += cooldownMs(t) + 1;
+  }
+  t.notifySuccess(7);
+  t.notifyFailure(tix);
+  steps.push(cooldownMs(t));
+  clock = NOW;
+  const m = new IndexerThrottle();
+  m.notifyFailure(tix);
+  const mono: number[] = [];
+  for (const h of ['10', '120', '60']) {
+    m.setRetryAfter(tix, h);
+    mono.push(cooldownMs(m));
+  }
+  return { steps, mono };
+})();
+
+const routeTable = createRouteTable({} as RouteDeps);
+const routeCases: [string, string][] = [
+  ['GET', '/1/releases'], ['GET', '/1%2F2/releases'], ['GET', '/../releases'], ['GET', '/%2e%2e/releases'], ['GET', '/1/Releases'],
+  ['get', '/1/releases'], ['GET', '/nonexistent'], ['GET', '/delay-profiles'], ['POST', '/5/grab'], ['POST', '/5/seasons/2/grab'],
+  ['GET', '/1/seasons/../releases'], ['GET', '/1/episodes/9/releases'], ['DELETE', '/history/all'], ['DELETE', '/history/7'],
+  ['DELETE', '/blocklist/all'], ['DELETE', '/blocklist/12'], ['DELETE', '/indexers/cooldowns'], ['DELETE', '/indexers/3'],
+  ['DELETE', '/indexers/3/cooldown'], ['GET', '/indexers/implementations'], ['GET', '/indexers/3/stats'], ['PUT', '/indexers/implementations'],
+  ['POST', '/indexers/test-connection'], ['POST', '/indexers/3/test-connection'], ['GET', '/queue'], ['GET', '/queue/'], ['GET', '/queue/3'],
+  ['POST', '/queue/3/retry-import'], ['POST', '/queue/3/pause'], ['DELETE', '/queue/3'], ['GET', '/indexers/%E0%A4%A/stats'],
+  ['GET', '/indexers/%zz/stats'], ['GET', '/indexers/a%20b/stats'], ['GET', ''], ['GET', '/'], ['GET', '//releases'], ['GET', '/1//releases'],
+  ['POST', '/indexer-sources/4/import'], ['DELETE', '/download-clients/5'], ['GET', '/download-clients/implementations'],
+  ['GET', '/indexers/%2Fx/stats'], ['GET', '/indexers/%2fx/stats'],
+].map(([m, p]) => [m!, p!]);
 
 const out = {
   migrations: MIGRATIONS.map((m) => ({ name: m.name, up: m.up })),
@@ -130,4 +260,32 @@ const out = {
     redacted: redactSecretSettings(input.existing, ['apiKey']),
   })),
 };
-process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+async function main(): Promise<void> {
+const asyncOut = {
+  pickRelease: [
+    { ids: [], rej: [] }, { ids: [1, 2, 3], rej: [0, 0, 0] }, { ids: [1, 2, 3, 4, 5], rej: [0, 0, 0, 0, 0] },
+    { ids: [1, 2, 3, 4], rej: [1, 0, 2, 0] }, { ids: [1, 2], rej: [1, 3] }, { ids: [1, 2, 3, 4, 5, 6], rej: [1, 0, 0, 1, 0, 0] },
+  ].flatMap((c) =>
+    wants.map((want) => ({
+      input: { sorted: sorted(c.ids, c.rej).map((r) => ({ id: r.id, rejections: r.rejections.length })), want },
+      output: pickReleases(sorted(c.ids, c.rej), want as never).map((r) => r.id),
+    })),
+  ),
+  scoreRequest: await Promise.all(
+    scoreCases.map(async (c) => {
+      const ixs = Object.keys(c.settings).map((id) => ({ ...indexer((c.settings as Record<string, Record<string, unknown>>)[id]!), id: Number(id) }));
+      const repo = { isBlocked: async (t: string) => c.blocked.some((b) => b.toLowerCase() === t.toLowerCase()) };
+      const output = await buildScoreRequest(c.releases as never, ixs, repo);
+      return { input: c, output };
+    }),
+  ),
+  retryAfter,
+  throttleLadder: ladder,
+  routeMatch: routeCases.map(([method, path]) => {
+    const r = routeTable.resolve(method, path);
+    return { method, path, output: r ? r.params : null };
+  }),
+};
+process.stdout.write(JSON.stringify({ ...out, ...asyncOut }, null, 2) + '\n');
+}
+void main();
