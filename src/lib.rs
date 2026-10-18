@@ -2,7 +2,8 @@
 //! the acquisition grab pipeline.
 
 #[macro_use]
-pub mod log;
+extern crate fliks_plugin_sdk;
+
 pub mod config;
 pub mod db;
 pub mod error;
@@ -17,13 +18,15 @@ pub mod throttle;
 pub mod torznab;
 pub mod util;
 
+use fliks_plugin_sdk::rt::{self, Budget, budgets};
 use fliks_plugin_sdk::{HealthReport, HttpRequest, HttpResponse, Plugin, host};
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// What a job keeps back of its 60 min, and a scheduled call of its 5.
-const JOB_MARGIN: Duration = Duration::from_secs(10 * 60);
-const SCHEDULED_MARGIN: Duration = Duration::from_secs(60);
+/// The guest budget of the export just entered, never past the host's own deadline.
+fn enter(budget: Duration) {
+    net::set_budget(Budget::new(Budget::host().cap(budget)));
+}
 
 type Job = fn(Option<&str>) -> error::R<()>;
 
@@ -31,7 +34,7 @@ type Job = fn(Option<&str>) -> error::R<()>;
 pub fn job_handler(name: &str) -> Option<Job> {
     Some(match name {
         "SearchMissing" => search_missing_job,
-        "RssSync" => |_| grab::rss_sync(JOB_MARGIN),
+        "RssSync" => |_| grab::rss_sync(),
         "ImportCompleted" => |_| poller::poll(),
         "CleanStalled" => |_| poller::clean_stalled(),
         "CleanSeeded" => |_| poller::clean_seeded(),
@@ -71,12 +74,12 @@ fn search_missing_job(args: Option<&str>) -> error::R<()> {
             .filter_map(Value::as_u64)
             .filter_map(|i| u32::try_from(i).ok())
             .collect();
-        grab::search_missing(Some(ids), None, JOB_MARGIN)?;
+        grab::search_missing(Some(ids), None)?;
         return Ok(());
     }
     let resume = db::state::get("searchMissingResume")?
         .and_then(|v| serde_json::from_value::<(u32, Option<u32>, Option<u32>)>(v).ok());
-    match grab::search_missing(None, resume, JOB_MARGIN)? {
+    match grab::search_missing(None, resume)? {
         Some(key) => db::state::set("searchMissingResume", &json!(key)),
         None => db::state::delete("searchMissingResume"),
     }
@@ -111,12 +114,14 @@ impl Plugin for Download {
     }
 
     fn job(name: String, _job_id: String, args: Option<String>) -> Result<(), String> {
+        enter(budgets::JOB);
         let h = job_handler(&name)
             .ok_or_else(|| format!("no handler registered for job \"{name}\""))?;
         h(args.as_deref()).map_err(text)
     }
 
     fn scheduled(key: String, payload: String, _attempt: u32) -> Result<(), String> {
+        enter(budgets::SCHEDULED);
         let payload: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
         let (prefix, rest) = key.split_once(':').unwrap_or((&key, ""));
         let id: Option<u32> = rest.parse().ok();
@@ -124,8 +129,7 @@ impl Plugin for Download {
             ("search", Some(media)) => {
                 let resume = resume_of(&payload).map(|(s, e)| (media, s, e));
                 if let Some((_, s, e)) =
-                    grab::search_missing(Some(vec![media]), resume, SCHEDULED_MARGIN)
-                        .map_err(text)?
+                    grab::search_missing(Some(vec![media]), resume).map_err(text)?
                 {
                     fliks_plugin_sdk::scheduled::schedule(
                         &key,
@@ -140,13 +144,11 @@ impl Plugin for Download {
                 let Some(mut ix) = db::indexers::find(id.into()).map_err(text)? else {
                     return Ok(());
                 };
-                let left = Duration::from_millis(host::deadline_remaining_ms())
-                    .saturating_sub(SCHEDULED_MARGIN);
                 let round = torznab::Round {
-                    until: Instant::now() + left,
+                    budget: net::budget(),
                     fetch_timeout: Duration::from_secs(10),
                 };
-                torznab::refresh_caps(&mut ix, round)
+                rt::block_on(torznab::refresh_caps(&mut ix, round))
                     .map_err(|_| format!("[{}] caps probe: the slot stayed busy", ix.name))
             }
             ("grab-started", Some(_)) => {
@@ -163,6 +165,7 @@ impl Plugin for Download {
     }
 
     fn http(req: HttpRequest) -> Result<HttpResponse, String> {
+        enter(budgets::HTTP);
         routes::ROUTER.handle(req)
     }
 

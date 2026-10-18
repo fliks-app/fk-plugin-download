@@ -359,19 +359,6 @@ pub fn pad2(n: u32) -> String {
     format!("{n:02}")
 }
 
-/// A URL fit for a log line: no userinfo, no query (an indexer download URL carries `apikey=`).
-pub fn redact_url(raw: &str) -> String {
-    match url::Url::parse(raw) {
-        Ok(mut u) => {
-            let _ = u.set_username("");
-            let _ = u.set_password(None);
-            u.set_query(None);
-            u.to_string()
-        }
-        Err(_) => "<unparsable url>".into(),
-    }
-}
-
 /// Text of a body as `Response.text()` decodes it.
 pub fn text(body: &[u8]) -> String {
     String::from_utf8_lossy(body).into_owned()
@@ -423,12 +410,18 @@ mod tests {
         assert_eq!(parse_date_ms("not a date"), None);
     }
 
+    /// The SDK's log scrub and `redact_url`, as DL10 relies on them.
     #[test]
-    fn redacts_urls() {
+    fn logs_keep_secrets_out() {
+        use fliks_plugin_sdk::log::{redact_url, scrub};
         assert_eq!(
             redact_url("https://u:p@t.example/dl/1?apikey=SECRET"),
             "https://t.example/dl/1"
         );
-        assert_eq!(redact_url("nope"), "<unparsable url>");
+        assert_eq!(redact_url("magnet:?xt=urn:btih:abc"), "magnet:");
+        assert_eq!(
+            scrub("pg://fp_1:secret@db/x\nnext"),
+            "pg://***:***@db/x next"
+        );
     }
 }

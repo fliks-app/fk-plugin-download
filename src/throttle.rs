@@ -4,8 +4,9 @@
 use crate::db::{IndexerRow, exec, first, int, query, text};
 use crate::error::R;
 use fliks_plugin_sdk::db::Param;
+use fliks_plugin_sdk::rt::{self, Budget};
 use serde::Deserialize;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub mod sql {
     /// 0 rows: another holder has the slot. `$1` id, `$2` token, `$3` lease s, `$4` delay ms.
@@ -17,15 +18,17 @@ ON CONFLICT ("indexerId") DO UPDATE
 RETURNING GREATEST(0, LEAST($4::bigint, COALESCE(
   (EXTRACT(EPOCH FROM ("indexer_throttle"."nextAllowedAt" - now())) * 1000)::bigint, 0))) AS "waitMs""#;
 
-    /// Fenced by the token. `$3` delay s, `$4` outcome: true resolved, false threw, null cancelled.
+    /// Fenced by the token. `$3` delay s, `$4` an [`Outcome`](super::Outcome): a request that was
+    /// never sent leaves the spacing as it was.
     pub const RELEASE: &str = r#"UPDATE "indexer_throttle"
    SET "busyToken" = NULL, "busyUntil" = NULL,
-       "nextAllowedAt" = now() + make_interval(secs => $3),
-       "failureCount" = CASE WHEN $4::boolean THEN 0 ELSE "failureCount" END,
-       "cooldownUntil" = CASE WHEN $4::boolean THEN NULL ELSE "cooldownUntil" END,
-       "cooldownReason" = CASE WHEN $4::boolean THEN NULL ELSE "cooldownReason" END,
-       "cooldownFailureCount" = CASE WHEN $4::boolean THEN NULL ELSE "cooldownFailureCount" END,
-       "cooldownDetail" = CASE WHEN $4::boolean THEN NULL ELSE "cooldownDetail" END,
+       "nextAllowedAt" = CASE WHEN $4::text = 'not-started' THEN "nextAllowedAt"
+                              ELSE now() + make_interval(secs => $3) END,
+       "failureCount" = CASE WHEN $4::text = 'resolved' THEN 0 ELSE "failureCount" END,
+       "cooldownUntil" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownUntil" END,
+       "cooldownReason" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownReason" END,
+       "cooldownFailureCount" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownFailureCount" END,
+       "cooldownDetail" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownDetail" END,
        "updatedAt" = now()
  WHERE "indexerId" = $1 AND "busyToken" = $2"#;
 
@@ -97,16 +100,38 @@ fn token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A held slot; dropping it unreleased frees it as cancelled.
+/// How a slot ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Outcome {
+    Resolved,
+    Threw,
+    /// Cut short after it was sent.
+    Cancelled,
+    NotStarted,
+}
+
+impl Outcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Resolved => "resolved",
+            Outcome::Threw => "threw",
+            Outcome::Cancelled => "cancelled",
+            Outcome::NotStarted => "not-started",
+        }
+    }
+}
+
+/// A held slot; dropping it unreleased frees it as cancelled, or not started if nothing was sent.
 struct Slot {
     id: i64,
     token: String,
     delay_secs: f64,
+    sent: bool,
     released: bool,
 }
 
 impl Slot {
-    fn release(&mut self, outcome: Option<bool>) -> R<()> {
+    fn release(&mut self, outcome: Outcome) -> R<()> {
         self.released = true;
         exec(
             sql::RELEASE,
@@ -114,7 +139,7 @@ impl Slot {
                 int(self.id),
                 text(&self.token),
                 Param::Float(self.delay_secs),
-                outcome.into(),
+                text(outcome.as_str()),
             ],
         )
         .map(drop)
@@ -124,21 +149,26 @@ impl Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         if !self.released {
-            let _ = self.release(None);
+            let _ = self.release(if self.sent {
+                Outcome::Cancelled
+            } else {
+                Outcome::NotStarted
+            });
         }
     }
 }
 
-/// The round ran out: the request never started, or was cut short by `until`.
+/// The round ran out: the request never started, or was cut short by the budget.
 #[derive(Debug)]
 pub struct Lapsed;
 
-/// Runs `f` in the indexer's slot; `f` gets its timeout and reports whether it resolved.
-pub fn run<T, E>(
+/// Runs `f` in the indexer's slot within `budget`; `f` gets its timeout and reports whether it
+/// resolved. Dropping the future frees the slot.
+pub async fn run<T, E, F: Future<Output = Result<T, E>>>(
     ix: &IndexerRow,
-    until: Instant,
+    budget: Budget,
     timeout: Duration,
-    f: impl FnOnce(Duration) -> Result<T, E>,
+    f: impl FnOnce(Duration) -> F,
 ) -> Result<Result<T, E>, Lapsed> {
     let delay_ms = ix.request_delay.max(0) * 1000;
     let token = token();
@@ -158,35 +188,45 @@ pub fn run<T, E>(
             ],
         )
         .map_err(|e| {
-            crate::warn!("[{}] throttle claim failed: {e}", ix.name);
+            warn!("[{}] throttle claim failed: {e}", ix.name);
             Lapsed
         })?;
         if let Some(w) = claimed {
             break Duration::from_millis(w.wait_ms.max(0) as u64);
         }
-        if Instant::now() + CLAIM_RETRY >= until {
+        if CLAIM_RETRY >= budget.remaining() {
             return Err(Lapsed);
         }
-        std::thread::sleep(CLAIM_RETRY);
+        rt::sleep(CLAIM_RETRY).await;
     };
     let mut slot = Slot {
         id: ix.id,
         token,
         delay_secs: ix.request_delay.max(0) as f64,
+        sent: false,
         released: false,
     };
-    if Instant::now() + wait >= until {
+    if wait >= budget.remaining() {
         return Err(Lapsed);
     }
-    std::thread::sleep(wait);
-    let left = until.saturating_duration_since(Instant::now());
-    let out = f(timeout.min(left));
+    rt::sleep(wait).await;
+    let left = budget.remaining();
+    if left.is_zero() {
+        return Err(Lapsed);
+    }
+    slot.sent = true;
+    let out = f(timeout.min(left)).await;
     // Cut by the round, not by the indexer: released as cancelled, no failure step (DL6).
-    if left < timeout && out.is_err() && Instant::now() >= until {
+    if left < timeout && out.is_err() && budget.expired() {
         return Err(Lapsed);
     }
-    if let Err(e) = slot.release(Some(out.is_ok())) {
-        crate::warn!("[{}] throttle release failed: {e}", ix.name);
+    let outcome = if out.is_ok() {
+        Outcome::Resolved
+    } else {
+        Outcome::Threw
+    };
+    if let Err(e) = slot.release(outcome) {
+        warn!("[{}] throttle release failed: {e}", ix.name);
     }
     Ok(out)
 }
@@ -199,10 +239,10 @@ pub fn notify_failure(ix: &IndexerRow, detail: &str) {
     match first::<N>(sql::NOTIFY_FAILURE, &[int(ix.id), text(detail)]) {
         Ok(Some(N { n })) => {
             let secs = [30, 120, 900, 3600, 21600][(n.clamp(1, 5) - 1) as usize];
-            crate::warn!("[{}] consecutive failure #{n} — cooldown {secs}s", ix.name);
+            warn!("[{}] consecutive failure #{n} — cooldown {secs}s", ix.name);
         }
         Ok(None) => {}
-        Err(e) => crate::warn!("[{}] throttle failure not recorded: {e}", ix.name),
+        Err(e) => warn!("[{}] throttle failure not recorded: {e}", ix.name),
     }
 }
 
@@ -225,12 +265,12 @@ pub fn set_retry_after(ix: &IndexerRow, header: Option<&str>) {
         sql::RETRY_AFTER,
         &[int(ix.id), Param::Float(ms as f64), text(h.trim())],
     ) {
-        Ok(_) => crate::warn!(
+        Ok(_) => warn!(
             "[{}] Retry-After honoured — next request in {}s",
             ix.name,
             (ms as f64 / 1000.0).round()
         ),
-        Err(e) => crate::warn!("[{}] Retry-After not recorded: {e}", ix.name),
+        Err(e) => warn!("[{}] Retry-After not recorded: {e}", ix.name),
     }
 }
 
@@ -281,7 +321,7 @@ pub fn filter_ready(indexers: &[IndexerRow]) -> R<Vec<IndexerRow>> {
         }
     }
     if !skipped.is_empty() {
-        crate::info!(
+        info!(
             "skipping {} indexer(s) in cooldown: {}",
             skipped.len(),
             skipped.join(", ")

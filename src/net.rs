@@ -3,9 +3,24 @@
 
 use fliks_plugin_sdk::bindings::wasi::http::types::Method;
 use fliks_plugin_sdk::http::{Error as HttpError, Request};
-use std::time::{Duration, Instant};
+use fliks_plugin_sdk::rt::{self, Budget};
+use std::cell::Cell;
+use std::time::Duration;
 
 pub const USER_AGENT: &str = "Fliks/1.0";
+
+thread_local! {
+    static EXPORT: Cell<Budget> = Cell::new(Budget::new(rt::budgets::HTTP));
+}
+
+/// Set on entry by every export that sends: no request outlives what the export is allowed.
+pub fn set_budget(b: Budget) {
+    EXPORT.set(b);
+}
+
+pub fn budget() -> Budget {
+    EXPORT.get()
+}
 
 pub struct Resp {
     pub status: u16,
@@ -44,8 +59,9 @@ pub enum Body {
     },
 }
 
-/// One request, never following a redirect. `Err` is the message Node's `fetch` wrapper gave.
-pub fn send(
+/// One request, never following a redirect, ended by `timeout` and the export budget. `Err` is
+/// the message Node's `fetch` wrapper gave.
+pub async fn send_async(
     method: Method,
     url: &str,
     headers: &[(&str, &str)],
@@ -56,7 +72,9 @@ pub fn send(
     let mut req = Request::new(method, parsed.as_str())
         .header("user-agent", USER_AGENT)
         .header("accept-encoding", "identity")
-        .timeout(timeout);
+        .timeout(timeout)
+        .deadline(timeout)
+        .budget(&budget());
     for (n, v) in headers {
         req = req.header(n, v);
     }
@@ -74,7 +92,8 @@ pub fn send(
             bytes,
         } => req.header("content-type", &content_type).body(bytes),
     };
-    req.send()
+    req.send_async()
+        .await
         .map(|r| Resp {
             status: r.status,
             headers: r.headers,
@@ -83,31 +102,52 @@ pub fn send(
         .map_err(|e| describe(&e, timeout))
 }
 
+/// [`send_async`] blocking; never inside [`rt::block_on`].
+pub fn send(
+    method: Method,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Body,
+    timeout: Duration,
+) -> Result<Resp, String> {
+    rt::block_on(send_async(method, url, headers, body, timeout))
+}
+
 pub fn get(url: &str, headers: &[(&str, &str)], timeout: Duration) -> Result<Resp, String> {
     send(Method::Get, url, headers, Body::None, timeout)
 }
 
-/// GET following redirects as `fetch` does (20 hops, one timeout over the chain).
 pub fn get_following(
     url: &str,
     headers: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<Resp, String> {
-    let until = Instant::now() + timeout;
+    rt::block_on(get_following_async(url, headers, timeout))
+}
+
+/// GET following redirects as `fetch` does (20 hops, one timeout over the chain).
+pub async fn get_following_async(
+    url: &str,
+    headers: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Resp, String> {
+    let chain = Budget::new(timeout);
     let mut target = url.to_owned();
     for _ in 0..=20 {
-        let left = until.saturating_duration_since(Instant::now());
+        let left = chain.remaining();
         let timed_out = || format!("timed out after {}ms", timeout.as_millis());
         if left.is_zero() {
             return Err(timed_out());
         }
-        let res = get(&target, headers, left).map_err(|e| {
-            if e.starts_with("timed out") {
-                timed_out()
-            } else {
-                e
-            }
-        })?;
+        let res = send_async(Method::Get, &target, headers, Body::None, left)
+            .await
+            .map_err(|e| {
+                if e.starts_with("timed out") {
+                    timed_out()
+                } else {
+                    e
+                }
+            })?;
         match res.is_redirect().then(|| res.header("location")).flatten() {
             Some(loc) => target = resolve(&target, &loc).ok_or_else(|| "Invalid URL".to_owned())?,
             None => return Ok(res),

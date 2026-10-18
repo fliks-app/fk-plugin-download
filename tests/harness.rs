@@ -3,6 +3,7 @@
 //! (`cargo build --release --target wasm32-wasip2`) and `FLIKS_HARNESS_PG_URL`.
 
 use fk_plugin_download::throttle::sql;
+use fliks_plugin_sdk::harness::fliks_server::events::Bus;
 use fliks_plugin_sdk::harness::fliks_server::plugins::HttpResponse;
 use fliks_plugin_sdk::harness::{Harness, Setup, request, until};
 use serde_json::{Value, json};
@@ -452,13 +453,7 @@ async fn claim(
         .unwrap()
 }
 
-async fn release(
-    c: &mut PgConnection,
-    id: i64,
-    token: &str,
-    delay: f64,
-    outcome: Option<bool>,
-) -> u64 {
+async fn release(c: &mut PgConnection, id: i64, token: &str, delay: f64, outcome: &str) -> u64 {
     sqlx::query(sql::RELEASE)
         .bind(id as i32)
         .bind(token)
@@ -497,12 +492,12 @@ async fn throttle_statements_hold_under_contention() {
     let (holder, other) = if x.is_some() { ("a", "b") } else { ("b", "a") };
     assert_eq!(claim(&mut a, ix, "c", 30.0, 2000).await, None);
     assert_eq!(
-        release(&mut a, ix, other, 2.0, Some(true)).await,
+        release(&mut a, ix, other, 2.0, "resolved").await,
         0,
         "a stranger's token frees nothing"
     );
-    assert_eq!(release(&mut a, ix, holder, 2.0, None).await, 1);
-    let wait = claim(&mut a, ix, "d", 30.0, 2000)
+    assert_eq!(release(&mut a, ix, holder, 2.0, "cancelled").await, 1);
+    let wait = claim(&mut a, ix, "c", 30.0, 2000)
         .await
         .expect("free again");
     assert!(
@@ -510,11 +505,22 @@ async fn throttle_statements_hold_under_contention() {
         "spacing from the release: {wait} ms"
     );
 
+    // A slot given back before its request was sent keeps the spacing where it was.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(release(&mut a, ix, "c", 2.0, "not-started").await, 1);
+    let again = claim(&mut a, ix, "d", 30.0, 2000)
+        .await
+        .expect("free again");
+    assert!(
+        again <= wait - 250,
+        "not pushed back: {again} ms after {wait} ms"
+    );
+
     // A lease that ran out frees the slot; its holder's late release changes nothing.
     exec(&mut a, &format!(r#"UPDATE "indexer_throttle" SET "busyUntil" = now() - interval '1 second' WHERE "indexerId" = {ix}"#)).await;
     assert!(claim(&mut b, ix, "e", 30.0, 0).await.is_some());
-    assert_eq!(release(&mut a, ix, "d", 0.0, Some(false)).await, 0);
-    assert_eq!(release(&mut b, ix, "e", 0.0, Some(true)).await, 1);
+    assert_eq!(release(&mut a, ix, "d", 0.0, "threw").await, 0);
+    assert_eq!(release(&mut b, ix, "e", 0.0, "resolved").await, 1);
 
     // One ladder step per window, even when two failures race.
     let (x, y) = tokio::join!(fail(&mut a, ix), fail(&mut b, ix));
@@ -565,7 +571,7 @@ async fn throttle_statements_hold_under_contention() {
 
     // A success resets the ladder and the window.
     assert!(claim(&mut a, ix, "f", 30.0, 0).await.is_some());
-    assert_eq!(release(&mut a, ix, "f", 0.0, Some(true)).await, 1);
+    assert_eq!(release(&mut a, ix, "f", 0.0, "resolved").await, 1);
     let after = scalar_i64(
         &mut a,
         &format!(r#"SELECT "failureCount"::bigint FROM "indexer_throttle" WHERE "indexerId" = {ix} AND "cooldownUntil" IS NULL"#),
@@ -777,6 +783,99 @@ async fn two_searches_share_one_slot_per_indexer() {
     h.finish().await;
 }
 
+fn one_item_feed(title: &str) -> Vec<u8> {
+    format!(
+        r#"<?xml version="1.0"?><rss><channel><item><title>{title}</title><link>http://dl.test/{title}.torrent</link><size>1000</size></item></channel></rss>"#
+    )
+    .into_bytes()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn indexers_are_searched_at_once_and_streamed_as_they_answer() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    let answer_after = |ms: u64, title: &str| {
+        let feed = one_item_feed(title);
+        Stub::start(move |_, _, _| {
+            std::thread::sleep(Duration::from_millis(ms));
+            (200, vec![], feed.clone())
+        })
+    };
+    let slow = answer_after(1500, "Some.Movie.2020.1080p.WEB");
+    let fast = answer_after(500, "Some.Movie.2020.720p.WEB");
+    route(&h, "slow.test", "10.77.0.1", 80, &slow);
+    route(&h, "fast.test", "10.77.0.3", 80, &fast);
+    let mut db = plugin_db(&h).await;
+    let a = add_indexer(
+        &mut db,
+        "slow",
+        json!({ "baseUrl": "http://slow.test/api", "apiKey": "k" }),
+    )
+    .await;
+    let b = add_indexer(
+        &mut db,
+        "fast",
+        json!({ "baseUrl": "http://fast.test/api", "apiKey": "k" }),
+    )
+    .await;
+    let media = add_movie(&h, "Some Movie").await;
+
+    let mut events = h.st.hub.subscribe();
+    let started = Instant::now();
+    let path = format!("/{media}/releases");
+    let r = h
+        .http(request("GET", &path, &[("sid", "s1")], b""))
+        .await
+        .unwrap();
+    let took = started.elapsed();
+    assert_eq!(r.status, 200, "{:?}", body(&r));
+    assert_eq!(body(&r).as_array().map(Vec::len), Some(2), "{:?}", body(&r));
+    let (s, f) = (slow.hits(), fast.hits());
+    assert_eq!((s.len(), f.len()), (1, 1));
+    assert!(
+        f[0].start < s[0].end && s[0].start < f[0].end,
+        "both requests in flight together: {s:?} {f:?}"
+    );
+    assert!(
+        took < Duration::from_millis(1900),
+        "the slower one, not the sum: {took:?}"
+    );
+
+    let state = |p: &Value, id: i64| {
+        p["indexers"]
+            .as_array()
+            .and_then(|l| l.iter().find(|i| i["id"] == json!(id)))
+            .map(|i| i["state"].as_str().unwrap_or("").to_owned())
+            .unwrap_or_default()
+    };
+    let mut seen = vec![];
+    while let Ok(ev) = events.try_recv() {
+        if let Bus::Raw(raw) = &*ev
+            && let Some(kind) = raw.r#type.strip_prefix("plugin.fliks.download.search.")
+        {
+            let n = raw.payload["releases"].as_array().map(Vec::len);
+            seen.push((
+                kind.to_owned(),
+                state(&raw.payload, a),
+                state(&raw.payload, b),
+                n,
+            ));
+        }
+    }
+    let row =
+        |k: &str, x: &str, y: &str, n: Option<usize>| (k.to_owned(), x.to_owned(), y.to_owned(), n);
+    assert_eq!(
+        seen,
+        [
+            row("state", "pending", "pending", None),
+            row("partial", "pending", "done", Some(1)),
+            row("partial", "done", "done", Some(2)),
+        ]
+    );
+    h.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_manual_grab_reaches_the_client_and_the_queue_drives_it() {
     let Some(h) = Harness::start(setup()).await else {
@@ -921,7 +1020,7 @@ async fn the_failure_ladder_follows_the_recorded_one() {
     // The first step answers; a second failure inside the open window answers nothing.
     let ix = add_indexer(&mut db, "ladder", json!({})).await;
     assert!(claim(&mut db, ix, "a", 30.0, 0).await.is_some());
-    release(&mut db, ix, "a", 0.0, None).await;
+    release(&mut db, ix, "a", 0.0, "cancelled").await;
     for i in 0..7 {
         assert!(fail(&mut db, ix).await.is_some(), "step {i}");
         assert!((remaining(&mut db, ix).await - steps[2 * i]).abs() <= 2);
@@ -936,14 +1035,14 @@ async fn the_failure_ladder_follows_the_recorded_one() {
         .await;
     }
     assert!(claim(&mut db, ix, "b", 30.0, 0).await.is_some());
-    release(&mut db, ix, "b", 0.0, Some(true)).await;
+    release(&mut db, ix, "b", 0.0, "resolved").await;
     assert!(fail(&mut db, ix).await.is_some());
     assert!((remaining(&mut db, ix).await - steps[14]).abs() <= 2);
 
     // A shorter `Retry-After` never narrows an open window.
     let iy = add_indexer(&mut db, "mono", json!({})).await;
     assert!(claim(&mut db, iy, "c", 30.0, 0).await.is_some());
-    release(&mut db, iy, "c", 0.0, None).await;
+    release(&mut db, iy, "c", 0.0, "cancelled").await;
     assert!(fail(&mut db, iy).await.is_some());
     for (header, expected) in ["10", "120", "60"].iter().zip(&mono) {
         sqlx::query(sql::RETRY_AFTER)

@@ -7,6 +7,7 @@ use crate::throttle::{self, Lapsed};
 use crate::util::{
     decode_html_entities, encode_uri_component, parse_float, parse_int, setting_or_empty,
 };
+use fliks_plugin_sdk::rt::Budget;
 use regex::Regex;
 use serde::Serialize;
 use std::sync::LazyLock;
@@ -329,8 +330,10 @@ impl FetchError {
 }
 
 /// GET with `validateStatus: 200..400`.
-fn fetch_ok(url: &str, timeout: Duration) -> Result<String, FetchError> {
-    let r = net::get_following(url, &[], timeout).map_err(FetchError::Transport)?;
+async fn fetch_ok(url: &str, timeout: Duration) -> Result<String, FetchError> {
+    let r = net::get_following_async(url, &[], timeout)
+        .await
+        .map_err(FetchError::Transport)?;
     if !(200..400).contains(&r.status) {
         return Err(FetchError::Status {
             status: r.status,
@@ -382,22 +385,23 @@ pub enum Kind {
     Manual,
 }
 
-/// One search round: every request ends by `until`, each at most `fetch_timeout`.
+/// One search round: every request ends with `budget`, each at most `fetch_timeout`.
 #[derive(Clone, Copy)]
 pub struct Round {
-    pub until: Instant,
+    pub budget: Budget,
     pub fetch_timeout: Duration,
 }
 
 /// `t=caps`, persisted with a clean `capsSearchFallback`; nothing is written on a failure.
-pub fn refresh_caps(ix: &mut IndexerRow, round: Round) -> Result<(), Lapsed> {
+pub async fn refresh_caps(ix: &mut IndexerRow, round: Round) -> Result<(), Lapsed> {
     let Some((base, key)) = endpoint(ix) else {
         return Ok(());
     };
     let url = format!("{base}?t=caps&apikey={}", encode_uri_component(&key));
-    let res = throttle::run(ix, round.until, Duration::from_secs(10), |t| {
+    let res = throttle::run(ix, round.budget, Duration::from_secs(10), |t| {
         fetch_ok(&url, t)
-    })?;
+    })
+    .await?;
     let body = match res {
         Ok(b) => b,
         Err(e) => {
@@ -441,11 +445,11 @@ pub fn refresh_caps(ix: &mut IndexerRow, round: Round) -> Result<(), Lapsed> {
 }
 
 /// Probes on first use; false when the probe left the indexer cooling down.
-fn ensure_caps(ix: &mut IndexerRow, round: Round) -> Result<bool, Lapsed> {
+async fn ensure_caps(ix: &mut IndexerRow, round: Round) -> Result<bool, Lapsed> {
     if ix.caps_probed_at.is_some() || throttle::cooling(ix.id) {
         return Ok(true);
     }
-    refresh_caps(ix, round)?;
+    refresh_caps(ix, round).await?;
     Ok(!throttle::cooling(ix.id))
 }
 
@@ -466,7 +470,7 @@ fn search_target(ix: &IndexerRow, kind: Kind) -> Option<(String, String)> {
 }
 
 /// Results, or the Torznab/transport error text.
-fn exec_search(
+async fn exec_search(
     url: &str,
     query_type: &str,
     ix: &IndexerRow,
@@ -474,7 +478,7 @@ fn exec_search(
 ) -> Result<Result<Vec<Release>, String>, Lapsed> {
     let query = describe_query(url);
     let start = Instant::now();
-    match throttle::run(ix, round.until, round.fetch_timeout, |t| fetch_ok(url, t))? {
+    match throttle::run(ix, round.budget, round.fetch_timeout, |t| fetch_ok(url, t)).await? {
         Ok(body) => {
             if let Some(msg) = torznab_error(&body) {
                 record(ix, query_type, start, 0, Some(&msg));
@@ -501,13 +505,13 @@ fn exec_search(
     }
 }
 
-fn retry_with_fallback(
+async fn retry_with_fallback(
     ix: &mut IndexerRow,
     url: &str,
     query_type: &str,
     round: Round,
 ) -> Result<Vec<Release>, Lapsed> {
-    let Ok(results) = exec_search(url, query_type, ix, round)? else {
+    let Ok(results) = exec_search(url, query_type, ix, round).await? else {
         return Ok(vec![]);
     };
     info!(
@@ -555,7 +559,7 @@ pub fn test_connection(base_url: &str, api_key: &str) -> serde_json::Value {
 }
 
 /// The RSS feed: `t=search` with no query.
-pub fn rss(ix: &IndexerRow, until: Instant) -> Result<Vec<Release>, Lapsed> {
+pub async fn rss(ix: &IndexerRow, budget: Budget) -> Result<Vec<Release>, Lapsed> {
     if !ix.enabled || !ix.enable_rss {
         return Ok(vec![]);
     }
@@ -567,7 +571,7 @@ pub fn rss(ix: &IndexerRow, until: Instant) -> Result<Vec<Release>, Lapsed> {
         encode_uri_component(&key)
     );
     let start = Instant::now();
-    match throttle::run(ix, until, Duration::from_secs(60), |t| fetch_ok(&url, t))? {
+    match throttle::run(ix, budget, Duration::from_secs(60), |t| fetch_ok(&url, t)).await? {
         Ok(body) => {
             let results = parse_items(&body, ix);
             record(ix, "rss", start, results.len(), None);
@@ -592,18 +596,18 @@ fn season_tag(title: &str, season: u32) -> String {
     format!("{title} S{season:02}")
 }
 
-pub fn search_season_pack(
+pub async fn search_season_pack(
     ix: &mut IndexerRow,
     kind: Kind,
     title: &str,
     season: u32,
-    ids: &Ids,
+    ids: &Ids<'_>,
     round: Round,
 ) -> Result<Vec<Release>, Lapsed> {
     let Some((base, key)) = search_target(ix, kind) else {
         return Ok(vec![]);
     };
-    if !ensure_caps(ix, round)? {
+    if !ensure_caps(ix, round).await? {
         return Ok(vec![]);
     }
     let tv = ix.caps_tv_search && !ix.caps_search_fallback;
@@ -626,7 +630,7 @@ pub fn search_season_pack(
             ..Default::default()
         })
     );
-    match exec_search(&url, "season", ix, round)? {
+    match exec_search(&url, "season", ix, round).await? {
         Ok(r) => Ok(r),
         Err(err) if tv => {
             warn!(
@@ -644,25 +648,25 @@ pub fn search_season_pack(
                     ..Default::default()
                 })
             );
-            retry_with_fallback(ix, &fb, "season", round)
+            retry_with_fallback(ix, &fb, "season", round).await
         }
         Err(_) => Ok(vec![]),
     }
 }
 
-pub fn search_series(
+pub async fn search_series(
     ix: &mut IndexerRow,
     kind: Kind,
     title: &str,
     season: u32,
     episode: u32,
-    ids: &Ids,
+    ids: &Ids<'_>,
     round: Round,
 ) -> Result<Vec<Release>, Lapsed> {
     let Some((base, key)) = search_target(ix, kind) else {
         return Ok(vec![]);
     };
-    if !ensure_caps(ix, round)? {
+    if !ensure_caps(ix, round).await? {
         return Ok(vec![]);
     }
     // A special is never published as S00E03; the caller put its title in `title`.
@@ -688,7 +692,7 @@ pub fn search_series(
             ..Default::default()
         })
     );
-    match exec_search(&url, "tvsearch", ix, round)? {
+    match exec_search(&url, "tvsearch", ix, round).await? {
         Ok(r) => Ok(r),
         Err(err) if tv => {
             warn!(
@@ -706,23 +710,23 @@ pub fn search_series(
                     ..Default::default()
                 })
             );
-            retry_with_fallback(ix, &fb, "tvsearch", round)
+            retry_with_fallback(ix, &fb, "tvsearch", round).await
         }
         Err(_) => Ok(vec![]),
     }
 }
 
-pub fn search_movie(
+pub async fn search_movie(
     ix: &mut IndexerRow,
     kind: Kind,
     query: &str,
-    ids: &Ids,
+    ids: &Ids<'_>,
     round: Round,
 ) -> Result<Vec<Release>, Lapsed> {
     let Some((base, key)) = search_target(ix, kind) else {
         return Ok(vec![]);
     };
-    if !ensure_caps(ix, round)? {
+    if !ensure_caps(ix, round).await? {
         return Ok(vec![]);
     }
     let has_id = ids.imdb.is_some_and(|i| !i.is_empty()) || ids.tmdb.is_some_and(|i| i != 0);
@@ -740,7 +744,7 @@ pub fn search_movie(
             ..Default::default()
         })
     );
-    match exec_search(&url, "search", ix, round)? {
+    match exec_search(&url, "search", ix, round).await? {
         Ok(r) => Ok(r),
         Err(err) if movie => {
             warn!(
@@ -757,7 +761,7 @@ pub fn search_movie(
                     ..Default::default()
                 })
             );
-            retry_with_fallback(ix, &fb, "search", round)
+            retry_with_fallback(ix, &fb, "search", round).await
         }
         Err(err) => {
             warn!("[{}] search failed: {err}", ix.name);

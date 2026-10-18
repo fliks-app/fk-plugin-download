@@ -7,15 +7,16 @@ use crate::torznab::{self, Ids, Kind, Release, Round};
 use crate::util::{
     decode_html_entities, decode_uri_component, js_number, now_iso, num, pad2, today,
 };
-use crate::{qbit, throttle};
+use crate::{net, qbit, throttle};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
     AcquisitionEvent, AcquisitionTarget, Audience, CandidateRelease, CandidatesQuery, Grabbed,
     MediaKind, ParamValue, ReleaseCoverage, ReleaseTitle, ScoredRelease, WantDecision,
 };
 use fliks_plugin_sdk::host;
+use fliks_plugin_sdk::rt::{self, Budget, FuturesUnordered, StreamExt};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub fn kind_str(k: MediaKind) -> &'static str {
     match k {
@@ -260,33 +261,30 @@ impl Streamer<'_> {
     }
 }
 
-/// The search budget as the admin set it, clamped to 5..120 s; the fetch gets 5/6 of it.
-pub fn round(margin: Duration) -> Round {
+/// The search budget as the admin set it, clamped to 5..120 s, within the export's; the fetch
+/// gets 5/6 of it.
+pub fn round() -> Round {
     let budget = config::search_budget_ms();
-    let left = Duration::from_millis(host::deadline_remaining_ms()).saturating_sub(margin);
     let fetch = Duration::from_millis(((budget as f64) * 5.0 / 6.0).round() as u64);
     Round {
-        until: Instant::now() + Duration::from_millis(budget).min(left),
+        budget: Budget::new(net::budget().cap(Duration::from_millis(budget))),
         fetch_timeout: fetch,
     }
 }
 
-/// What the HTTP lane keeps back to answer before its deadline.
-pub const HTTP_MARGIN: Duration = Duration::from_secs(30);
-
-/// Fans out to every ready indexer in turn, then scores the union in one `releases.score` call.
+/// Fans out to every ready indexer at once, streams each answer, then scores the union in one
+/// `releases.score` call.
 pub fn search_scored(
     target: &AcquisitionTarget,
     kind: Kind,
     custom: Option<&str>,
     stream: Option<&Stream>,
-    margin: Duration,
 ) -> R<Vec<Ranked>> {
     let all = indexers::list_enabled()?;
     if all.is_empty() {
         return Ok(vec![]);
     }
-    let round = round(margin);
+    let round = round();
     let ids = Ids {
         imdb: target.imdb_id.as_deref(),
         tmdb: target.tmdb_id,
@@ -337,48 +335,55 @@ pub fn search_scored(
     }
 
     let mut raw: Vec<Release> = vec![];
-    for ix in ready.iter_mut() {
-        let out = if Instant::now() >= round.until {
-            Err(throttle::Lapsed)
-        } else if let Some(ep) = &target.episode {
-            let season = target.season.as_ref().map_or(0, |s| s.number);
-            torznab::search_series(ix, kind, &query, season, ep.number, &ids, round)
-        } else if let Some(s) = &target.season {
-            torznab::search_season_pack(ix, kind, &query, s.number, &ids, round)
-        } else {
-            torznab::search_movie(ix, kind, &query, &ids, round)
-        };
-        match out {
-            Ok(found) => {
-                let added = !found.is_empty();
-                raw.extend(found);
-                if let Some(s) = &mut streamer {
-                    s.set(ix, "done");
-                    if added {
-                        match rank(target, &all, &raw) {
-                            Ok(r) => {
-                                s.emit("search.partial", Some(r.iter().map(to_wire).collect()))
+    let (query, ids) = (&query, &ids);
+    rt::block_on(async {
+        let mut pending: FuturesUnordered<_> = ready
+            .iter_mut()
+            .map(|ix| async move {
+                let out = if let Some(ep) = &target.episode {
+                    let season = target.season.as_ref().map_or(0, |s| s.number);
+                    torznab::search_series(ix, kind, query, season, ep.number, ids, round).await
+                } else if let Some(s) = &target.season {
+                    torznab::search_season_pack(ix, kind, query, s.number, ids, round).await
+                } else {
+                    torznab::search_movie(ix, kind, query, ids, round).await
+                };
+                (ix, out)
+            })
+            .collect();
+        while let Some((ix, out)) = pending.next().await {
+            match out {
+                Ok(found) => {
+                    let added = !found.is_empty();
+                    raw.extend(found);
+                    if let Some(s) = &mut streamer {
+                        s.set(ix, "done");
+                        if added {
+                            match rank(target, &all, &raw) {
+                                Ok(r) => {
+                                    s.emit("search.partial", Some(r.iter().map(to_wire).collect()))
+                                }
+                                Err(e) => warn!("search stream re-rank failed: {e}"),
                             }
-                            Err(e) => warn!("search stream re-rank failed: {e}"),
+                        } else {
+                            s.emit("search.state", None);
                         }
-                    } else {
+                    }
+                }
+                Err(throttle::Lapsed) => {
+                    warn!(
+                        "[{}] still searching after {}ms — dropped from this round",
+                        ix.name,
+                        config::search_budget_ms()
+                    );
+                    if let Some(s) = &mut streamer {
+                        s.set(ix, "failed");
                         s.emit("search.state", None);
                     }
                 }
             }
-            Err(throttle::Lapsed) => {
-                warn!(
-                    "[{}] still searching after {}ms — dropped from this round",
-                    ix.name,
-                    config::search_budget_ms()
-                );
-                if let Some(s) = &mut streamer {
-                    s.set(ix, "failed");
-                    s.emit("search.state", None);
-                }
-            }
         }
-    }
+    });
     rank(target, &all, &raw)
 }
 
@@ -403,7 +408,7 @@ pub fn search_releases(
     let Some(want) = &target.want else {
         return Err(Error::grab("download.grab.errors.unprofiled"));
     };
-    let scored = search_scored(&target, Kind::Manual, custom, stream, HTTP_MARGIN)?;
+    let scored = search_scored(&target, Kind::Manual, custom, stream)?;
     let satisfied = if want.decision == WantDecision::Skip {
         " (profile already satisfied)"
     } else {
@@ -465,7 +470,7 @@ fn grab_and_record(a: GrabArgs) -> R<String> {
         "AutoGrab[{}]: sending \"{}\" to the download client — {}",
         a.media_type,
         a.source_title,
-        crate::util::redact_url(&a.download_url)
+        fliks_plugin_sdk::log::redact_url(&a.download_url)
     );
     let hash = qbit::add(a.client, &a.download_url, a.media_type, a.reject_if_present)?;
     let cov = coverage_columns(a.coverage.as_ref());
@@ -614,7 +619,7 @@ pub fn grab_release(
     }
 
     info!("Grab #{media_id} \"{}\" — auto-pick", target.title);
-    let scored = search_scored(&target, Kind::Auto, None, None, HTTP_MARGIN)?;
+    let scored = search_scored(&target, Kind::Auto, None, None)?;
     let picks = pick(&scored, &target);
     let best = picks.first().map(|i| &scored[*i]);
     // Loose episodes winning a season search means they beat every pack.
@@ -737,11 +742,7 @@ fn pending(target: &AcquisitionTarget) -> R<Option<String>> {
 }
 
 /// Search, pick and grab one automatic target; false when nothing was grabbed.
-fn try_auto_grab(
-    target: &AcquisitionTarget,
-    client: &DownloadClientRow,
-    margin: Duration,
-) -> R<bool> {
+fn try_auto_grab(target: &AcquisitionTarget, client: &DownloadClientRow) -> R<bool> {
     let kind = kind_str(target.kind);
     let skip = |reason: String| {
         info!("AutoGrab[{kind}]: \"{}\" skipped — {reason}", target.title);
@@ -757,7 +758,7 @@ fn try_auto_grab(
     if let Some(blocking) = pending(target)? {
         return skip(format!("a grab is already pending (\"{blocking}\")"));
     }
-    let scored = search_scored(target, Kind::Auto, None, None, margin)?;
+    let scored = search_scored(target, Kind::Auto, None, None)?;
     if scored.is_empty() {
         return skip("no releases returned by indexers".into());
     }
@@ -830,11 +831,7 @@ pub fn after(key: Key, resume: Option<Key>) -> bool {
 }
 
 /// `Ok(Some(key))`: the time budget ran out after `key`; the caller resumes from there.
-pub fn search_missing(
-    media_ids: Option<Vec<u32>>,
-    resume: Option<Key>,
-    margin: Duration,
-) -> R<Option<Key>> {
+pub fn search_missing(media_ids: Option<Vec<u32>>, resume: Option<Key>) -> R<Option<Key>> {
     if config::auto_acquisition_paused("SearchMissing").map_err(Error::Other)? {
         return Ok(None);
     }
@@ -858,8 +855,7 @@ pub fn search_missing(
             if !after(key, resume) {
                 continue;
             }
-            let need = margin + Duration::from_millis(config::search_budget_ms());
-            if Duration::from_millis(host::deadline_remaining_ms()) < need {
+            if net::budget().remaining() < Duration::from_millis(config::search_budget_ms()) {
                 info!("SearchMissing: out of time after {count} candidate(s), resuming later");
                 return Ok(last);
             }
@@ -876,7 +872,7 @@ pub fn search_missing(
             {
                 continue;
             }
-            let grabbed = try_auto_grab(target, &client, margin)?;
+            let grabbed = try_auto_grab(target, &client)?;
             if grabbed
                 && target.episode.is_none()
                 && let Some(s) = &target.season
@@ -974,7 +970,7 @@ pub fn season_episode_ids(
 }
 
 /// Each ready indexer's feed, identified by `releases.match`, grabbed through the auto path.
-pub fn rss_sync(margin: Duration) -> R<()> {
+pub fn rss_sync() -> R<()> {
     if config::auto_acquisition_paused("RssSync").map_err(Error::Other)? {
         return Ok(());
     }
@@ -990,15 +986,13 @@ pub fn rss_sync(margin: Duration) -> R<()> {
         }
         return Ok(());
     }
-    let out_of_time = || Duration::from_millis(host::deadline_remaining_ms()) < margin;
+    let out_of_time = || net::budget().expired();
     for ix in &ready {
         if out_of_time() {
             info!("RssSync: out of time, the next tick re-reads the feeds");
             return Ok(());
         }
-        let until = Instant::now()
-            + Duration::from_millis(host::deadline_remaining_ms()).saturating_sub(margin);
-        let releases = match torznab::rss(ix, until) {
+        let releases = match rt::block_on(torznab::rss(ix, net::budget())) {
             Ok(r) => r,
             Err(throttle::Lapsed) => {
                 warn!(
@@ -1047,7 +1041,7 @@ pub fn rss_sync(margin: Duration) -> R<()> {
                         .as_ref()
                         .is_some_and(|w| w.decision != WantDecision::Skip) =>
                 {
-                    try_auto_grab(t, &client, margin)?;
+                    try_auto_grab(t, &client)?;
                 }
                 None if page.cursor.is_some() => {
                     warn!(
