@@ -838,17 +838,16 @@ fn remove_queued(r: &Request) -> R<Response> {
 /// Hands a refused import back to the next `ImportCompleted` tick.
 fn retry_import(r: &Request) -> R<Response> {
     let id = need_id!(r);
-    let Some(row) = history::find(id)? else {
-        return not_found(&id.to_string());
-    };
-    if row.status != "import_failed" {
-        return Ok(err_body(
-            409,
-            "download.queue.errors.not_retryable",
-            Some(&row.status),
-        ));
+    if !history::retry_import(id)? {
+        return match history::find(id)? {
+            None => not_found(&id.to_string()),
+            Some(row) => Ok(err_body(
+                409,
+                "download.queue.errors.not_retryable",
+                Some(&row.status),
+            )),
+        };
     }
-    history::set_status(&[row.id], "grabbed", None)?;
     if let Err(e) = host::events_publish(&[AcquisitionEvent::QueueChanged]) {
         warn!("queue-changed publish failed: {}", e.message);
     }

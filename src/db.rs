@@ -969,6 +969,15 @@ pub mod history {
         .map(drop)
     }
 
+    /// Re-arms a refused import; false when the row is gone or no longer `import_failed`.
+    pub fn retry_import(id: i64) -> R<bool> {
+        exec(
+            r#"UPDATE "download_history" SET "status" = 'grabbed', "statusMessage" = NULL, "updatedAt" = now() WHERE "id" = $1 AND "status" = 'import_failed'"#,
+            &[int(id)],
+        )
+        .map(|n| n > 0)
+    }
+
     pub fn complete_import(id: i64) -> R<()> {
         exec(
             r#"UPDATE "download_history" SET "status" = 'completed', "updatedAt" = now() WHERE "id" = $1"#,
