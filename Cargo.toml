@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [".", "xtask"]
+default-members = ["."]
+
+[package]
+name = "fk-plugin-download"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "8cb55fee135d7842d816f33625919cd3fb33c58f" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = { version = "1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
+url = "2"
+sha1 = { version = "0.10", default-features = false }
+time = { version = "0.3", default-features = false, features = ["parsing", "std"] }
+
+# Component tests of the built plugin under the real host (SDK-11).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "8cb55fee135d7842d816f33625919cd3fb33c58f", features = ["harness"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,580 @@
+{
+  "migrations": [
+    {
+      "name": "0001_initial_schema",
+      "up": "\nCREATE TABLE \"indexers\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"name\" varchar NOT NULL,\n  \"implementation\" varchar NOT NULL,\n  \"settings\" jsonb NOT NULL DEFAULT '{}',\n  \"enableRss\" boolean NOT NULL DEFAULT true,\n  \"enableSearch\" boolean NOT NULL DEFAULT true,\n  \"priority\" integer NOT NULL DEFAULT 25,\n  \"enabled\" boolean NOT NULL DEFAULT true,\n  \"capsMovieSearch\" boolean NOT NULL DEFAULT false,\n  \"capsTvSearch\" boolean NOT NULL DEFAULT false,\n  \"capsSearchFallback\" boolean NOT NULL DEFAULT false,\n  \"requestDelay\" integer NOT NULL DEFAULT 2\n);\n\nCREATE TABLE \"download_clients\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"name\" varchar NOT NULL,\n  \"implementation\" varchar NOT NULL,\n  \"settings\" jsonb NOT NULL DEFAULT '{}',\n  \"enabled\" boolean NOT NULL DEFAULT true,\n  \"priority\" integer NOT NULL DEFAULT 1\n);\n\nCREATE TABLE \"indexer_stats\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"indexerId\" integer REFERENCES \"indexers\"(\"id\") ON DELETE CASCADE,\n  \"queryDate\" timestamptz NOT NULL DEFAULT now(),\n  \"queryType\" varchar NOT NULL DEFAULT 'search',\n  \"responseTimeMs\" integer NOT NULL DEFAULT 0,\n  \"resultCount\" integer NOT NULL DEFAULT 0,\n  \"errorMessage\" text\n);\n\nCREATE TABLE \"download_history\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"sourceTitle\" varchar NOT NULL,\n  \"quality\" varchar NOT NULL,\n  \"language\" varchar,\n  \"torrentHash\" varchar,\n  \"status\" varchar NOT NULL DEFAULT 'grabbed',\n  \"statusMessage\" text,\n  \"grabSource\" varchar(8) NOT NULL DEFAULT 'auto',\n  \"mediaId\" integer REFERENCES public.\"media\"(\"id\") ON DELETE CASCADE,\n  \"episodeId\" integer REFERENCES public.\"episodes\"(\"id\") ON DELETE SET NULL,\n  \"seasonId\" integer REFERENCES public.\"seasons\"(\"id\") ON DELETE SET NULL,\n  \"indexerId\" integer REFERENCES \"indexers\"(\"id\") ON DELETE SET NULL,\n  \"downloadClientId\" integer REFERENCES \"download_clients\"(\"id\") ON DELETE SET NULL\n);\nCREATE INDEX \"idx_download_history_torrent_hash_lower\" ON \"download_history\" (LOWER(\"torrentHash\")) WHERE \"torrentHash\" IS NOT NULL;\n\nCREATE TABLE \"blocklist\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"sourceTitle\" varchar NOT NULL,\n  \"indexerId\" integer,\n  \"indexerName\" varchar,\n  \"downloadUrl\" varchar,\n  \"quality\" varchar,\n  \"note\" varchar,\n  \"mediaId\" integer REFERENCES public.\"media\"(\"id\") ON DELETE SET NULL,\n  \"userId\" integer REFERENCES public.\"users\"(\"id\") ON DELETE SET NULL\n);\nCREATE UNIQUE INDEX \"uq_blocklist_source_title_lower\" ON \"blocklist\" (LOWER(\"sourceTitle\"));\n\nCREATE TABLE \"stalled_checks\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"torrentHash\" varchar(64) NOT NULL,\n  \"downloadedBytes\" bigint NOT NULL,\n  \"checkedAt\" timestamptz NOT NULL DEFAULT now()\n);\nCREATE INDEX \"idx_stalled_checks_hash_checked_at\" ON \"stalled_checks\" (\"torrentHash\", \"checkedAt\");\n"
+    },
+    {
+      "name": "0002_indexer_caps_probed_at",
+      "up": "\n  ALTER TABLE \"indexers\" ADD COLUMN IF NOT EXISTS \"capsProbedAt\" timestamptz\n"
+    },
+    {
+      "name": "0003_download_history_size",
+      "up": "\n  ALTER TABLE \"download_history\" ADD COLUMN IF NOT EXISTS \"size\" bigint\n"
+    },
+    {
+      "name": "0004_download_history_info_url",
+      "up": "\n  ALTER TABLE \"download_history\" ADD COLUMN IF NOT EXISTS \"infoUrl\" text\n"
+    },
+    {
+      "name": "0005_indexer_sources",
+      "up": "\nCREATE TABLE IF NOT EXISTS \"indexer_sources\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"name\" varchar NOT NULL,\n  \"implementation\" varchar NOT NULL,\n  \"settings\" jsonb NOT NULL DEFAULT '{}',\n  \"priority\" integer NOT NULL DEFAULT 1,\n  \"enabled\" boolean NOT NULL DEFAULT true\n)\n"
+    },
+    {
+      "name": "0006_indexer_interactive_search",
+      "up": "\n  ALTER TABLE \"indexers\" ADD COLUMN IF NOT EXISTS \"enableInteractiveSearch\" boolean NOT NULL DEFAULT true;\n\n  -- Backfilled from the column that used to gate both kinds of search: a row with searches off\n  -- must not come out of this migration answering manual ones. New rows take the default.\n  UPDATE \"indexers\" SET \"enableInteractiveSearch\" = \"enableSearch\"\n"
+    },
+    {
+      "name": "0007_indexer_caps_supported_params",
+      "up": "\n  ALTER TABLE \"indexers\"\n    ADD COLUMN IF NOT EXISTS \"capsMovieSearchParams\" text,\n    ADD COLUMN IF NOT EXISTS \"capsTvSearchParams\" text\n"
+    },
+    {
+      "name": "0008_download_history_coverage",
+      "up": "\n  ALTER TABLE \"download_history\"\n    ADD COLUMN IF NOT EXISTS \"coverSeasonFrom\" integer,\n    ADD COLUMN IF NOT EXISTS \"coverSeasonTo\" integer,\n    ADD COLUMN IF NOT EXISTS \"coverEpisodeFrom\" integer,\n    ADD COLUMN IF NOT EXISTS \"coverEpisodeTo\" integer,\n    ADD COLUMN IF NOT EXISTS \"coverCompleteSeries\" boolean\n"
+    }
+  ],
+  "htmlEntities": [
+    {
+      "input": "Berl&iacute;n",
+      "output": "Berlín"
+    },
+    {
+      "input": "&amp;&lt;&gt;&quot;&apos;",
+      "output": "&<>\"'"
+    },
+    {
+      "input": "&#233;&#xE9;&#XE9;",
+      "output": "éé&#XE9;"
+    },
+    {
+      "input": "&#0;",
+      "output": "&#0;"
+    },
+    {
+      "input": "&bogus;",
+      "output": "&bogus;"
+    },
+    {
+      "input": "&#1114112;",
+      "output": "&#1114112;"
+    },
+    {
+      "input": "no entities",
+      "output": "no entities"
+    },
+    {
+      "input": "&amp",
+      "output": "&amp"
+    },
+    {
+      "input": "&euro;&hellip;&nbsp;x",
+      "output": "€… x"
+    }
+  ],
+  "torznabQuery": [
+    {
+      "input": {
+        "t": "search",
+        "q": "Dune 2021",
+        "cat": "2000",
+        "apiKey": "k&y"
+      },
+      "output": "t=search&q=Dune%202021&cat=2000&apikey=k%26y"
+    },
+    {
+      "input": {
+        "t": "movie",
+        "q": "Dune",
+        "cat": "2000",
+        "apiKey": "k",
+        "imdbId": "tt1160419",
+        "tmdbId": 438631,
+        "supportedParams": "q, imdbid,TMDBID"
+      },
+      "output": "t=movie&q=Dune&cat=2000&apikey=k&imdbid=1160419&tmdbid=438631"
+    },
+    {
+      "input": {
+        "t": "tvsearch",
+        "q": "L'été (2024)!*",
+        "season": 1,
+        "ep": 2,
+        "cat": "5000",
+        "apiKey": "",
+        "tvdbId": 5,
+        "imdbId": "tt",
+        "supportedParams": "q,tvdbid,imdbid"
+      },
+      "output": "t=tvsearch&q=L'%C3%A9t%C3%A9%20(2024)!*&season=1&ep=2&cat=5000&apikey=&tvdbid=5"
+    },
+    {
+      "input": {
+        "t": "tvsearch",
+        "q": "",
+        "season": 0,
+        "cat": "5000",
+        "apiKey": "a b",
+        "tvdbId": 5,
+        "supportedParams": null
+      },
+      "output": "t=tvsearch&season=0&cat=5000&apikey=a%20b"
+    }
+  ],
+  "describeQuery": [
+    {
+      "input": "https://t.example/api?t=tvsearch&q=Show%20Name&season=1&ep=2&cat=5000&apikey=SECRET&tvdbid=5",
+      "output": "tvsearch q=\"Show Name\" season=1 ep=2 cat=5000 tvdbid=5"
+    },
+    {
+      "input": "https://t.example/api?apikey=x",
+      "output": "search"
+    },
+    {
+      "input": "not a url",
+      "output": "search"
+    }
+  ],
+  "torznabItems": [
+    {
+      "settings": {
+        "apiKey": "k1"
+      },
+      "xml": "<rss><channel><item>\n    <title>Some.Movie.2024.1080p</title>\n    <link>https://tracker.example/dl/abc?x=1&amp;apikey=old</link>\n    <pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate>\n    <torznab:attr name=\"size\" value=\"123456\" />\n    <torznab:attr name=\"seeders\" value=\"42\" />\n    <torznab:attr name=\"leechers\" value=\"3\" />\n    <torznab:attr name=\"downloadvolumefactor\" value=\"0\" />\n  </item></channel></rss>",
+      "output": [
+        {
+          "title": "Some.Movie.2024.1080p",
+          "downloadUrl": "https://tracker.example/dl/abc?x=1&apikey=k1",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 123456,
+          "seeders": 42,
+          "leechers": 3,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": true,
+          "downloadVolumeFactor": 0
+        }
+      ]
+    },
+    {
+      "settings": {},
+      "xml": "<rss><channel>\n  <item><title><![CDATA[Berl&iacute;n S01E02 &amp; More]]></title>\n    <guid>https://tracker.example/details/9</guid>\n    <enclosure url=\"https://tracker.example/get/9?a=1&amp;b=2\" length=\"999\" type=\"application/x-bittorrent\"/>\n    <torznab:attr name=\"magneturl\" value=\"magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&amp;dn=x\" />\n    <torznab:attr name=\"peers\" value=\"12\" />\n    <pubDate>Tue, 02 Jan 2024 10:20:30 +0100</pubDate>\n  </item>\n  <ITEM><title>Upper.Case.Item</title><link>magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567</link>\n    <comments>https://tracker.example/c/1</comments><size>4567</size>\n    <torznab:attr name=\"downloadvolumefactor\" value=\"0.5\" /></ITEM>\n  <item><title>Local.Only</title><link>http://localhost:9117/dl/1</link></item>\n  <item><title>No URL</title></item>\n  <item><title>Bad.Date</title><link>https://t.example/x</link><pubDate>not a date</pubDate>\n    <torznab:attr name=\"seeders\" value=\"abc\" /></item>\n  <item><title>Iso.Date</title><link>https://t.example/y</link><pubDate>2024-03-04T05:06:07Z</pubDate></item>\n</channel></rss>",
+      "output": [
+        {
+          "title": "Berlín S01E02 & More",
+          "downloadUrl": "magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&dn=x",
+          "infoUrl": "https://tracker.example/details/9",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 12,
+          "publishDate": "2024-01-02T09:20:30.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Upper.Case.Item",
+          "downloadUrl": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+          "infoUrl": "https://tracker.example/c/1",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 4567,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 0.5
+        },
+        {
+          "title": "Bad.Date",
+          "downloadUrl": "https://t.example/x",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Iso.Date",
+          "downloadUrl": "https://t.example/y",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": "2024-03-04T05:06:07.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        }
+      ]
+    },
+    {
+      "settings": {},
+      "xml": "<rss><channel><item><title>Unclosed</title>",
+      "output": []
+    }
+  ],
+  "magnetHash": [
+    {
+      "input": "magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&dn=x",
+      "output": "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    },
+    {
+      "input": "magnet:?xt=urn:btih:MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43U&dn=y",
+      "output": "6162636465666768696a6b6c6d6e6f7071727374"
+    },
+    {
+      "input": "magnet:?xt=urn:btih:mfrggzdfmztwq2lknnwg23tpobyxe43u",
+      "output": "6162636465666768696a6b6c6d6e6f7071727374"
+    },
+    {
+      "input": "magnet:?dn=nohash",
+      "output": null
+    }
+  ],
+  "infoHash": [
+    {
+      "input": "ZDg6YW5ub3VuY2UxMDpodHRwOi8vdC9hNDppbmZvZDY6bGVuZ3RoaTEwZTQ6bmFtZTU6YS5ta3YxMjpwaWVjZSBsZW5ndGhpMTYzODRlNjpwaWVjZXMyMDoHBwcHBwcHBwcHBwcHBwcHBwcHB2Vl",
+      "output": "0892538360cbbac2a837069f15925e955061dbe7"
+    },
+    {
+      "input": "ZDQ6aW5mb2Q1OmZpbGVzbGQ2Omxlbmd0aGkxZTQ6cGF0aGwxOng1OnkubWt2ZWVlNDpuYW1lMzpkaXIxMjpwaWVjZSBsZW5ndGhpMWU2OnBpZWNlczA6ZWU=",
+      "output": "0876ef5be5b906724e380b9c04e8478da5b67d7e"
+    },
+    {
+      "input": "ZDQ6aW5mb2kxZWU=",
+      "output": null
+    },
+    {
+      "input": "Z2FyYmFnZQ==",
+      "output": null
+    }
+  ],
+  "torrentName": [
+    {
+      "input": "Some.Movie_2024  1080p.torrent",
+      "output": "some movie 2024 1080p"
+    },
+    {
+      "input": "Berl&iacute;n.S01",
+      "output": "berlín s01"
+    },
+    {
+      "input": "",
+      "output": ""
+    },
+    {
+      "input": "A__B..C",
+      "output": "a b c"
+    }
+  ],
+  "stallStrikes": [
+    {
+      "input": {
+        "minBytesPerSecond": 8192,
+        "samples": []
+      },
+      "output": 0
+    },
+    {
+      "input": {
+        "minBytesPerSecond": 8192,
+        "samples": [
+          {
+            "downloadedBytes": 100,
+            "checkedAt": "2026-01-01T02:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 100,
+            "checkedAt": "2026-01-01T01:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 50,
+            "checkedAt": "2026-01-01T00:00:00.000Z"
+          }
+        ]
+      },
+      "output": 3
+    },
+    {
+      "input": {
+        "minBytesPerSecond": 1,
+        "samples": [
+          {
+            "downloadedBytes": 10,
+            "checkedAt": "2026-01-01T02:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 99999,
+            "checkedAt": "2026-01-01T01:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 1,
+            "checkedAt": "2026-01-01T00:00:00.000Z"
+          }
+        ]
+      },
+      "output": 1
+    },
+    {
+      "input": {
+        "minBytesPerSecond": 1,
+        "samples": [
+          {
+            "downloadedBytes": 7300,
+            "checkedAt": "2026-01-01T02:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 3600,
+            "checkedAt": "2026-01-01T01:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 0,
+            "checkedAt": "2026-01-01T00:00:00.000Z"
+          }
+        ]
+      },
+      "output": 1
+    }
+  ],
+  "qbitBaseUrl": [
+    {
+      "input": {
+        "host": "localhost",
+        "port": 8080
+      },
+      "output": "http://localhost:8080"
+    },
+    {
+      "input": {
+        "host": "https://qbit.lan:9090/",
+        "useSsl": true
+      },
+      "output": "https://qbit.lan:9090"
+    },
+    {
+      "input": {
+        "host": "qbit.lan:9090",
+        "port": 1234
+      },
+      "output": "http://qbit.lan:1234"
+    },
+    {
+      "input": {
+        "host": "HTTP://x"
+      },
+      "output": "http://x"
+    },
+    {
+      "input": {
+        "host": ""
+      },
+      "output": null
+    }
+  ],
+  "progressState": [
+    {
+      "input": "queuedDL",
+      "output": "queued"
+    },
+    {
+      "input": "stalledDL",
+      "output": "stalled"
+    },
+    {
+      "input": "error",
+      "output": "stalled"
+    },
+    {
+      "input": "missingFiles",
+      "output": "stalled"
+    },
+    {
+      "input": "pausedDL",
+      "output": "paused"
+    },
+    {
+      "input": "stoppedUP",
+      "output": "paused"
+    },
+    {
+      "input": "moving",
+      "output": "importing"
+    },
+    {
+      "input": "downloading",
+      "output": "active"
+    },
+    {
+      "input": "uploading",
+      "output": "active"
+    },
+    {
+      "input": "weird",
+      "output": "active"
+    }
+  ],
+  "encodeUriComponent": [
+    {
+      "input": "a b&c=d/é!'()*~-_.",
+      "output": "a%20b%26c%3Dd%2F%C3%A9!'()*~-_."
+    },
+    {
+      "input": "日本",
+      "output": "%E6%97%A5%E6%9C%AC"
+    },
+    {
+      "input": "",
+      "output": ""
+    }
+  ],
+  "coverageColumns": [
+    {
+      "input": null,
+      "output": {
+        "coverSeasonFrom": null,
+        "coverSeasonTo": null,
+        "coverEpisodeFrom": null,
+        "coverEpisodeTo": null,
+        "coverCompleteSeries": null
+      }
+    },
+    {
+      "input": {
+        "seasons": null,
+        "episodes": null,
+        "completeSeries": false
+      },
+      "output": {
+        "coverSeasonFrom": null,
+        "coverSeasonTo": null,
+        "coverEpisodeFrom": null,
+        "coverEpisodeTo": null,
+        "coverCompleteSeries": null
+      }
+    },
+    {
+      "input": {
+        "seasons": null,
+        "episodes": null,
+        "completeSeries": true
+      },
+      "output": {
+        "coverSeasonFrom": null,
+        "coverSeasonTo": null,
+        "coverEpisodeFrom": null,
+        "coverEpisodeTo": null,
+        "coverCompleteSeries": true
+      }
+    },
+    {
+      "input": {
+        "seasons": {
+          "from": 1,
+          "to": 3
+        },
+        "episodes": null,
+        "completeSeries": false
+      },
+      "output": {
+        "coverSeasonFrom": 1,
+        "coverSeasonTo": 3,
+        "coverEpisodeFrom": null,
+        "coverEpisodeTo": null,
+        "coverCompleteSeries": false
+      }
+    },
+    {
+      "input": {
+        "seasons": {
+          "from": 2,
+          "to": 2
+        },
+        "episodes": {
+          "from": 4,
+          "to": 5
+        },
+        "completeSeries": false
+      },
+      "output": {
+        "coverSeasonFrom": 2,
+        "coverSeasonTo": 2,
+        "coverEpisodeFrom": 4,
+        "coverEpisodeTo": 5,
+        "coverCompleteSeries": false
+      }
+    }
+  ],
+  "secretSettings": [
+    {
+      "input": {
+        "existing": {
+          "apiKey": "old",
+          "baseUrl": "u"
+        },
+        "incoming": {
+          "apiKey": "",
+          "baseUrl": "v",
+          "secretsSet": [
+            "apiKey"
+          ]
+        }
+      },
+      "merged": {
+        "apiKey": "old",
+        "baseUrl": "v"
+      },
+      "redacted": {
+        "baseUrl": "u",
+        "secretsSet": [
+          "apiKey"
+        ]
+      }
+    },
+    {
+      "input": {
+        "existing": {
+          "apiKey": "old"
+        },
+        "incoming": {
+          "apiKey": null
+        }
+      },
+      "merged": {},
+      "redacted": {
+        "secretsSet": [
+          "apiKey"
+        ]
+      }
+    },
+    {
+      "input": {
+        "existing": null,
+        "incoming": {
+          "apiKey": "new"
+        }
+      },
+      "merged": {
+        "apiKey": "new"
+      },
+      "redacted": {
+        "secretsSet": []
+      }
+    },
+    {
+      "input": {
+        "existing": {},
+        "incoming": {
+          "apiKey": ""
+        }
+      },
+      "merged": {},
+      "redacted": {
+        "secretsSet": []
+      }
+    }
+  ]
+}
