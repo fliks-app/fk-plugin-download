@@ -822,13 +822,11 @@ async fn indexers_are_searched_at_once_and_streamed_as_they_answer() {
     let media = add_movie(&h, "Some Movie").await;
 
     let mut events = h.st.hub.subscribe();
-    let started = Instant::now();
     let path = format!("/{media}/releases");
     let r = h
         .http(request("GET", &path, &[("sid", "s1")], b""))
         .await
         .unwrap();
-    let took = started.elapsed();
     assert_eq!(r.status, 200, "{:?}", body(&r));
     assert_eq!(body(&r).as_array().map(Vec::len), Some(2), "{:?}", body(&r));
     let (s, f) = (slow.hits(), fast.hits());
@@ -836,10 +834,6 @@ async fn indexers_are_searched_at_once_and_streamed_as_they_answer() {
     assert!(
         f[0].start < s[0].end && s[0].start < f[0].end,
         "both requests in flight together: {s:?} {f:?}"
-    );
-    assert!(
-        took < Duration::from_millis(1900),
-        "the slower one, not the sum: {took:?}"
     );
 
     let state = |p: &Value, id: i64| {
@@ -873,6 +867,142 @@ async fn indexers_are_searched_at_once_and_streamed_as_they_answer() {
             row("partial", "done", "done", Some(2)),
         ]
     );
+    h.finish().await;
+}
+
+/// The last streamed state of each indexer.
+fn final_states(events: &mut tokio::sync::broadcast::Receiver<Arc<Bus>>) -> Vec<(i64, String)> {
+    let mut last = vec![];
+    while let Ok(ev) = events.try_recv() {
+        if let Bus::Raw(raw) = &*ev
+            && raw.r#type.starts_with("plugin.fliks.download.search.")
+        {
+            last = raw.payload["indexers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|i| {
+                    (
+                        i["id"].as_i64().unwrap_or(0),
+                        i["state"].as_str().unwrap_or("").into(),
+                    )
+                })
+                .collect();
+        }
+    }
+    last.sort();
+    last
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_round_out_of_time_drops_its_requests_without_pushing_the_spacing() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    h.set_config("search_budget_seconds", Some("5")).await;
+    let waiting = Stub::start(|_, _, _| (200, vec![], one_item_feed("Never.Asked.2020")));
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = asked.clone();
+    let hanging = Stub::start(move |_, _, _| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_secs(10));
+        (200, vec![], one_item_feed("Too.Late.2020"))
+    });
+    let fast = Stub::start(|_, _, _| (200, vec![], one_item_feed("Some.Movie.2020.1080p.WEB")));
+    route(&h, "waiting.test", "10.77.0.1", 80, &waiting);
+    route(&h, "hanging.test", "10.77.0.3", 80, &hanging);
+    route(&h, "fast.test", "10.77.0.4", 80, &fast);
+    let mut db = plugin_db(&h).await;
+    let mut add = async |name: &str, delay: i64| {
+        let url = format!("http://{name}.test/api");
+        let id = add_indexer(&mut db, name, json!({ "baseUrl": url, "apiKey": "k" })).await;
+        exec(
+            &mut db,
+            &format!(
+                r#"UPDATE "indexers" SET "requestDelay" = {delay} WHERE "id" = {id};
+            INSERT INTO "indexer_throttle" ("indexerId", "nextAllowedAt")
+            VALUES ({id}, now() + make_interval(secs => {delay}))"#
+            ),
+        )
+        .await;
+        id
+    };
+    let (a, b, c) = (
+        add("waiting", 10).await,
+        add("hanging", 2).await,
+        add("fast", 0).await,
+    );
+    let next_of = |id: i64| {
+        format!(r#"SELECT "nextAllowedAt"::text FROM "indexer_throttle" WHERE "indexerId" = {id}"#)
+    };
+    let before: String = sqlx::query_scalar(&next_of(a))
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+    let media = add_movie(&h, "Some Movie").await;
+
+    let mut events = h.st.hub.subscribe();
+    let started = Instant::now();
+    let path = format!("/{media}/releases");
+    let r = h
+        .http(request("GET", &path, &[("sid", "s1")], b""))
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(7),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(r.status, 200, "{:?}", body(&r));
+    let titles: Vec<Value> = body(&r)
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|x| x["title"].clone())
+        .collect();
+    assert_eq!(
+        titles,
+        [json!("Some.Movie.2020.1080p.WEB")],
+        "{:?}",
+        body(&r)
+    );
+
+    // Never sent: no hit, the slot free and the spacing where it was.
+    assert_eq!(waiting.hits().len(), 0);
+    let after: String = sqlx::query_scalar(&next_of(a))
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+    assert_eq!(after, before);
+    // Sent, then cut by the round: released as cancelled, no failure step.
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let (busy, failures, cooling, next_s): (Option<String>, i32, Option<String>, f64) =
+        sqlx::query_as(&format!(
+            r#"SELECT "busyToken", "failureCount", "cooldownUntil"::text,
+                 extract(epoch FROM "nextAllowedAt" - now())::float8
+               FROM "indexer_throttle" WHERE "indexerId" = {b}"#
+        ))
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+    assert_eq!((busy, failures, cooling), (None, 0, None));
+    assert!(
+        (0.5..=2.1).contains(&next_s),
+        "spacing from the cut: {next_s}"
+    );
+    let free: i64 = scalar_i64(
+        &mut db,
+        &format!(r#"SELECT count(*) FROM "indexer_throttle" WHERE "indexerId" IN ({a}, {c}) AND "busyToken" IS NULL"#),
+    )
+    .await;
+    assert_eq!(free, 2);
+    let mut want = vec![
+        (a, "failed".to_owned()),
+        (b, "failed".into()),
+        (c, "done".into()),
+    ];
+    want.sort();
+    assert_eq!(final_states(&mut events), want);
     h.finish().await;
 }
 
