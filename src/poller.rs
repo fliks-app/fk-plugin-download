@@ -10,7 +10,7 @@ use crate::qbit::{self, Torrent};
 use crate::util::{decode_html_entities, js_number, now_ms, parse_date_ms};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
     AcquisitionEvent, DownloadProgress, DownloadState, Failed, Imported, IngestRequest,
-    ResolveQuery, StalledRemoved, TransferMode,
+    IngestResult, ResolveQuery, StalledRemoved, TransferMode,
 };
 use fliks_plugin_sdk::host;
 use regex::Regex;
@@ -705,6 +705,21 @@ fn auto_blocklist(h: &HistoryRow, note: &str) {
     });
 }
 
+#[derive(Debug, PartialEq)]
+enum Ingested {
+    Imported,
+    AlreadyPresent,
+    NothingPlaced,
+}
+
+fn classify(r: &IngestResult) -> Ingested {
+    match (r.imported.is_empty(), r.already_present.is_empty()) {
+        (false, _) => Ingested::Imported,
+        (true, false) => Ingested::AlreadyPresent,
+        (true, true) => Ingested::NothingPlaced,
+    }
+}
+
 fn process_one(h: &HistoryRow, t: &Torrent, client: &DownloadClientRow) -> R<()> {
     let Some(files) = qbit::files(client, &t.hash) else {
         let message = format!("could not list files for \"{}\"", t.name);
@@ -749,7 +764,7 @@ fn process_one(h: &HistoryRow, t: &Torrent, client: &DownloadClientRow) -> R<()>
         fallback_quality: None,
         source_label: h.source_title.clone(),
     })?;
-    let imported = |r: &fliks_plugin_sdk::bindings::fliks::plugin::types::IngestResult| {
+    let imported = |r: &IngestResult| {
         let ev = AcquisitionEvent::Imported(Imported {
             media_id: media as u32,
             season_number: r.season_number,
@@ -759,24 +774,27 @@ fn process_one(h: &HistoryRow, t: &Torrent, client: &DownloadClientRow) -> R<()>
         });
         publish(ev, "acquisition.imported", &h.source_title);
     };
-    if result.imported.is_empty() && !result.already_present.is_empty() {
-        info!(
-            "Import[{}]: already in the library — completing the row",
-            h.source_title
-        );
-        history::complete_import(h.id)?;
-        imported(&result);
-        return Ok(());
-    }
-    if result.imported.is_empty() {
-        let msg = format!(
-            "Import failed: no file could be placed under the library root for \"{}\"",
-            t.name
-        );
-        error!("Import[{}]: {msg}", h.source_title);
-        history::set_status(&[h.id], "import_failed", Some(&msg))?;
-        publish_failed(h, &msg);
-        return Ok(());
+    match classify(&result) {
+        Ingested::AlreadyPresent => {
+            info!(
+                "Import[{}]: already in the library — completing the row",
+                h.source_title
+            );
+            history::complete_import(h.id)?;
+            imported(&result);
+            return Ok(());
+        }
+        Ingested::NothingPlaced => {
+            let msg = format!(
+                "Import failed: no file could be placed under the library root for \"{}\"",
+                t.name
+            );
+            error!("Import[{}]: {msg}", h.source_title);
+            history::set_status(&[h.id], "import_failed", Some(&msg))?;
+            publish_failed(h, &msg);
+            return Ok(());
+        }
+        Ingested::Imported => {}
     }
     history::complete_import(h.id)?;
     info!(
@@ -1008,6 +1026,50 @@ pub fn clean_seeded() -> R<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
+    use fliks_plugin_sdk::bindings::fliks::plugin::types::ImportedFile;
+
+    #[test]
+    fn an_ingest_is_classified_by_what_it_placed() {
+        let file = ImportedFile {
+            media_file_id: 1,
+            relative_path: "a.mkv".into(),
+            quality: "HD".into(),
+        };
+        let result = |imported: Vec<ImportedFile>, present: Vec<&str>| IngestResult {
+            imported,
+            already_present: present.into_iter().map(str::to_owned).collect(),
+            season_number: None,
+            episode_number: None,
+        };
+        assert_eq!(
+            classify(&result(vec![file.clone()], vec![])),
+            Ingested::Imported
+        );
+        assert_eq!(
+            classify(&result(vec![file], vec!["b.mkv"])),
+            Ingested::Imported
+        );
+        assert_eq!(
+            classify(&result(vec![], vec!["b.mkv"])),
+            Ingested::AlreadyPresent
+        );
+        assert_eq!(classify(&result(vec![], vec![])), Ingested::NothingPlaced);
+    }
+
+    #[test]
+    fn only_a_host_timeout_leaves_the_outcome_unknown() {
+        let host = |code: &str| {
+            Error::from(fliks_plugin_sdk::host::HostError {
+                code: code.into(),
+                message: "m".into(),
+            })
+        };
+        assert!(host("ERR_TIMEOUT").is_unknown_outcome());
+        assert!(!host("ERR").is_unknown_outcome());
+        assert!(!host("ERR_DENIED").is_unknown_outcome());
+        assert!(!Error::Other("ERR_TIMEOUT".into()).is_unknown_outcome());
+    }
 
     #[test]
     fn joins_paths_with_the_save_path_flavour() {
