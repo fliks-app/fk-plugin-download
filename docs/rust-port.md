@@ -669,6 +669,8 @@ What the port did differently from sections 5 and 6, against `fliks-plugin-sdk` 
   `min(own timeout, remaining budget)`, the throttle waits with `thread::sleep`, and the fan-out
   is sequential (DL18).
 - The SDK log has no credential scrub (SDK-10): `src/log.rs` scrubs `scheme://user:pass@`.
+- No gzip inflate (DL13): requests send `Accept-Encoding: identity` only; a server that
+  compresses anyway is not decoded.
 - Tests: golden vectors and unit tests natively (`tests/vectors.rs`, `src/*`), and the component
   under the real host on a scratch database (`tests/harness.rs`): migrations and ledger
   adoption, the throttle statements under contention, the import lease sweep (job and `start`),
