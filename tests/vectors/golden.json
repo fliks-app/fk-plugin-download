@@ -1,0 +1,2043 @@
+{
+  "migrations": [
+    {
+      "name": "0001_initial_schema",
+      "up": "\nCREATE TABLE \"indexers\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"name\" varchar NOT NULL,\n  \"implementation\" varchar NOT NULL,\n  \"settings\" jsonb NOT NULL DEFAULT '{}',\n  \"enableRss\" boolean NOT NULL DEFAULT true,\n  \"enableSearch\" boolean NOT NULL DEFAULT true,\n  \"priority\" integer NOT NULL DEFAULT 25,\n  \"enabled\" boolean NOT NULL DEFAULT true,\n  \"capsMovieSearch\" boolean NOT NULL DEFAULT false,\n  \"capsTvSearch\" boolean NOT NULL DEFAULT false,\n  \"capsSearchFallback\" boolean NOT NULL DEFAULT false,\n  \"requestDelay\" integer NOT NULL DEFAULT 2\n);\n\nCREATE TABLE \"download_clients\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"name\" varchar NOT NULL,\n  \"implementation\" varchar NOT NULL,\n  \"settings\" jsonb NOT NULL DEFAULT '{}',\n  \"enabled\" boolean NOT NULL DEFAULT true,\n  \"priority\" integer NOT NULL DEFAULT 1\n);\n\nCREATE TABLE \"indexer_stats\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"indexerId\" integer REFERENCES \"indexers\"(\"id\") ON DELETE CASCADE,\n  \"queryDate\" timestamptz NOT NULL DEFAULT now(),\n  \"queryType\" varchar NOT NULL DEFAULT 'search',\n  \"responseTimeMs\" integer NOT NULL DEFAULT 0,\n  \"resultCount\" integer NOT NULL DEFAULT 0,\n  \"errorMessage\" text\n);\n\nCREATE TABLE \"download_history\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"sourceTitle\" varchar NOT NULL,\n  \"quality\" varchar NOT NULL,\n  \"language\" varchar,\n  \"torrentHash\" varchar,\n  \"status\" varchar NOT NULL DEFAULT 'grabbed',\n  \"statusMessage\" text,\n  \"grabSource\" varchar(8) NOT NULL DEFAULT 'auto',\n  \"mediaId\" integer REFERENCES public.\"media\"(\"id\") ON DELETE CASCADE,\n  \"episodeId\" integer REFERENCES public.\"episodes\"(\"id\") ON DELETE SET NULL,\n  \"seasonId\" integer REFERENCES public.\"seasons\"(\"id\") ON DELETE SET NULL,\n  \"indexerId\" integer REFERENCES \"indexers\"(\"id\") ON DELETE SET NULL,\n  \"downloadClientId\" integer REFERENCES \"download_clients\"(\"id\") ON DELETE SET NULL\n);\nCREATE INDEX \"idx_download_history_torrent_hash_lower\" ON \"download_history\" (LOWER(\"torrentHash\")) WHERE \"torrentHash\" IS NOT NULL;\n\nCREATE TABLE \"blocklist\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"sourceTitle\" varchar NOT NULL,\n  \"indexerId\" integer,\n  \"indexerName\" varchar,\n  \"downloadUrl\" varchar,\n  \"quality\" varchar,\n  \"note\" varchar,\n  \"mediaId\" integer REFERENCES public.\"media\"(\"id\") ON DELETE SET NULL,\n  \"userId\" integer REFERENCES public.\"users\"(\"id\") ON DELETE SET NULL\n);\nCREATE UNIQUE INDEX \"uq_blocklist_source_title_lower\" ON \"blocklist\" (LOWER(\"sourceTitle\"));\n\nCREATE TABLE \"stalled_checks\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"torrentHash\" varchar(64) NOT NULL,\n  \"downloadedBytes\" bigint NOT NULL,\n  \"checkedAt\" timestamptz NOT NULL DEFAULT now()\n);\nCREATE INDEX \"idx_stalled_checks_hash_checked_at\" ON \"stalled_checks\" (\"torrentHash\", \"checkedAt\");\n"
+    },
+    {
+      "name": "0002_indexer_caps_probed_at",
+      "up": "\n  ALTER TABLE \"indexers\" ADD COLUMN IF NOT EXISTS \"capsProbedAt\" timestamptz\n"
+    },
+    {
+      "name": "0003_download_history_size",
+      "up": "\n  ALTER TABLE \"download_history\" ADD COLUMN IF NOT EXISTS \"size\" bigint\n"
+    },
+    {
+      "name": "0004_download_history_info_url",
+      "up": "\n  ALTER TABLE \"download_history\" ADD COLUMN IF NOT EXISTS \"infoUrl\" text\n"
+    },
+    {
+      "name": "0005_indexer_sources",
+      "up": "\nCREATE TABLE IF NOT EXISTS \"indexer_sources\" (\n  \"id\" SERIAL PRIMARY KEY,\n  \"createdAt\" timestamptz NOT NULL DEFAULT now(),\n  \"updatedAt\" timestamptz NOT NULL DEFAULT now(),\n  \"name\" varchar NOT NULL,\n  \"implementation\" varchar NOT NULL,\n  \"settings\" jsonb NOT NULL DEFAULT '{}',\n  \"priority\" integer NOT NULL DEFAULT 1,\n  \"enabled\" boolean NOT NULL DEFAULT true\n)\n"
+    },
+    {
+      "name": "0006_indexer_interactive_search",
+      "up": "\n  ALTER TABLE \"indexers\" ADD COLUMN IF NOT EXISTS \"enableInteractiveSearch\" boolean NOT NULL DEFAULT true;\n\n  -- Backfilled from the column that used to gate both kinds of search: a row with searches off\n  -- must not come out of this migration answering manual ones. New rows take the default.\n  UPDATE \"indexers\" SET \"enableInteractiveSearch\" = \"enableSearch\"\n"
+    },
+    {
+      "name": "0007_indexer_caps_supported_params",
+      "up": "\n  ALTER TABLE \"indexers\"\n    ADD COLUMN IF NOT EXISTS \"capsMovieSearchParams\" text,\n    ADD COLUMN IF NOT EXISTS \"capsTvSearchParams\" text\n"
+    },
+    {
+      "name": "0008_download_history_coverage",
+      "up": "\n  ALTER TABLE \"download_history\"\n    ADD COLUMN IF NOT EXISTS \"coverSeasonFrom\" integer,\n    ADD COLUMN IF NOT EXISTS \"coverSeasonTo\" integer,\n    ADD COLUMN IF NOT EXISTS \"coverEpisodeFrom\" integer,\n    ADD COLUMN IF NOT EXISTS \"coverEpisodeTo\" integer,\n    ADD COLUMN IF NOT EXISTS \"coverCompleteSeries\" boolean\n"
+    }
+  ],
+  "htmlEntities": [
+    {
+      "input": "Berl&iacute;n",
+      "output": "Berlín"
+    },
+    {
+      "input": "&amp;&lt;&gt;&quot;&apos;",
+      "output": "&<>\"'"
+    },
+    {
+      "input": "&#233;&#xE9;&#XE9;",
+      "output": "éé&#XE9;"
+    },
+    {
+      "input": "&#0;",
+      "output": "&#0;"
+    },
+    {
+      "input": "&bogus;",
+      "output": "&bogus;"
+    },
+    {
+      "input": "&#1114112;",
+      "output": "&#1114112;"
+    },
+    {
+      "input": "no entities",
+      "output": "no entities"
+    },
+    {
+      "input": "&amp",
+      "output": "&amp"
+    },
+    {
+      "input": "&euro;&hellip;&nbsp;x",
+      "output": "€… x"
+    }
+  ],
+  "torznabQuery": [
+    {
+      "input": {
+        "t": "search",
+        "q": "Dune 2021",
+        "cat": "2000",
+        "apiKey": "k&y"
+      },
+      "output": "t=search&q=Dune%202021&cat=2000&apikey=k%26y"
+    },
+    {
+      "input": {
+        "t": "movie",
+        "q": "Dune",
+        "cat": "2000",
+        "apiKey": "k",
+        "imdbId": "tt1160419",
+        "tmdbId": 438631,
+        "supportedParams": "q, imdbid,TMDBID"
+      },
+      "output": "t=movie&q=Dune&cat=2000&apikey=k&imdbid=1160419&tmdbid=438631"
+    },
+    {
+      "input": {
+        "t": "tvsearch",
+        "q": "L'été (2024)!*",
+        "season": 1,
+        "ep": 2,
+        "cat": "5000",
+        "apiKey": "",
+        "tvdbId": 5,
+        "imdbId": "tt",
+        "supportedParams": "q,tvdbid,imdbid"
+      },
+      "output": "t=tvsearch&q=L'%C3%A9t%C3%A9%20(2024)!*&season=1&ep=2&cat=5000&apikey=&tvdbid=5"
+    },
+    {
+      "input": {
+        "t": "tvsearch",
+        "q": "",
+        "season": 0,
+        "cat": "5000",
+        "apiKey": "a b",
+        "tvdbId": 5,
+        "supportedParams": null
+      },
+      "output": "t=tvsearch&season=0&cat=5000&apikey=a%20b"
+    }
+  ],
+  "describeQuery": [
+    {
+      "input": "https://t.example/api?t=tvsearch&q=Show%20Name&season=1&ep=2&cat=5000&apikey=SECRET&tvdbid=5",
+      "output": "tvsearch q=\"Show Name\" season=1 ep=2 cat=5000 tvdbid=5"
+    },
+    {
+      "input": "https://t.example/api?apikey=x",
+      "output": "search"
+    },
+    {
+      "input": "not a url",
+      "output": "search"
+    }
+  ],
+  "torznabItems": [
+    {
+      "settings": {
+        "apiKey": "k1"
+      },
+      "xml": "<rss><channel><item>\n    <title>Some.Movie.2024.1080p</title>\n    <link>https://tracker.example/dl/abc?x=1&amp;apikey=old</link>\n    <pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate>\n    <torznab:attr name=\"size\" value=\"123456\" />\n    <torznab:attr name=\"seeders\" value=\"42\" />\n    <torznab:attr name=\"leechers\" value=\"3\" />\n    <torznab:attr name=\"downloadvolumefactor\" value=\"0\" />\n  </item></channel></rss>",
+      "output": [
+        {
+          "title": "Some.Movie.2024.1080p",
+          "downloadUrl": "https://tracker.example/dl/abc?x=1&apikey=k1",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 123456,
+          "seeders": 42,
+          "leechers": 3,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": true,
+          "downloadVolumeFactor": 0
+        }
+      ]
+    },
+    {
+      "settings": {},
+      "xml": "<rss><channel>\n  <item><title><![CDATA[Berl&iacute;n S01E02 &amp; More]]></title>\n    <guid>https://tracker.example/details/9</guid>\n    <enclosure url=\"https://tracker.example/get/9?a=1&amp;b=2\" length=\"999\" type=\"application/x-bittorrent\"/>\n    <torznab:attr name=\"magneturl\" value=\"magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&amp;dn=x\" />\n    <torznab:attr name=\"peers\" value=\"12\" />\n    <pubDate>Tue, 02 Jan 2024 10:20:30 +0100</pubDate>\n  </item>\n  <ITEM><title>Upper.Case.Item</title><link>magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567</link>\n    <comments>https://tracker.example/c/1</comments><size>4567</size>\n    <torznab:attr name=\"downloadvolumefactor\" value=\"0.5\" /></ITEM>\n  <item><title>Local.Only</title><link>http://localhost:9117/dl/1</link></item>\n  <item><title>No URL</title></item>\n  <item><title>Bad.Date</title><link>https://t.example/x</link><pubDate>not a date</pubDate>\n    <torznab:attr name=\"seeders\" value=\"abc\" /></item>\n  <item><title>Iso.Date</title><link>https://t.example/y</link><pubDate>2024-03-04T05:06:07Z</pubDate></item>\n</channel></rss>",
+      "output": [
+        {
+          "title": "Berlín S01E02 & More",
+          "downloadUrl": "magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&dn=x",
+          "infoUrl": "https://tracker.example/details/9",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 12,
+          "publishDate": "2024-01-02T09:20:30.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Upper.Case.Item",
+          "downloadUrl": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+          "infoUrl": "https://tracker.example/c/1",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 4567,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 0.5
+        },
+        {
+          "title": "Bad.Date",
+          "downloadUrl": "https://t.example/x",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Iso.Date",
+          "downloadUrl": "https://t.example/y",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": "2024-03-04T05:06:07.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        }
+      ]
+    },
+    {
+      "settings": {},
+      "xml": "<rss><channel><item><title>Unclosed</title>",
+      "output": []
+    },
+    {
+      "settings": {
+        "apiKey": "k2"
+      },
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<rss version=\"2.0\" xmlns:torznab=\"http://torznab.com/schemas/2015/feed\"><channel>\n  <item><title>Show.S01E01.720p.WEB</title>\n    <link>https://t.example/dl/1?apikey=SECRET&amp;file=a</link>\n    <guid>https://t.example/details/1</guid>\n    <comments>https://t.example/details/1#comments</comments>\n    <pubDate>Wed, 03 Jan 2024 08:00:00 GMT</pubDate>\n    <size>5000</size>\n    <torznab:attr name=\"size\" value=\"6000\" />\n    <torznab:attr name=\"seeders\" value=\"0\" />\n    <torznab:attr name=\"leechers\" value=\"5\" />\n    <torznab:attr name=\"uploadvolumefactor\" value=\"1\" />\n    <torznab:attr name=\"downloadvolumefactor\" value=\"1\" />\n  </item>\n  <item><title>Peers.Only</title><link>https://t.example/dl/2</link>\n    <torznab:attr name=\"peers\" value=\"9\" /><torznab:attr name=\"seeders\" value=\"4\" /></item>\n  <item><title>Neg.Values</title><link>https://t.example/dl/3</link>\n    <torznab:attr name=\"size\" value=\"-5\" /><torznab:attr name=\"seeders\" value=\"-1\" />\n    <torznab:attr name=\"downloadvolumefactor\" value=\"x\" /></item>\n  <item><title>Magnet.Enclosure</title>\n    <enclosure url=\"magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&amp;dn=m\" length=\"77\" type=\"application/x-bittorrent\"/></item>\n  <item><title>   </title><link>https://t.example/dl/4</link></item>\n  <item><link>https://t.example/dl/5</link></item>\n</channel></rss>",
+      "output": [
+        {
+          "title": "Show.S01E01.720p.WEB",
+          "downloadUrl": "https://t.example/dl/1?apikey=k2&file=a",
+          "infoUrl": "https://t.example/details/1#comments",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 6000,
+          "seeders": 0,
+          "leechers": 5,
+          "publishDate": "2024-01-03T08:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Peers.Only",
+          "downloadUrl": "https://t.example/dl/2?apikey=k2",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 4,
+          "leechers": 9,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Neg.Values",
+          "downloadUrl": "https://t.example/dl/3?apikey=k2",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": -5,
+          "seeders": -1,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": null
+        },
+        {
+          "title": "Magnet.Enclosure",
+          "downloadUrl": "magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&dn=m",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        }
+      ]
+    },
+    {
+      "settings": {},
+      "xml": "<rss><channel>\n  <item><title><![CDATA[Cd&ata <b>Title</b>]]></title><link><![CDATA[https://t.example/dl/6?a=1&b=2]]></link></item>\n  <item><title>Multi\n    Line &#8211; Title &amp;amp; More</title><link>\n      https://t.example/dl/7\n    </link></item>\n  <item><title>Attr.Order</title><link>https://t.example/dl/8</link>\n    <torznab:attr value=\"33\" name=\"seeders\"/><torznab:attr name='leechers' value='2'/></item>\n  <item><title>Freeleech</title><link>https://t.example/dl/9</link>\n    <torznab:attr name=\"downloadvolumefactor\" value=\"0.0\"/><torznab:attr name=\"seeders\" value=\"1.9\"/></item>\n</channel></rss>",
+      "output": [
+        {
+          "title": "Cd&ata <b>Title</b>",
+          "downloadUrl": "https://t.example/dl/6?a=1&b=2",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Multi\n    Line – Title &amp; More",
+          "downloadUrl": "https://t.example/dl/7",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Attr.Order",
+          "downloadUrl": "https://t.example/dl/8",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Freeleech",
+          "downloadUrl": "https://t.example/dl/9",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 1,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": true,
+          "downloadVolumeFactor": 0
+        }
+      ]
+    },
+    {
+      "settings": {
+        "baseUrl": "https://t.example/api",
+        "apiKey": "zz"
+      },
+      "xml": "<rss><channel>\n  <item><title>Relative.Link</title><link>/dl/10</link></item>\n  <item><title>Ftp.Link</title><link>ftp://t.example/dl/11</link></item>\n  <item><title>Lan.Link</title><link>http://127.0.0.1:9117/dl/12</link></item>\n  <item><title>Loopback6</title><link>http://[::1]/dl/13</link></item>\n  <item><title>Info.Hash.Only</title><torznab:attr name=\"infohash\" value=\"0123456789abcdef0123456789abcdef01234567\"/></item>\n  <item><title>Tz.Date</title><link>https://t.example/dl/14</link><pubDate>Fri, 05 Jan 2024 23:30:00 -0500</pubDate></item>\n</channel></rss>",
+      "output": [
+        {
+          "title": "Relative.Link",
+          "downloadUrl": "/dl/10",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Ftp.Link",
+          "downloadUrl": "ftp://t.example/dl/11?apikey=zz",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Lan.Link",
+          "downloadUrl": "http://127.0.0.1:9117/dl/12?apikey=zz",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Loopback6",
+          "downloadUrl": "http://[::1]/dl/13?apikey=zz",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": null,
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        },
+        {
+          "title": "Tz.Date",
+          "downloadUrl": "https://t.example/dl/14?apikey=zz",
+          "indexerId": 7,
+          "indexerName": "test-indexer",
+          "size": 0,
+          "seeders": 0,
+          "leechers": 0,
+          "publishDate": "2024-01-06T04:30:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1
+        }
+      ]
+    },
+    {
+      "settings": {},
+      "xml": "",
+      "output": []
+    },
+    {
+      "settings": {},
+      "xml": "<rss><channel></channel></rss>",
+      "output": []
+    },
+    {
+      "settings": {},
+      "xml": "<error code=\"100\" description=\"Incorrect user credentials\"/>",
+      "output": []
+    }
+  ],
+  "magnetHash": [
+    {
+      "input": "magnet:?xt=urn:btih:ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD&dn=x",
+      "output": "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    },
+    {
+      "input": "magnet:?xt=urn:btih:MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43U&dn=y",
+      "output": "6162636465666768696a6b6c6d6e6f7071727374"
+    },
+    {
+      "input": "magnet:?xt=urn:btih:mfrggzdfmztwq2lknnwg23tpobyxe43u",
+      "output": "6162636465666768696a6b6c6d6e6f7071727374"
+    },
+    {
+      "input": "magnet:?dn=nohash",
+      "output": null
+    }
+  ],
+  "infoHash": [
+    {
+      "input": "ZDg6YW5ub3VuY2UxMDpodHRwOi8vdC9hNDppbmZvZDY6bGVuZ3RoaTEwZTQ6bmFtZTU6YS5ta3YxMjpwaWVjZSBsZW5ndGhpMTYzODRlNjpwaWVjZXMyMDoHBwcHBwcHBwcHBwcHBwcHBwcHB2Vl",
+      "output": "0892538360cbbac2a837069f15925e955061dbe7"
+    },
+    {
+      "input": "ZDQ6aW5mb2Q1OmZpbGVzbGQ2Omxlbmd0aGkxZTQ6cGF0aGwxOng1OnkubWt2ZWVlNDpuYW1lMzpkaXIxMjpwaWVjZSBsZW5ndGhpMWU2OnBpZWNlczA6ZWU=",
+      "output": "0876ef5be5b906724e380b9c04e8478da5b67d7e"
+    },
+    {
+      "input": "ZDQ6aW5mb2kxZWU=",
+      "output": null
+    },
+    {
+      "input": "Z2FyYmFnZQ==",
+      "output": null
+    }
+  ],
+  "torrentName": [
+    {
+      "input": "Some.Movie_2024  1080p.torrent",
+      "output": "some movie 2024 1080p"
+    },
+    {
+      "input": "Berl&iacute;n.S01",
+      "output": "berlín s01"
+    },
+    {
+      "input": "",
+      "output": ""
+    },
+    {
+      "input": "A__B..C",
+      "output": "a b c"
+    }
+  ],
+  "stallStrikes": [
+    {
+      "input": {
+        "minBytesPerSecond": 8192,
+        "samples": []
+      },
+      "output": 0
+    },
+    {
+      "input": {
+        "minBytesPerSecond": 8192,
+        "samples": [
+          {
+            "downloadedBytes": 100,
+            "checkedAt": "2026-01-01T02:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 100,
+            "checkedAt": "2026-01-01T01:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 50,
+            "checkedAt": "2026-01-01T00:00:00.000Z"
+          }
+        ]
+      },
+      "output": 3
+    },
+    {
+      "input": {
+        "minBytesPerSecond": 1,
+        "samples": [
+          {
+            "downloadedBytes": 10,
+            "checkedAt": "2026-01-01T02:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 99999,
+            "checkedAt": "2026-01-01T01:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 1,
+            "checkedAt": "2026-01-01T00:00:00.000Z"
+          }
+        ]
+      },
+      "output": 1
+    },
+    {
+      "input": {
+        "minBytesPerSecond": 1,
+        "samples": [
+          {
+            "downloadedBytes": 7300,
+            "checkedAt": "2026-01-01T02:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 3600,
+            "checkedAt": "2026-01-01T01:00:00.000Z"
+          },
+          {
+            "downloadedBytes": 0,
+            "checkedAt": "2026-01-01T00:00:00.000Z"
+          }
+        ]
+      },
+      "output": 1
+    }
+  ],
+  "qbitBaseUrl": [
+    {
+      "input": {
+        "host": "localhost",
+        "port": 8080
+      },
+      "output": "http://localhost:8080"
+    },
+    {
+      "input": {
+        "host": "https://qbit.lan:9090/",
+        "useSsl": true
+      },
+      "output": "https://qbit.lan:9090"
+    },
+    {
+      "input": {
+        "host": "qbit.lan:9090",
+        "port": 1234
+      },
+      "output": "http://qbit.lan:1234"
+    },
+    {
+      "input": {
+        "host": "HTTP://x"
+      },
+      "output": "http://x"
+    },
+    {
+      "input": {
+        "host": ""
+      },
+      "output": null
+    }
+  ],
+  "progressState": [
+    {
+      "input": "queuedDL",
+      "output": "queued"
+    },
+    {
+      "input": "stalledDL",
+      "output": "stalled"
+    },
+    {
+      "input": "error",
+      "output": "stalled"
+    },
+    {
+      "input": "missingFiles",
+      "output": "stalled"
+    },
+    {
+      "input": "pausedDL",
+      "output": "paused"
+    },
+    {
+      "input": "stoppedUP",
+      "output": "paused"
+    },
+    {
+      "input": "moving",
+      "output": "importing"
+    },
+    {
+      "input": "downloading",
+      "output": "active"
+    },
+    {
+      "input": "uploading",
+      "output": "active"
+    },
+    {
+      "input": "weird",
+      "output": "active"
+    }
+  ],
+  "encodeUriComponent": [
+    {
+      "input": "a b&c=d/é!'()*~-_.",
+      "output": "a%20b%26c%3Dd%2F%C3%A9!'()*~-_."
+    },
+    {
+      "input": "日本",
+      "output": "%E6%97%A5%E6%9C%AC"
+    },
+    {
+      "input": "",
+      "output": ""
+    }
+  ],
+  "coverageColumns": [
+    {
+      "input": null,
+      "output": {
+        "coverSeasonFrom": null,
+        "coverSeasonTo": null,
+        "coverEpisodeFrom": null,
+        "coverEpisodeTo": null,
+        "coverCompleteSeries": null
+      }
+    },
+    {
+      "input": {
+        "seasons": null,
+        "episodes": null,
+        "completeSeries": false
+      },
+      "output": {
+        "coverSeasonFrom": null,
+        "coverSeasonTo": null,
+        "coverEpisodeFrom": null,
+        "coverEpisodeTo": null,
+        "coverCompleteSeries": null
+      }
+    },
+    {
+      "input": {
+        "seasons": null,
+        "episodes": null,
+        "completeSeries": true
+      },
+      "output": {
+        "coverSeasonFrom": null,
+        "coverSeasonTo": null,
+        "coverEpisodeFrom": null,
+        "coverEpisodeTo": null,
+        "coverCompleteSeries": true
+      }
+    },
+    {
+      "input": {
+        "seasons": {
+          "from": 1,
+          "to": 3
+        },
+        "episodes": null,
+        "completeSeries": false
+      },
+      "output": {
+        "coverSeasonFrom": 1,
+        "coverSeasonTo": 3,
+        "coverEpisodeFrom": null,
+        "coverEpisodeTo": null,
+        "coverCompleteSeries": false
+      }
+    },
+    {
+      "input": {
+        "seasons": {
+          "from": 2,
+          "to": 2
+        },
+        "episodes": {
+          "from": 4,
+          "to": 5
+        },
+        "completeSeries": false
+      },
+      "output": {
+        "coverSeasonFrom": 2,
+        "coverSeasonTo": 2,
+        "coverEpisodeFrom": 4,
+        "coverEpisodeTo": 5,
+        "coverCompleteSeries": false
+      }
+    }
+  ],
+  "secretSettings": [
+    {
+      "input": {
+        "existing": {
+          "apiKey": "old",
+          "baseUrl": "u"
+        },
+        "incoming": {
+          "apiKey": "",
+          "baseUrl": "v",
+          "secretsSet": [
+            "apiKey"
+          ]
+        }
+      },
+      "merged": {
+        "apiKey": "old",
+        "baseUrl": "v"
+      },
+      "redacted": {
+        "baseUrl": "u",
+        "secretsSet": [
+          "apiKey"
+        ]
+      }
+    },
+    {
+      "input": {
+        "existing": {
+          "apiKey": "old"
+        },
+        "incoming": {
+          "apiKey": null
+        }
+      },
+      "merged": {},
+      "redacted": {
+        "secretsSet": [
+          "apiKey"
+        ]
+      }
+    },
+    {
+      "input": {
+        "existing": null,
+        "incoming": {
+          "apiKey": "new"
+        }
+      },
+      "merged": {
+        "apiKey": "new"
+      },
+      "redacted": {
+        "secretsSet": []
+      }
+    },
+    {
+      "input": {
+        "existing": {},
+        "incoming": {
+          "apiKey": ""
+        }
+      },
+      "merged": {},
+      "redacted": {
+        "secretsSet": []
+      }
+    }
+  ],
+  "pickRelease": [
+    {
+      "input": {
+        "sorted": [],
+        "want": null
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [],
+        "want": {
+          "decision": "missing"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [],
+        "want": {
+          "decision": "upgrade"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [],
+        "want": {
+          "decision": "skip"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 0
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          }
+        ],
+        "want": null
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 0
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "missing"
+        }
+      },
+      "output": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 0
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "upgrade"
+        }
+      },
+      "output": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 0
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "skip"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 0
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          },
+          {
+            "id": 4,
+            "rejections": 0
+          },
+          {
+            "id": 5,
+            "rejections": 0
+          }
+        ],
+        "want": null
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 0
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          },
+          {
+            "id": 4,
+            "rejections": 0
+          },
+          {
+            "id": 5,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "missing"
+        }
+      },
+      "output": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 0
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          },
+          {
+            "id": 4,
+            "rejections": 0
+          },
+          {
+            "id": 5,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "upgrade"
+        }
+      },
+      "output": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 0
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          },
+          {
+            "id": 4,
+            "rejections": 0
+          },
+          {
+            "id": 5,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "skip"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 2
+          },
+          {
+            "id": 4,
+            "rejections": 0
+          }
+        ],
+        "want": null
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 2
+          },
+          {
+            "id": 4,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "missing"
+        }
+      },
+      "output": [
+        2,
+        4
+      ]
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 2
+          },
+          {
+            "id": 4,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "upgrade"
+        }
+      },
+      "output": [
+        2,
+        4
+      ]
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 2
+          },
+          {
+            "id": 4,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "skip"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 3
+          }
+        ],
+        "want": null
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 3
+          }
+        ],
+        "want": {
+          "decision": "missing"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 3
+          }
+        ],
+        "want": {
+          "decision": "upgrade"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 3
+          }
+        ],
+        "want": {
+          "decision": "skip"
+        }
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          },
+          {
+            "id": 4,
+            "rejections": 1
+          },
+          {
+            "id": 5,
+            "rejections": 0
+          },
+          {
+            "id": 6,
+            "rejections": 0
+          }
+        ],
+        "want": null
+      },
+      "output": []
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          },
+          {
+            "id": 4,
+            "rejections": 1
+          },
+          {
+            "id": 5,
+            "rejections": 0
+          },
+          {
+            "id": 6,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "missing"
+        }
+      },
+      "output": [
+        2,
+        3,
+        5
+      ]
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          },
+          {
+            "id": 4,
+            "rejections": 1
+          },
+          {
+            "id": 5,
+            "rejections": 0
+          },
+          {
+            "id": 6,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "upgrade"
+        }
+      },
+      "output": [
+        2,
+        3,
+        5
+      ]
+    },
+    {
+      "input": {
+        "sorted": [
+          {
+            "id": 1,
+            "rejections": 1
+          },
+          {
+            "id": 2,
+            "rejections": 0
+          },
+          {
+            "id": 3,
+            "rejections": 0
+          },
+          {
+            "id": 4,
+            "rejections": 1
+          },
+          {
+            "id": 5,
+            "rejections": 0
+          },
+          {
+            "id": 6,
+            "rejections": 0
+          }
+        ],
+        "want": {
+          "decision": "skip"
+        }
+      },
+      "output": []
+    }
+  ],
+  "scoreRequest": [
+    {
+      "input": {
+        "releases": [
+          {
+            "title": "T",
+            "downloadUrl": "https://t/x",
+            "indexerId": 1,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          },
+          {
+            "title": "B",
+            "downloadUrl": "https://t/x",
+            "indexerId": 2,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": null,
+            "freeleech": true,
+            "downloadVolumeFactor": 0
+          }
+        ],
+        "settings": {
+          "1": {
+            "minSeeders": 5,
+            "unknownLanguageIsoCode": "fr"
+          },
+          "2": {}
+        },
+        "blocked": [
+          "B"
+        ]
+      },
+      "output": [
+        {
+          "id": "0",
+          "title": "T",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "minSeeders": 5,
+          "unknownLanguageIsoCode": "fr",
+          "blocked": false
+        },
+        {
+          "id": "1",
+          "title": "B",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "1970-01-01T00:00:00.000Z",
+          "freeleech": true,
+          "downloadVolumeFactor": 0,
+          "sourceRef": "https://t/x",
+          "blocked": true
+        }
+      ]
+    },
+    {
+      "input": {
+        "releases": [
+          {
+            "title": "R1",
+            "downloadUrl": "https://t/x",
+            "indexerId": 1,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          },
+          {
+            "title": "R2",
+            "downloadUrl": "https://t/x",
+            "indexerId": 2,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          },
+          {
+            "title": "R3",
+            "downloadUrl": "https://t/x",
+            "indexerId": 3,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          },
+          {
+            "title": "R4",
+            "downloadUrl": "https://t/x",
+            "indexerId": 4,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          },
+          {
+            "title": "R5",
+            "downloadUrl": "https://t/x",
+            "indexerId": 5,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          },
+          {
+            "title": "R6",
+            "downloadUrl": "https://t/x",
+            "indexerId": 6,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          },
+          {
+            "title": "R7",
+            "downloadUrl": "https://t/x",
+            "indexerId": 7,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          },
+          {
+            "title": "R8",
+            "downloadUrl": "https://t/x",
+            "indexerId": 8,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          }
+        ],
+        "settings": {
+          "1": {
+            "minSeeders": "3"
+          },
+          "2": {
+            "minSeeders": 0
+          },
+          "3": {
+            "minSeeders": -2
+          },
+          "4": {
+            "minSeeders": "abc"
+          },
+          "5": {
+            "minSeeders": null
+          },
+          "6": {
+            "minSeeders": 2.5
+          },
+          "7": {
+            "minSeeders": true
+          },
+          "8": {
+            "unknownLanguageIsoCode": 7
+          }
+        },
+        "blocked": []
+      },
+      "output": [
+        {
+          "id": "0",
+          "title": "R1",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "minSeeders": 3,
+          "blocked": false
+        },
+        {
+          "id": "1",
+          "title": "R2",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "blocked": false
+        },
+        {
+          "id": "2",
+          "title": "R3",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "blocked": false
+        },
+        {
+          "id": "3",
+          "title": "R4",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "blocked": false
+        },
+        {
+          "id": "4",
+          "title": "R5",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "blocked": false
+        },
+        {
+          "id": "5",
+          "title": "R6",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "minSeeders": 2.5,
+          "blocked": false
+        },
+        {
+          "id": "6",
+          "title": "R7",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "minSeeders": 1,
+          "blocked": false
+        },
+        {
+          "id": "7",
+          "title": "R8",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "unknownLanguageIsoCode": 7,
+          "blocked": false
+        }
+      ]
+    },
+    {
+      "input": {
+        "releases": [
+          {
+            "title": "Orphan",
+            "downloadUrl": "https://t/x",
+            "indexerId": 99,
+            "indexerName": "ix",
+            "size": 10,
+            "seeders": 2,
+            "leechers": 1,
+            "publishDate": "2024-01-01T00:00:00.000Z",
+            "freeleech": false,
+            "downloadVolumeFactor": 1
+          }
+        ],
+        "settings": {},
+        "blocked": [
+          "Orphan"
+        ]
+      },
+      "output": [
+        {
+          "id": "0",
+          "title": "Orphan",
+          "size": 10,
+          "seeders": 2,
+          "leechers": 1,
+          "publishDate": "2024-01-01T00:00:00.000Z",
+          "freeleech": false,
+          "downloadVolumeFactor": 1,
+          "sourceRef": "https://t/x",
+          "blocked": true
+        }
+      ]
+    }
+  ],
+  "retryAfter": [
+    {
+      "input": "0",
+      "output": 0
+    },
+    {
+      "input": "30",
+      "output": 30000
+    },
+    {
+      "input": "  45 ",
+      "output": 45000
+    },
+    {
+      "input": "1.5",
+      "output": 0
+    },
+    {
+      "input": "-5",
+      "output": 0
+    },
+    {
+      "input": "",
+      "output": 0
+    },
+    {
+      "input": "abc",
+      "output": 0
+    },
+    {
+      "input": "1e3",
+      "output": 0
+    },
+    {
+      "input": "٣",
+      "output": 0
+    },
+    {
+      "input": "007",
+      "output": 7000
+    },
+    {
+      "input": "Tue, 14 Nov 2023 22:15:20 GMT",
+      "output": 120000
+    },
+    {
+      "input": "Tue, 14 Nov 2023 22:00:00 GMT",
+      "output": 0
+    },
+    {
+      "input": "2023-11-14T22:14:20Z",
+      "output": 60000
+    },
+    {
+      "input": "2023-11-14T22:14:20+01:00",
+      "output": 0
+    },
+    {
+      "input": "Tuesday, 14-Nov-23 22:15:20 GMT",
+      "output": 120000
+    },
+    {
+      "input": "2023-11-14T22:14:20.500Z",
+      "output": 60500
+    },
+    {
+      "input": "Tue, 14 Nov 2023 22:15:20 +0000",
+      "output": 120000
+    }
+  ],
+  "throttleLadder": {
+    "steps": [
+      30000,
+      30000,
+      120000,
+      120000,
+      900000,
+      900000,
+      3600000,
+      3600000,
+      21600000,
+      21600000,
+      21600000,
+      21600000,
+      21600000,
+      21600000,
+      30000
+    ],
+    "mono": [
+      30000,
+      120000,
+      120000
+    ]
+  },
+  "routeMatch": [
+    {
+      "method": "GET",
+      "path": "/1/releases",
+      "output": {
+        "id": "1"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/1%2F2/releases",
+      "output": {
+        "id": "1/2"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/../releases",
+      "output": {
+        "id": ".."
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/%2e%2e/releases",
+      "output": {
+        "id": ".."
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/1/Releases",
+      "output": null
+    },
+    {
+      "method": "get",
+      "path": "/1/releases",
+      "output": null
+    },
+    {
+      "method": "GET",
+      "path": "/nonexistent",
+      "output": null
+    },
+    {
+      "method": "GET",
+      "path": "/delay-profiles",
+      "output": null
+    },
+    {
+      "method": "POST",
+      "path": "/5/grab",
+      "output": {
+        "id": "5"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/5/seasons/2/grab",
+      "output": {
+        "id": "5",
+        "seasonId": "2"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/1/seasons/../releases",
+      "output": {
+        "id": "1",
+        "seasonId": ".."
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/1/episodes/9/releases",
+      "output": {
+        "id": "1",
+        "episodeId": "9"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/history/all",
+      "output": {}
+    },
+    {
+      "method": "DELETE",
+      "path": "/history/7",
+      "output": {
+        "id": "7"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/blocklist/all",
+      "output": {}
+    },
+    {
+      "method": "DELETE",
+      "path": "/blocklist/12",
+      "output": {
+        "id": "12"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/indexers/cooldowns",
+      "output": {}
+    },
+    {
+      "method": "DELETE",
+      "path": "/indexers/3",
+      "output": {
+        "id": "3"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/indexers/3/cooldown",
+      "output": {
+        "id": "3"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/indexers/implementations",
+      "output": {}
+    },
+    {
+      "method": "GET",
+      "path": "/indexers/3/stats",
+      "output": {
+        "id": "3"
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/indexers/implementations",
+      "output": {
+        "id": "implementations"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/indexers/test-connection",
+      "output": {}
+    },
+    {
+      "method": "POST",
+      "path": "/indexers/3/test-connection",
+      "output": null
+    },
+    {
+      "method": "GET",
+      "path": "/queue",
+      "output": {}
+    },
+    {
+      "method": "GET",
+      "path": "/queue/",
+      "output": null
+    },
+    {
+      "method": "GET",
+      "path": "/queue/3",
+      "output": null
+    },
+    {
+      "method": "POST",
+      "path": "/queue/3/retry-import",
+      "output": {
+        "id": "3"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/queue/3/pause",
+      "output": {
+        "id": "3"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/queue/3",
+      "output": {
+        "id": "3"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/indexers/%E0%A4%A/stats",
+      "output": null
+    },
+    {
+      "method": "GET",
+      "path": "/indexers/%zz/stats",
+      "output": null
+    },
+    {
+      "method": "GET",
+      "path": "/indexers/a%20b/stats",
+      "output": {
+        "id": "a b"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "",
+      "output": null
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "output": null
+    },
+    {
+      "method": "GET",
+      "path": "//releases",
+      "output": {
+        "id": ""
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/1//releases",
+      "output": null
+    },
+    {
+      "method": "POST",
+      "path": "/indexer-sources/4/import",
+      "output": {
+        "id": "4"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/download-clients/5",
+      "output": {
+        "id": "5"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/download-clients/implementations",
+      "output": {}
+    },
+    {
+      "method": "GET",
+      "path": "/indexers/%2Fx/stats",
+      "output": {
+        "id": "/x"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/indexers/%2fx/stats",
+      "output": {
+        "id": "/x"
+      }
+    }
+  ]
+}

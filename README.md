@@ -10,8 +10,8 @@ whole.
 
 ## What it does for you
 
-- **Finds releases.** It queries every tracker you have configured, in parallel, and scores what
-  comes back against the quality profile and the language profile of the title in question.
+- **Finds releases.** It queries every tracker you have configured, in parallel, and scores
+  what comes back against the quality profile and the language profile of the title in question.
 - **Picks for you, or lets you pick.** Monitored titles are grabbed automatically when an
   acceptable release appears. From a title's own menu you can also search yourself and choose a
   specific release, or ask for the best one right now.

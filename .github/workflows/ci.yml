@@ -6,52 +6,65 @@ on:
     tags: ['v*']
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: 'true'
+
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # Without a database the migration, boot and cross-schema-grant tests skip
-    # themselves, so the suite would pass while covering none of them.
     services:
       postgres:
         image: postgres:17
         env:
           POSTGRES_USER: fliks
           POSTGRES_PASSWORD: fliks
-          POSTGRES_DB: fliks
-        ports: ['55432:5432']
+        ports: ['5432:5432']
         options: >-
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
     env:
-      FK_TEST_PG_DSN: postgresql://fliks:fliks@127.0.0.1:55432/fliks
+      # Under CI the harness fails instead of skipping when this is missing.
+      FLIKS_HARNESS_PG_URL: postgresql://fliks:fliks@127.0.0.1:5432/postgres
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      # Stand-ins for the core tables this plugin holds `REFERENCES` grants on:
-      # the grant tests need the target to exist, not core's real shape. `media`
-      # also carries the two columns the tests insert into.
-      - name: Create core reference stubs
-        run: |
-          psql "$FK_TEST_PG_DSN" -c 'CREATE TABLE IF NOT EXISTS public."media" (id serial PRIMARY KEY, "title" text NOT NULL DEFAULT '"'"''"'"', "type" text NOT NULL DEFAULT '"'"'movie'"'"');'
-          for t in episodes seasons users; do
-            psql "$FK_TEST_PG_DSN" -c "CREATE TABLE IF NOT EXISTS public.\"$t\" (id serial PRIMARY KEY);"
-          done
-      # The manifest's `fliks` range is checked against the core release this plugin targets.
-      # Failing to resolve it fails the job: a green run on a guessed version publishes an archive
-      # that a real core refuses.
-      - name: Resolve the core version to check the manifest against
+          targets: wasm32-wasip2
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --target wasm32-wasip2 --all-targets -- -D warnings
+      # The component tests load the release component.
+      - run: cargo build --release --target wasm32-wasip2
+      - run: cargo test --workspace
+      - name: Verify the component and its archive (world, archive guard, 12 MiB budget)
+        run: cargo xtask package --max-mib 12 --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish the archive that verify checked
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          v=$(gh release view --repo fliks-app/fliks --json tagName -q .tagName | sed 's/^v//')
-          [ -n "$v" ] || { echo "::error::could not resolve the latest fliks release"; exit 1; }
-          echo "FLIKS_CORE_VERSION=$v" >> "$GITHUB_ENV"
-          echo "checking the manifest against fliks $v"
-      - run: npm test
-      - run: npm run build
-      - run: node --check dist/plugin.js
+          archive=$(ls dist/*.fkplugin)
+          [ "$archive" = "dist/fliks.download-${TAG#v}.fkplugin" ] || { echo "::error::$archive does not match tag $TAG"; exit 1; }
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "$archive"

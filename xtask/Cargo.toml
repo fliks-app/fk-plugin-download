@@ -1,0 +1,8 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "0a125c8813e2e360e8ceeb881d71f9d931aa97bb", features = ["build"] }

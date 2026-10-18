@@ -296,22 +296,25 @@ sends, then releases, fenced by its token so a holder whose lease ran out cannot
 holder's slot:
 
 ```sql
--- release; $2 token, $3 requestDelay seconds, $4 outcome: true resolved, false threw, null cancelled
+-- release; $2 token, $3 requestDelay seconds,
+-- $4 outcome: 'resolved', 'threw', 'cancelled' (cut after it was sent) or 'not-started'
 UPDATE "indexer_throttle"
    SET "busyToken" = NULL, "busyUntil" = NULL,
-       "nextAllowedAt" = now() + make_interval(secs => $3),
-       "failureCount" = CASE WHEN $4 THEN 0 ELSE "failureCount" END,
-       "cooldownUntil" = CASE WHEN $4 THEN NULL ELSE "cooldownUntil" END,
-       "cooldownReason" = CASE WHEN $4 THEN NULL ELSE "cooldownReason" END,
-       "cooldownFailureCount" = CASE WHEN $4 THEN NULL ELSE "cooldownFailureCount" END,
-       "cooldownDetail" = CASE WHEN $4 THEN NULL ELSE "cooldownDetail" END,
+       "nextAllowedAt" = CASE WHEN $4::text = 'not-started' THEN "nextAllowedAt"
+                              ELSE now() + make_interval(secs => $3) END,
+       "failureCount" = CASE WHEN $4::text = 'resolved' THEN 0 ELSE "failureCount" END,
+       "cooldownUntil" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownUntil" END,
+       "cooldownReason" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownReason" END,
+       "cooldownFailureCount" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownFailureCount" END,
+       "cooldownDetail" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownDetail" END,
        "updatedAt" = now()
  WHERE "indexerId" = $1 AND "busyToken" = $2
 ```
 
-The claim returns a guard; its `Drop` runs the release with outcome `null` (`db` imports are
-synchronous, so `Drop` can call them). A request cancelled by its budget (DL6) therefore frees the
-slot at once; only a trapped instance leaves the slot to the lease.
+The claim returns a guard; its `Drop` runs the release with outcome `cancelled`, or `not-started`
+when the request was never sent (`db` imports are synchronous, so `Drop` can call them). A request
+cancelled by its budget (DL6) therefore frees the slot at once, and one that never started leaves
+the spacing as it was; only a trapped instance leaves the slot to the lease.
 
 Failure escalation reads then writes, so it is a CTE with `FOR UPDATE` (same statement):
 
@@ -561,7 +564,7 @@ Archive `fliks.download-<version>.fkplugin`, store method, 4 entries: `plugin.js
 48 MiB total, 33 MiB compressed). `plugin.json` carries `pluginApi: 2`, `runtime: "wasm"`,
 `fliks: ">=5.0.0 <6.0.0"`, `network: {internal: true}`, `files: {plugin.wasm, logo.svg}`. The
 plugin repository's CI builds the unsigned archive (dev installs with `plugins.allow_unsigned`)
-and publishes `plugin.json`, `plugin.wasm`, `logo.svg` on a tag; signing stays in the catalog
+and publishes that verified archive (`cargo xtask package`) on a tag; signing stays in the catalog
 workflow with the catalog key, as today [catalog `.github/workflows/package-plugin.yml`].
 
 Catalog repository (`~/Documents/clement/code/fliks-plugin-catalog`), changes to describe, none made here:
@@ -619,7 +622,7 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 | DL4 | `importing` rows re-armed at process start only, all of them | re-armed when their 35 min lease has expired, by `start` and every `ImportCompleted` tick; after a restart a row whose lease is still running waits for it | a job instance can trap without a restart, and core may still be ingesting |
 | DL5 | long jobs run to completion | `SearchMissing`, `ImportCompleted` and `search:<id>` stop at their budget and resume; `RssSync` stops at its budget | deadline is a trap |
 | DL6 | an indexer past the search budget keeps running to its own fetch timeout | its request is cancelled; a request still waiting for the throttle slot never starts | futures cancel on drop |
-| DL7 | plugin router case-sensitive, no trailing slash, query nested by `qs` | SDK router (case-insensitive, optional trailing `/`, as the host); query is a flat ordered list, first value wins | one matcher, host rule 37 |
+| DL7 | plugin router case-sensitive, no trailing slash, query nested by `qs` | SDK router (case-insensitive, optional trailing `/`, a capture is never empty, as the host); query is a flat ordered list, first value wins | one matcher, host rule 37 |
 | DL8 | any address reachable | outbound guard in the host; private ranges only with the granted `network.internal`; link-local, reserved, 6to4, Teredo, documentation ranges always refused (F67); the grant is carried forward on upgrade from the pluginApi 1 package (D3) | sandbox |
 | DL9 | scopes: 7 | 6 (`requests:progress` dropped) | never called |
 | DL10 | `grab-executor.ts:61` logs the download URL, which carries `apikey=` | URL logged through `redact_url`; the line-level userinfo scrub of `log.ts` stays | secrets out of logs (cf. F66) |
@@ -627,9 +630,10 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 | DL12 | `hello` blocks on migrations | migrations in `start`; routes answer 503 until `ready` | host contract |
 | DL13 | `.torrent`/Torznab responses decoded by `fetch` | `Accept-Encoding: identity`, gzip inflated if forced | no `fetch` |
 | DL14 | `path.join(save_path, name)` with the host OS rules | textual join using the separator of `save_path` (backslash if it has a drive letter or `\`) | wasm std is POSIX [assumed] |
-| DL15 | `pubDate` parsed by `new Date(string)` (very lenient) | RFC 2822 and RFC 3339 only; anything else is `null`, as an unparseable date is today | no JS engine |
+| DL15 | `pubDate` and `Retry-After` dates parsed by `Date.parse` (very lenient) | RFC 2822, RFC 3339 and the obsolete RFC 850 HTTP-date only; anything else is `null`, as an unparseable date is today | no JS engine |
 | DL16 | an event received before the database is ready is dropped [ts:src/plugin.ts:122-126] | it waits in the host ring and is handled once the plugin is `ready` | host contract (`plugins.md` rule 46) |
 | DL17 | `health` answers ok whenever the core socket is up | `health` runs `SELECT 1`; a database outage degrades the plugin (proxy 503) | health reports what the plugin needs |
+| ~~DL18~~ | indexers searched concurrently, partial results streamed as each answers | closed: the same, on the SDK-5 executor | |
 
 ## 10. Decisions and remaining questions
 
@@ -656,3 +660,37 @@ Still open:
 2. ~~**Remaining deadline.**~~ Settled by the host spec: a deadline starts at the export call
    (queue wait is bounded separately) and budgets read `deadline-remaining-ms` (`plugins.md` rules 40,
    43).
+
+## 11. As built
+
+What the port did differently from sections 5 and 6, against `fliks-plugin-sdk` at fliks
+`0a125c88`:
+
+- Flat modules (`src/{db,routes,grab,poller,torznab,throttle,qbit,sources,indexers,...}.rs`)
+  instead of the directory tree of section 5; `xtask` is the SDK build CLI (SDK-12).
+- SDK-5 (closed): each sending export sets its `rt::budgets` budget on entry, and every outbound
+  request ends with `min(own timeout, export budget)` through `Request::deadline`/`budget`, body
+  included. The search fans out to every ready indexer at once inside one `rt::block_on`
+  (`FuturesUnordered`, a partial streamed as each answers; DL18 closed); throttle waits are
+  `rt::sleep`. The client calls outside the search (qBittorrent, sources, RSS, caps) stay one
+  blocking request at a time; the 4 s settle and 3 s hash-recovery loops still `thread::sleep`.
+- SDK-10 (closed): logging is the SDK's `info!/warn!/error!` with its scrub, URLs through
+  `log::redact_url` (an unparsable URL is logged as given minus its query, not `<unparsable url>`).
+- No gzip inflate (DL13): requests send `Accept-Encoding: identity` only; a server that
+  compresses anyway is not decoded.
+- Tests: golden vectors and unit tests natively (`tests/vectors.rs`, `src/*`), and the component
+  under the real host on a scratch database (`tests/harness.rs`): migrations and ledger
+  adoption, the throttle statements under contention, the import lease sweep (job and `start`),
+  event to `search:<id>` calls, the `caps:<id>` probe, two searches sharing one indexer slot,
+  two indexers searched at once with their partials streamed in answer order,
+  a manual grab through a fake qBittorrent and the queue controls, every one of the 39 routes
+  answering its frozen status and `{error: {key, detail}}` (called through `http`, below the
+  host's own `:id` guard), 502 for a refusing or host-less client, `retry-import` as one
+  conditional `UPDATE`, the failure ladder against the recorded one, and a refused import
+  failing the row with `acquisition.failed`. The vectors also cover `pick-release`, scoring,
+  `retry-after`, `route-match` and eight Torznab feeds. Not yet covered end to end: the
+  `scheduled` slice resume, an instance trapped mid-request (the lease expiry is covered at the
+  statement level), an import that ends `alreadyPresent` (core's ingest probes through the
+  streaming engine, which the harness does not run) and one that ends `ERR_TIMEOUT` (the host's
+  1800 s ingest deadline cannot be shortened); those two branches are covered by unit tests of
+  the decision. The 490 TS unit tests are not ported one for one.
