@@ -19,6 +19,15 @@ cargo xtask package --out dist                 # verifies the component, writes 
 route, a permission, a job or a settings field is declared there and nowhere else
 (`tests/vectors.rs` pins the routes and jobs against the code).
 
+## Outbound requests and budgets
+
+Every export that sends sets its guest budget on entry (`rt::budgets`, `src/lib.rs`), and every
+request in `src/net.rs` ends by its own timeout or that budget, whichever comes first. The search
+runs its indexers concurrently inside one `rt::block_on` with the `*_async` functions; the
+blocking `net::send`/`get`/`get_following` must never be called inside it (`block_on` does not
+nest). Log through the SDK's `info!`/`warn!`/`error!` (credentials are scrubbed) and pass URLs
+through `fliks_plugin_sdk::log::redact_url`.
+
 ## Test
 
 ```sh

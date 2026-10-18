@@ -296,22 +296,25 @@ sends, then releases, fenced by its token so a holder whose lease ran out cannot
 holder's slot:
 
 ```sql
--- release; $2 token, $3 requestDelay seconds, $4 outcome: true resolved, false threw, null cancelled
+-- release; $2 token, $3 requestDelay seconds,
+-- $4 outcome: 'resolved', 'threw', 'cancelled' (cut after it was sent) or 'not-started'
 UPDATE "indexer_throttle"
    SET "busyToken" = NULL, "busyUntil" = NULL,
-       "nextAllowedAt" = now() + make_interval(secs => $3),
-       "failureCount" = CASE WHEN $4 THEN 0 ELSE "failureCount" END,
-       "cooldownUntil" = CASE WHEN $4 THEN NULL ELSE "cooldownUntil" END,
-       "cooldownReason" = CASE WHEN $4 THEN NULL ELSE "cooldownReason" END,
-       "cooldownFailureCount" = CASE WHEN $4 THEN NULL ELSE "cooldownFailureCount" END,
-       "cooldownDetail" = CASE WHEN $4 THEN NULL ELSE "cooldownDetail" END,
+       "nextAllowedAt" = CASE WHEN $4::text = 'not-started' THEN "nextAllowedAt"
+                              ELSE now() + make_interval(secs => $3) END,
+       "failureCount" = CASE WHEN $4::text = 'resolved' THEN 0 ELSE "failureCount" END,
+       "cooldownUntil" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownUntil" END,
+       "cooldownReason" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownReason" END,
+       "cooldownFailureCount" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownFailureCount" END,
+       "cooldownDetail" = CASE WHEN $4::text = 'resolved' THEN NULL ELSE "cooldownDetail" END,
        "updatedAt" = now()
  WHERE "indexerId" = $1 AND "busyToken" = $2
 ```
 
-The claim returns a guard; its `Drop` runs the release with outcome `null` (`db` imports are
-synchronous, so `Drop` can call them). A request cancelled by its budget (DL6) therefore frees the
-slot at once; only a trapped instance leaves the slot to the lease.
+The claim returns a guard; its `Drop` runs the release with outcome `cancelled`, or `not-started`
+when the request was never sent (`db` imports are synchronous, so `Drop` can call them). A request
+cancelled by its budget (DL6) therefore frees the slot at once, and one that never started leaves
+the spacing as it was; only a trapped instance leaves the slot to the lease.
 
 Failure escalation reads then writes, so it is a CTE with `FOR UPDATE` (same statement):
 
@@ -630,7 +633,7 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 | DL15 | `pubDate` and `Retry-After` dates parsed by `Date.parse` (very lenient) | RFC 2822, RFC 3339 and the obsolete RFC 850 HTTP-date only; anything else is `null`, as an unparseable date is today | no JS engine |
 | DL16 | an event received before the database is ready is dropped [ts:src/plugin.ts:122-126] | it waits in the host ring and is handled once the plugin is `ready` | host contract (`plugins.md` rule 46) |
 | DL17 | `health` answers ok whenever the core socket is up | `health` runs `SELECT 1`; a database outage degrades the plugin (proxy 503) | health reports what the plugin needs |
-| DL18 | indexers searched concurrently, partial results streamed as each answers | indexers searched one after the other inside the same budget; a partial is emitted after each indexer | the SDK client is blocking (no SDK-5 executor); an indexer late in the list can be dropped from a short budget |
+| ~~DL18~~ | indexers searched concurrently, partial results streamed as each answers | closed: the same, on the SDK-5 executor | |
 
 ## 10. Decisions and remaining questions
 
@@ -661,20 +664,25 @@ Still open:
 ## 11. As built
 
 What the port did differently from sections 5 and 6, against `fliks-plugin-sdk` at fliks
-`8cb55fee`:
+`ef3190df`:
 
 - Flat modules (`src/{db,routes,grab,poller,torznab,throttle,qbit,sources,indexers,...}.rs`)
   instead of the directory tree of section 5; `xtask` is the SDK build CLI (SDK-12).
-- The SDK has no async executor or `Budget` (SDK-5): every outbound request is blocking with
-  `min(own timeout, remaining budget)`, the throttle waits with `thread::sleep`, and the fan-out
-  is sequential (DL18).
-- The SDK log has no credential scrub (SDK-10): `src/log.rs` scrubs `scheme://user:pass@`.
+- SDK-5 (closed): each sending export sets its `rt::budgets` budget on entry, and every outbound
+  request ends with `min(own timeout, export budget)` through `Request::deadline`/`budget`, body
+  included. The search fans out to every ready indexer at once inside one `rt::block_on`
+  (`FuturesUnordered`, a partial streamed as each answers; DL18 closed); throttle waits are
+  `rt::sleep`. The client calls outside the search (qBittorrent, sources, RSS, caps) stay one
+  blocking request at a time; the 4 s settle and 3 s hash-recovery loops still `thread::sleep`.
+- SDK-10 (closed): logging is the SDK's `info!/warn!/error!` with its scrub, URLs through
+  `log::redact_url` (an unparsable URL is logged as given minus its query, not `<unparsable url>`).
 - No gzip inflate (DL13): requests send `Accept-Encoding: identity` only; a server that
   compresses anyway is not decoded.
 - Tests: golden vectors and unit tests natively (`tests/vectors.rs`, `src/*`), and the component
   under the real host on a scratch database (`tests/harness.rs`): migrations and ledger
   adoption, the throttle statements under contention, the import lease sweep (job and `start`),
   event to `search:<id>` calls, the `caps:<id>` probe, two searches sharing one indexer slot,
+  two indexers searched at once with their partials streamed in answer order,
   a manual grab through a fake qBittorrent and the queue controls, every one of the 39 routes
   answering its frozen status and `{error: {key, detail}}` (called through `http`, below the
   host's own `:id` guard), 502 for a refusing or host-less client, `retry-import` as one
