@@ -630,6 +630,7 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 | DL15 | `pubDate` parsed by `new Date(string)` (very lenient) | RFC 2822 and RFC 3339 only; anything else is `null`, as an unparseable date is today | no JS engine |
 | DL16 | an event received before the database is ready is dropped [ts:src/plugin.ts:122-126] | it waits in the host ring and is handled once the plugin is `ready` | host contract (`plugins.md` rule 46) |
 | DL17 | `health` answers ok whenever the core socket is up | `health` runs `SELECT 1`; a database outage degrades the plugin (proxy 503) | health reports what the plugin needs |
+| DL18 | indexers searched concurrently, partial results streamed as each answers | indexers searched one after the other inside the same budget; a partial is emitted after each indexer | the SDK client is blocking (no SDK-5 executor); an indexer late in the list can be dropped from a short budget |
 
 ## 10. Decisions and remaining questions
 
@@ -643,7 +644,8 @@ Decided by the user after review:
   Recorded in `plugins.md` by the host work; referenced here only.
 - **D4** Signed wasm archives are GitHub Release assets; catalog `zipUrl` points there; the catalog
   repository stops storing `dist/` archives.
-- **D5** The SDK crate is `MIT OR Apache-2.0`; this plugin stays AGPL-3.0-or-later.
+- **D5** The SDK crate is `MIT OR Apache-2.0`; this plugin is relicensed MIT with the port
+  (revised from AGPL-3.0-or-later, as `fk-plugin-notify`).
 - **D6** Migration counts in the host docs are corrected elsewhere (8, then 11); the host `migrate`
   runs multi-statement scripts.
 - **D7** Both plugins ship as `1.0.0`; no maintenance branch; Fliks 4 keeps download `0.12.x`.
@@ -656,3 +658,22 @@ Still open:
 2. ~~**Remaining deadline.**~~ Settled by the host spec: a deadline starts at the export call
    (queue wait is bounded separately) and budgets read `deadline-remaining-ms` (`plugins.md` rules 40,
    43).
+
+## 11. As built
+
+What the port did differently from sections 5 and 6, against `fliks-plugin-sdk` at fliks
+`8cb55fee`:
+
+- Flat modules (`src/{db,routes,grab,poller,torznab,throttle,qbit,sources,indexers,...}.rs`)
+  instead of the directory tree of section 5; `xtask` is the SDK build CLI (SDK-12).
+- The SDK has no async executor or `Budget` (SDK-5): every outbound request is blocking with
+  `min(own timeout, remaining budget)`, the throttle waits with `thread::sleep`, and the fan-out
+  is sequential (DL18).
+- The SDK log has no credential scrub (SDK-10): `src/log.rs` scrubs `scheme://user:pass@`.
+- Tests: golden vectors and unit tests natively (`tests/vectors.rs`, `src/*`), and the component
+  under the real host on a scratch database (`tests/harness.rs`): migrations and ledger
+  adoption, the throttle statements under contention, the import lease sweep (job and `start`),
+  event to `search:<id>` calls, the `caps:<id>` probe, two searches sharing one indexer slot,
+  and a manual grab through a fake qBittorrent and the queue controls. Not yet covered: the
+  `scheduled` slice resume and an instance trapped mid-request (the lease expiry is covered at
+  the statement level); the 490 TS unit tests are not ported one for one.
