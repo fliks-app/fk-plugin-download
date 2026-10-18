@@ -7,7 +7,7 @@ default-members = ["."]
 name = "fk-plugin-download"
 version = "1.0.0"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 publish = false
 
 [lib]

@@ -644,8 +644,7 @@ Decided by the user after review:
   Recorded in `plugins.md` by the host work; referenced here only.
 - **D4** Signed wasm archives are GitHub Release assets; catalog `zipUrl` points there; the catalog
   repository stops storing `dist/` archives.
-- **D5** The SDK crate is `MIT OR Apache-2.0`; this plugin is relicensed MIT with the port
-  (revised from AGPL-3.0-or-later, as `fk-plugin-notify`).
+- **D5** The SDK crate is `MIT OR Apache-2.0`; this plugin stays AGPL-3.0-or-later.
 - **D6** Migration counts in the host docs are corrected elsewhere (8, then 11); the host `migrate`
   runs multi-statement scripts.
 - **D7** Both plugins ship as `1.0.0`; no maintenance branch; Fliks 4 keeps download `0.12.x`.

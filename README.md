@@ -81,4 +81,5 @@ How the plugin is built, its wire protocol, its database and its test suite are 
 
 ## License
 
-[MIT](LICENSE).
+[AGPL-3.0-or-later](LICENSE) — the same licence as Fliks itself, which this plugin's code was
+extracted from.

@@ -5,7 +5,7 @@
   "fliks": ">=5.0.0 <6.0.0",
   "author": "Fliks",
   "description": "Indexer search, download-client management and the acquisition grab pipeline for Fliks.",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "logo": "logo.svg",
   "kind": "process",
   "runtime": "wasm",

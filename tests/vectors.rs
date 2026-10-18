@@ -239,15 +239,13 @@ fn template_matches_the_published_manifest() {
             &new["pluginApi"],
             &new["fliks"],
             &new["runtime"],
-            &new["network"],
-            &new["license"]
+            &new["network"]
         ),
         (
             &json!(2),
             &json!(">=5.0.0 <6.0.0"),
             &json!("wasm"),
-            &json!({ "internal": true }),
-            &json!("MIT")
+            &json!({ "internal": true })
         )
     );
     let scopes: Vec<&str> = new["scopes"]
@@ -264,7 +262,6 @@ fn template_matches_the_published_manifest() {
         "memoryMb",
         "scopes",
         "network",
-        "license",
         "version",
         "files",
     ] {
