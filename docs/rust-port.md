@@ -664,7 +664,7 @@ Still open:
 ## 11. As built
 
 What the port did differently from sections 5 and 6, against `fliks-plugin-sdk` at fliks
-`ef3190df`:
+`0a125c88`:
 
 - Flat modules (`src/{db,routes,grab,poller,torznab,throttle,qbit,sources,indexers,...}.rs`)
   instead of the directory tree of section 5; `xtask` is the SDK build CLI (SDK-12).
