@@ -639,8 +639,14 @@ async fn an_acquisition_request_schedules_one_search_per_media() {
         logged(&h, "searching for media 3, 9")
     })
     .await;
+    // The log precedes the scheduling, so wait for both handlers to have run.
     until("both searches", MAX, async || {
-        h.scheduled_calls().await.is_empty()
+        let ran = h
+            .logs()
+            .iter()
+            .filter(|l| l.contains("no enabled download client"))
+            .count();
+        ran == 2 && h.scheduled_calls().await.is_empty()
     })
     .await;
 
