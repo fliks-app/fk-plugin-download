@@ -11,6 +11,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Full debuginfo of the optimised deps fills the runner disk and the cache; file:line is enough.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
   SQLX_OFFLINE: 'true'
 
 jobs:
@@ -36,6 +38,9 @@ jobs:
           targets: wasm32-wasip2
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PR caches would evict main's from the repository's 10 GB.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy --target wasm32-wasip2 --all-targets -- -D warnings
