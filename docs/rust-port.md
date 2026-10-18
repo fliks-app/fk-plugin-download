@@ -561,7 +561,7 @@ Archive `fliks.download-<version>.fkplugin`, store method, 4 entries: `plugin.js
 48 MiB total, 33 MiB compressed). `plugin.json` carries `pluginApi: 2`, `runtime: "wasm"`,
 `fliks: ">=5.0.0 <6.0.0"`, `network: {internal: true}`, `files: {plugin.wasm, logo.svg}`. The
 plugin repository's CI builds the unsigned archive (dev installs with `plugins.allow_unsigned`)
-and publishes `plugin.json`, `plugin.wasm`, `logo.svg` on a tag; signing stays in the catalog
+and publishes that verified archive (`cargo xtask package`) on a tag; signing stays in the catalog
 workflow with the catalog key, as today [catalog `.github/workflows/package-plugin.yml`].
 
 Catalog repository (`~/Documents/clement/code/fliks-plugin-catalog`), changes to describe, none made here:
@@ -619,7 +619,7 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 | DL4 | `importing` rows re-armed at process start only, all of them | re-armed when their 35 min lease has expired, by `start` and every `ImportCompleted` tick; after a restart a row whose lease is still running waits for it | a job instance can trap without a restart, and core may still be ingesting |
 | DL5 | long jobs run to completion | `SearchMissing`, `ImportCompleted` and `search:<id>` stop at their budget and resume; `RssSync` stops at its budget | deadline is a trap |
 | DL6 | an indexer past the search budget keeps running to its own fetch timeout | its request is cancelled; a request still waiting for the throttle slot never starts | futures cancel on drop |
-| DL7 | plugin router case-sensitive, no trailing slash, query nested by `qs` | SDK router (case-insensitive, optional trailing `/`, as the host); query is a flat ordered list, first value wins | one matcher, host rule 37 |
+| DL7 | plugin router case-sensitive, no trailing slash, query nested by `qs` | SDK router (case-insensitive, optional trailing `/`, a capture is never empty, as the host); query is a flat ordered list, first value wins | one matcher, host rule 37 |
 | DL8 | any address reachable | outbound guard in the host; private ranges only with the granted `network.internal`; link-local, reserved, 6to4, Teredo, documentation ranges always refused (F67); the grant is carried forward on upgrade from the pluginApi 1 package (D3) | sandbox |
 | DL9 | scopes: 7 | 6 (`requests:progress` dropped) | never called |
 | DL10 | `grab-executor.ts:61` logs the download URL, which carries `apikey=` | URL logged through `redact_url`; the line-level userinfo scrub of `log.ts` stays | secrets out of logs (cf. F66) |
@@ -627,7 +627,7 @@ need a rewrite of the build, test and publish sections (not part of this PR).
 | DL12 | `hello` blocks on migrations | migrations in `start`; routes answer 503 until `ready` | host contract |
 | DL13 | `.torrent`/Torznab responses decoded by `fetch` | `Accept-Encoding: identity`, gzip inflated if forced | no `fetch` |
 | DL14 | `path.join(save_path, name)` with the host OS rules | textual join using the separator of `save_path` (backslash if it has a drive letter or `\`) | wasm std is POSIX [assumed] |
-| DL15 | `pubDate` parsed by `new Date(string)` (very lenient) | RFC 2822 and RFC 3339 only; anything else is `null`, as an unparseable date is today | no JS engine |
+| DL15 | `pubDate` and `Retry-After` dates parsed by `Date.parse` (very lenient) | RFC 2822, RFC 3339 and the obsolete RFC 850 HTTP-date only; anything else is `null`, as an unparseable date is today | no JS engine |
 | DL16 | an event received before the database is ready is dropped [ts:src/plugin.ts:122-126] | it waits in the host ring and is handled once the plugin is `ready` | host contract (`plugins.md` rule 46) |
 | DL17 | `health` answers ok whenever the core socket is up | `health` runs `SELECT 1`; a database outage degrades the plugin (proxy 503) | health reports what the plugin needs |
 | DL18 | indexers searched concurrently, partial results streamed as each answers | indexers searched one after the other inside the same budget; a partial is emitted after each indexer | the SDK client is blocking (no SDK-5 executor); an indexer late in the list can be dropped from a short budget |
@@ -675,6 +675,14 @@ What the port did differently from sections 5 and 6, against `fliks-plugin-sdk` 
   under the real host on a scratch database (`tests/harness.rs`): migrations and ledger
   adoption, the throttle statements under contention, the import lease sweep (job and `start`),
   event to `search:<id>` calls, the `caps:<id>` probe, two searches sharing one indexer slot,
-  and a manual grab through a fake qBittorrent and the queue controls. Not yet covered: the
-  `scheduled` slice resume and an instance trapped mid-request (the lease expiry is covered at
-  the statement level); the 490 TS unit tests are not ported one for one.
+  a manual grab through a fake qBittorrent and the queue controls, every one of the 39 routes
+  answering its frozen status and `{error: {key, detail}}` (called through `http`, below the
+  host's own `:id` guard), 502 for a refusing or host-less client, `retry-import` as one
+  conditional `UPDATE`, the failure ladder against the recorded one, and a refused import
+  failing the row with `acquisition.failed`. The vectors also cover `pick-release`, scoring,
+  `retry-after`, `route-match` and eight Torznab feeds. Not yet covered end to end: the
+  `scheduled` slice resume, an instance trapped mid-request (the lease expiry is covered at the
+  statement level), an import that ends `alreadyPresent` (core's ingest probes through the
+  streaming engine, which the harness does not run) and one that ends `ERR_TIMEOUT` (the host's
+  1800 s ingest deadline cannot be shortened); those two branches are covered by unit tests of
+  the decision. The 490 TS unit tests are not ported one for one.
