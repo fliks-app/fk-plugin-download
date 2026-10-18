@@ -49,6 +49,6 @@ with `plugins.allow_unsigned`, or sign it with `cargo xtask package --key <dev-k
 ## Publish
 
 Pushing a tag `v<version>` (equal to the crate version) runs `.github/workflows/ci.yml`, which
-verifies the component (fails above 12 MiB) and creates a release with `plugin.json`,
-`plugin.wasm` and `logo.svg`. The catalog's `Package plugin` workflow signs those into the
-`.fkplugin`.
+verifies the component (fails above 12 MiB) and creates a release with that one unsigned
+`fliks.download-<version>.fkplugin`. The catalog's `Package plugin` workflow signs it and replaces
+the asset; see "WASM plugins" in the catalog README.
