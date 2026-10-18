@@ -188,15 +188,12 @@ fn login(base: &str, s: &Settings, timeout: Duration) -> R<String> {
         .join("; "))
 }
 
+/// One entry that does not parse makes the whole list unusable: the client counts as unreachable.
 fn json_array<T: for<'de> Deserialize<'de>>(r: &Resp) -> Option<Vec<T>> {
     if r.status != 200 {
         return None;
     }
-    serde_json::from_slice::<Vec<Value>>(&r.body).ok().map(|a| {
-        a.into_iter()
-            .filter_map(|v| serde_json::from_value(v).ok())
-            .collect()
-    })
+    serde_json::from_slice(&r.body).ok()
 }
 
 fn info_url(base: &str, category: &str) -> String {
@@ -707,6 +704,29 @@ pub fn test(implementation: &str, settings: &Settings, id: Option<i64>) -> Value
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn resp(status: u16, body: &str) -> Resp {
+        Resp {
+            status,
+            headers: vec![],
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_list_with_one_bad_entry_is_incomplete() {
+        let list = |s| json_array::<Torrent>(&resp(200, s)).map(|v| v.len());
+        assert_eq!(list(r#"[{"hash":"a"},{"hash":"b"}]"#), Some(2));
+        assert_eq!(list(r#"[{"hash":"a"},{"hash":7}]"#), None);
+        assert_eq!(list(r#"[{"hash":"a"},"x"]"#), None);
+        assert_eq!(list(r#"{"hash":"a"}"#), None);
+        assert_eq!(
+            json_array::<Torrent>(&resp(403, "[]")).map(|v| v.len()),
+            None
+        );
+    }
+
     #[test]
     fn deep_bencode_is_refused() {
         let mut b = b"d4:info".to_vec();
