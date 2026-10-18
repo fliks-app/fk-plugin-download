@@ -4,7 +4,7 @@
 
 use fk_plugin_download::throttle::sql;
 use fliks_plugin_sdk::harness::fliks_server::plugins::HttpResponse;
-use fliks_plugin_sdk::harness::{Harness, Setup, until};
+use fliks_plugin_sdk::harness::{Harness, Setup, request, until};
 use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MAX: Duration = Duration::from_secs(20);
+const GOLDEN: &str = include_str!("vectors/golden.json");
 const HASH: &str = "0123456789abcdef0123456789abcdef01234567";
 
 fn setup() -> Setup {
@@ -81,10 +82,17 @@ async fn status_of(c: &mut PgConnection, id: i64) -> (String, Option<String>) {
 
 /// A monitored, profiled movie in core, searchable through `media.acquisitionContext`.
 async fn add_movie(h: &Harness, title: &str) -> i64 {
-    let lib: i32 = sqlx::query_scalar("INSERT INTO libraries (name) VALUES ('Films') RETURNING id")
-        .fetch_one(&h.pool)
-        .await
-        .unwrap();
+    add_movie_in(h, title, None).await
+}
+
+/// The same, anchored to a library folder when `library` is given: what an import needs.
+async fn add_movie_in(h: &Harness, title: &str, library: Option<&std::path::Path>) -> i64 {
+    let lib: i32 =
+        sqlx::query_scalar("INSERT INTO libraries (name, path) VALUES ('Films', $1) RETURNING id")
+            .bind(library.map(|p| p.to_string_lossy().into_owned()))
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
     let qp: i32 = sqlx::query_scalar(
         "INSERT INTO quality_profiles (name, cutoff, items) VALUES ('Any', 0, '[]') RETURNING id",
     )
@@ -92,8 +100,8 @@ async fn add_movie(h: &Harness, title: &str) -> i64 {
     .await
     .unwrap();
     sqlx::query_scalar::<_, i32>(
-        r#"INSERT INTO media (title, type, year, monitored, "libraryId", "qualityProfileId")
-           VALUES ($1, 'movie', 2020, true, $2, $3) RETURNING id"#,
+        r#"INSERT INTO media (title, type, year, monitored, "libraryId", "qualityProfileId", "folderName")
+           VALUES ($1, 'movie', 2020, true, $2, $3, $1 || ' (2020)') RETURNING id"#,
     )
     .bind(title)
     .bind(lib)
@@ -882,4 +890,941 @@ async fn a_manual_grab_reaches_the_client_and_the_queue_drives_it() {
         )
     );
     h.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_failure_ladder_follows_the_recorded_one() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    let g: Value = serde_json::from_str(GOLDEN).unwrap();
+    let steps: Vec<i64> = g["throttleLadder"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() / 1000)
+        .collect();
+    let mono: Vec<i64> = g["throttleLadder"]["mono"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() / 1000)
+        .collect();
+    let mut db = plugin_db(&h).await;
+    let remaining = async |c: &mut PgConnection, ix: i64| {
+        scalar_i64(
+            c,
+            &format!(r#"SELECT round(extract(epoch FROM "cooldownUntil" - now()))::bigint FROM "indexer_throttle" WHERE "indexerId" = {ix}"#),
+        )
+        .await
+    };
+    // The first step answers; a second failure inside the open window answers nothing.
+    let ix = add_indexer(&mut db, "ladder", json!({})).await;
+    assert!(claim(&mut db, ix, "a", 30.0, 0).await.is_some());
+    release(&mut db, ix, "a", 0.0, None).await;
+    for i in 0..7 {
+        assert!(fail(&mut db, ix).await.is_some(), "step {i}");
+        assert!((remaining(&mut db, ix).await - steps[2 * i]).abs() <= 2);
+        assert_eq!(fail(&mut db, ix).await, None, "inside the window");
+        assert!((remaining(&mut db, ix).await - steps[2 * i + 1]).abs() <= 2);
+        exec(
+            &mut db,
+            &format!(
+                r#"UPDATE "indexer_throttle" SET "cooldownUntil" = now() WHERE "indexerId" = {ix}"#
+            ),
+        )
+        .await;
+    }
+    assert!(claim(&mut db, ix, "b", 30.0, 0).await.is_some());
+    release(&mut db, ix, "b", 0.0, Some(true)).await;
+    assert!(fail(&mut db, ix).await.is_some());
+    assert!((remaining(&mut db, ix).await - steps[14]).abs() <= 2);
+
+    // A shorter `Retry-After` never narrows an open window.
+    let iy = add_indexer(&mut db, "mono", json!({})).await;
+    assert!(claim(&mut db, iy, "c", 30.0, 0).await.is_some());
+    release(&mut db, iy, "c", 0.0, None).await;
+    assert!(fail(&mut db, iy).await.is_some());
+    for (header, expected) in ["10", "120", "60"].iter().zip(&mono) {
+        sqlx::query(sql::RETRY_AFTER)
+            .bind(iy as i32)
+            .bind(header.parse::<f64>().unwrap() * 1000.0)
+            .bind(*header)
+            .execute(&mut db)
+            .await
+            .unwrap();
+        assert!(
+            (remaining(&mut db, iy).await - expected).abs() <= 2,
+            "{header}"
+        );
+    }
+    h.finish().await;
+}
+
+/// One request and the answer the TypeScript plugin's tests froze for it.
+struct Case {
+    method: &'static str,
+    route: &'static str,
+    path: String,
+    body: Option<Value>,
+    status: u16,
+    /// `Some((key, detail))` for an `{error: {key, detail}}` body; `None` checks only `ok`.
+    error: Option<(&'static str, Option<String>)>,
+    ok: Option<Value>,
+}
+
+fn err(
+    method: &'static str,
+    route: &'static str,
+    path: &str,
+    body: Option<Value>,
+    status: u16,
+    key: &'static str,
+    detail: Option<&str>,
+) -> Case {
+    Case {
+        method,
+        route,
+        path: path.into(),
+        body,
+        status,
+        error: Some((key, detail.map(str::to_owned))),
+        ok: None,
+    }
+}
+
+fn okc(method: &'static str, route: &'static str, path: &str, ok: Option<Value>) -> Case {
+    Case {
+        method,
+        route,
+        path: path.into(),
+        body: None,
+        status: 200,
+        error: None,
+        ok,
+    }
+}
+
+const BAD_PARAM: &str = "download.http.errors.bad_param";
+const BAD_BODY: &str = "download.http.errors.bad_body";
+const NOT_FOUND: &str = "download.http.errors.not_found";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn all_39_routes_answer_the_frozen_statuses() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    let mut db = plugin_db(&h).await;
+    let mut row = async |status: &str, extra: &str| -> i64 {
+        scalar_i64(
+            &mut db,
+            &format!(
+                r#"INSERT INTO "download_history" ("sourceTitle", "quality", "status"{}) VALUES ('x', 'HD', '{status}'{}) RETURNING "id"::bigint"#,
+                if extra.is_empty() { "" } else { ", \"statusMessage\"" },
+                if extra.is_empty() { String::new() } else { format!(", '{extra}'") },
+            ),
+        )
+        .await
+    };
+    let completed = row("completed", "").await;
+    let failed = row("failed", "boom").await;
+    let grabbed = row("grabbed", "").await;
+    let (completed, failed, grabbed) = (
+        completed.to_string(),
+        failed.to_string(),
+        grabbed.to_string(),
+    );
+    let (completed, failed, grabbed) = (&completed, &failed, &grabbed);
+
+    let not_controllable = "download.queue.errors.not_controllable";
+    let cases = vec![
+        err(
+            "GET",
+            "/:id/releases",
+            "/abc/releases",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "GET",
+            "/:id/releases",
+            "/999/releases",
+            None,
+            404,
+            "download.grab.errors.media_not_found",
+            Some("999"),
+        ),
+        err(
+            "POST",
+            "/:id/grab",
+            "/abc/grab",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "POST",
+            "/:id/grab",
+            "/999/grab",
+            None,
+            404,
+            "download.grab.errors.media_not_found",
+            Some("999"),
+        ),
+        err(
+            "GET",
+            "/:id/seasons/:seasonId/releases",
+            "/1/seasons/x/releases",
+            None,
+            400,
+            BAD_PARAM,
+            Some("seasonId"),
+        ),
+        err(
+            "POST",
+            "/:id/seasons/:seasonId/grab",
+            "/1/seasons/0/grab",
+            None,
+            400,
+            BAD_PARAM,
+            Some("seasonId"),
+        ),
+        err(
+            "GET",
+            "/:id/episodes/:episodeId/releases",
+            "/1/episodes/-1/releases",
+            None,
+            400,
+            BAD_PARAM,
+            Some("episodeId"),
+        ),
+        err(
+            "POST",
+            "/:id/episodes/:episodeId/grab",
+            "/1/episodes/01/grab",
+            None,
+            400,
+            BAD_PARAM,
+            Some("episodeId"),
+        ),
+        okc("GET", "/queue", "/queue", None),
+        okc("GET", "/history", "/history", None),
+        okc("GET", "/indexers", "/indexers", Some(json!([]))),
+        err(
+            "POST",
+            "/indexers",
+            "/indexers",
+            Some(json!({})),
+            400,
+            BAD_BODY,
+            Some("name"),
+        ),
+        err(
+            "POST",
+            "/indexers",
+            "/indexers",
+            Some(json!({ "name": "x" })),
+            400,
+            BAD_BODY,
+            Some("implementation"),
+        ),
+        err(
+            "POST",
+            "/indexers",
+            "/indexers",
+            Some(json!({ "name": "x", "implementation": "torznab", "useFor": ["bogus"] })),
+            400,
+            BAD_BODY,
+            Some("useFor"),
+        ),
+        err(
+            "POST",
+            "/indexers",
+            "/indexers",
+            Some(json!({ "name": "x", "implementation": "torznab", "useFor": [] })),
+            400,
+            "download.config.indexers.errors.no_usage",
+            None,
+        ),
+        err(
+            "POST",
+            "/indexers",
+            "/indexers",
+            Some(json!({ "name": "x", "implementation": "nope" })),
+            400,
+            BAD_BODY,
+            Some("implementation"),
+        ),
+        err(
+            "POST",
+            "/indexers/test-connection",
+            "/indexers/test-connection",
+            Some(json!({})),
+            400,
+            BAD_BODY,
+            Some("implementation"),
+        ),
+        okc(
+            "DELETE",
+            "/indexers/cooldowns",
+            "/indexers/cooldowns",
+            Some(json!({ "cleared": 0 })),
+        ),
+        okc(
+            "GET",
+            "/indexers/implementations",
+            "/indexers/implementations",
+            None,
+        ),
+        err(
+            "PUT",
+            "/indexers/:id",
+            "/indexers/abc",
+            Some(json!({})),
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "PUT",
+            "/indexers/:id",
+            "/indexers/999",
+            Some(json!({})),
+            404,
+            NOT_FOUND,
+            Some("Indexer #999 not found"),
+        ),
+        err(
+            "PUT",
+            "/indexers/:id",
+            "/indexers/999",
+            Some(json!({ "useFor": [] })),
+            400,
+            "download.config.indexers.errors.no_usage",
+            None,
+        ),
+        err(
+            "DELETE",
+            "/indexers/:id",
+            "/indexers/abc",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "DELETE",
+            "/indexers/:id",
+            "/indexers/999",
+            None,
+            404,
+            NOT_FOUND,
+            Some("Indexer #999 not found"),
+        ),
+        err(
+            "DELETE",
+            "/indexers/:id/cooldown",
+            "/indexers/abc/cooldown",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "DELETE",
+            "/indexers/:id/cooldown",
+            "/indexers/999/cooldown",
+            None,
+            404,
+            NOT_FOUND,
+            Some("Indexer #999 not found"),
+        ),
+        err(
+            "GET",
+            "/indexers/:id/stats",
+            "/indexers/abc/stats",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        okc(
+            "GET",
+            "/indexers/:id/stats",
+            "/indexers/999/stats",
+            Some(json!([])),
+        ),
+        okc(
+            "GET",
+            "/indexer-sources",
+            "/indexer-sources",
+            Some(json!([])),
+        ),
+        err(
+            "POST",
+            "/indexer-sources",
+            "/indexer-sources",
+            Some(json!({})),
+            400,
+            BAD_BODY,
+            Some("name"),
+        ),
+        err(
+            "POST",
+            "/indexer-sources",
+            "/indexer-sources",
+            Some(json!({ "name": "s", "implementation": "nope" })),
+            400,
+            BAD_BODY,
+            Some("implementation"),
+        ),
+        err(
+            "POST",
+            "/indexer-sources/test-connection",
+            "/indexer-sources/test-connection",
+            Some(json!({})),
+            400,
+            BAD_BODY,
+            Some("implementation"),
+        ),
+        okc(
+            "GET",
+            "/indexer-sources/implementations",
+            "/indexer-sources/implementations",
+            None,
+        ),
+        err(
+            "PUT",
+            "/indexer-sources/:id",
+            "/indexer-sources/abc",
+            Some(json!({})),
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "PUT",
+            "/indexer-sources/:id",
+            "/indexer-sources/999",
+            Some(json!({})),
+            404,
+            NOT_FOUND,
+            Some("Indexer source #999 not found"),
+        ),
+        err(
+            "DELETE",
+            "/indexer-sources/:id",
+            "/indexer-sources/abc",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "DELETE",
+            "/indexer-sources/:id",
+            "/indexer-sources/999",
+            None,
+            404,
+            NOT_FOUND,
+            Some("Indexer source #999 not found"),
+        ),
+        err(
+            "POST",
+            "/indexer-sources/:id/import",
+            "/indexer-sources/abc/import",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "POST",
+            "/indexer-sources/:id/import",
+            "/indexer-sources/999/import",
+            None,
+            404,
+            NOT_FOUND,
+            Some("Indexer source #999 not found"),
+        ),
+        okc(
+            "GET",
+            "/download-clients",
+            "/download-clients",
+            Some(json!([])),
+        ),
+        err(
+            "POST",
+            "/download-clients",
+            "/download-clients",
+            Some(json!({})),
+            400,
+            BAD_BODY,
+            Some("name"),
+        ),
+        err(
+            "POST",
+            "/download-clients",
+            "/download-clients",
+            Some(json!({ "name": "d", "implementation": "deluge" })),
+            400,
+            BAD_BODY,
+            Some("implementation"),
+        ),
+        err(
+            "POST",
+            "/download-clients/test-connection",
+            "/download-clients/test-connection",
+            Some(json!({})),
+            400,
+            BAD_BODY,
+            Some("implementation"),
+        ),
+        okc(
+            "GET",
+            "/download-clients/implementations",
+            "/download-clients/implementations",
+            None,
+        ),
+        err(
+            "PUT",
+            "/download-clients/:id",
+            "/download-clients/abc",
+            Some(json!({})),
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "PUT",
+            "/download-clients/:id",
+            "/download-clients/999",
+            Some(json!({})),
+            404,
+            NOT_FOUND,
+            Some("Download client #999 not found"),
+        ),
+        err(
+            "DELETE",
+            "/download-clients/:id",
+            "/download-clients/abc",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "DELETE",
+            "/download-clients/:id",
+            "/download-clients/999",
+            None,
+            404,
+            NOT_FOUND,
+            Some("Download client #999 not found"),
+        ),
+        err(
+            "POST",
+            "/queue/:id/pause",
+            "/queue/abc/pause",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "POST",
+            "/queue/:id/pause",
+            "/queue/999/pause",
+            None,
+            404,
+            NOT_FOUND,
+            Some("999"),
+        ),
+        err(
+            "POST",
+            "/queue/:id/pause",
+            &format!("/queue/{completed}/pause"),
+            None,
+            409,
+            not_controllable,
+            Some("completed"),
+        ),
+        err(
+            "POST",
+            "/queue/:id/pause",
+            &format!("/queue/{grabbed}/pause"),
+            None,
+            409,
+            "download.queue.errors.no_torrent",
+            Some(grabbed),
+        ),
+        err(
+            "POST",
+            "/queue/:id/resume",
+            "/queue/999/resume",
+            None,
+            404,
+            NOT_FOUND,
+            Some("999"),
+        ),
+        err(
+            "POST",
+            "/queue/:id/resume",
+            &format!("/queue/{completed}/resume"),
+            None,
+            409,
+            not_controllable,
+            Some("completed"),
+        ),
+        err(
+            "DELETE",
+            "/queue/:id",
+            "/queue/999",
+            None,
+            404,
+            NOT_FOUND,
+            Some("999"),
+        ),
+        err(
+            "DELETE",
+            "/queue/:id",
+            &format!("/queue/{completed}"),
+            None,
+            409,
+            not_controllable,
+            Some("completed"),
+        ),
+        err(
+            "POST",
+            "/queue/:id/retry-import",
+            "/queue/abc/retry-import",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "POST",
+            "/queue/:id/retry-import",
+            "/queue/999/retry-import",
+            None,
+            404,
+            NOT_FOUND,
+            Some("999"),
+        ),
+        err(
+            "POST",
+            "/queue/:id/retry-import",
+            &format!("/queue/{failed}/retry-import"),
+            None,
+            409,
+            "download.queue.errors.not_retryable",
+            Some("failed"),
+        ),
+        err(
+            "DELETE",
+            "/history/:id",
+            "/history/abc",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "DELETE",
+            "/history/:id",
+            "/history/999",
+            None,
+            404,
+            NOT_FOUND,
+            Some("999"),
+        ),
+        okc(
+            "GET",
+            "/blocklist",
+            "/blocklist",
+            Some(json!({ "data": [], "total": 0, "page": 1, "pageSize": 25 })),
+        ),
+        okc(
+            "DELETE",
+            "/blocklist/all",
+            "/blocklist/all",
+            Some(json!({})),
+        ),
+        err(
+            "DELETE",
+            "/blocklist/:id",
+            "/blocklist/abc",
+            None,
+            400,
+            BAD_PARAM,
+            Some("id"),
+        ),
+        err(
+            "DELETE",
+            "/blocklist/:id",
+            "/blocklist/999",
+            None,
+            404,
+            NOT_FOUND,
+            Some("999"),
+        ),
+        // Last: it removes the terminal rows seeded above.
+        okc(
+            "DELETE",
+            "/history/all",
+            "/history/all",
+            Some(json!({ "removed": 2 })),
+        ),
+    ];
+    for c in &cases {
+        // Straight to the plugin: the host's own guards (`:id` must be a media) are not under test.
+        let payload = c.body.as_ref().map(Value::to_string).unwrap_or_default();
+        let r = h
+            .http(request(c.method, &c.path, &[], payload.as_bytes()))
+            .await
+            .unwrap();
+        let b = body(&r);
+        let at = format!("{} {} {:?}", c.method, c.path, b);
+        assert_eq!(r.status, c.status, "{at}");
+        match &c.error {
+            Some((key, detail)) => {
+                let mut e = json!({ "key": key });
+                if let Some(d) = detail {
+                    e["detail"] = json!(d);
+                }
+                assert_eq!(b, json!({ "error": e }), "{at}");
+            }
+            None => {
+                if let Some(ok) = &c.ok {
+                    assert_eq!(&b, ok, "{at}");
+                }
+            }
+        }
+    }
+
+    let table: Vec<(String, String)> = fk_plugin_download::routes::table()
+        .into_iter()
+        .map(|(m, p, _)| (m.to_owned(), p.to_owned()))
+        .collect();
+    assert_eq!(table.len(), 39);
+    for (m, p) in &table {
+        assert!(
+            cases.iter().any(|c| c.method == m && c.route == p),
+            "{m} {p} has no case"
+        );
+    }
+    h.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_refuses_or_is_missing_answers_502() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    let refusing = Stub::start(
+        |_, target, _| match target.split('?').next().unwrap_or("") {
+            "/api/v2/auth/login" => (
+                200,
+                vec![("set-cookie", "SID=s; path=/".into())],
+                b"Ok.".to_vec(),
+            ),
+            "/api/v2/torrents/info" => (200, vec![], b"[]".to_vec()),
+            _ => (403, vec![], vec![]),
+        },
+    );
+    let client = add_qbit(&h, &refusing).await;
+    let media = add_movie(&h, "Some Movie").await;
+    let grab = json!({ "downloadUrl": format!("magnet:?xt=urn:btih:{HASH}&dn=Some.Movie.2020.1080p"), "force": true });
+    let r = h
+        .proxy("POST", &format!("/{media}/grab"), Some(&grab))
+        .await;
+    assert_eq!(
+        (r.status, body(&r)),
+        (
+            502,
+            json!({ "error": { "key": "download.http.errors.download_client", "detail": "the download client refused the torrent (HTTP 403)" } })
+        )
+    );
+
+    let r = h
+        .proxy(
+            "PUT",
+            &format!("/download-clients/{client}"),
+            Some(&json!({ "settings": { "host": "" } })),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{:?}", body(&r));
+    let r = h
+        .proxy("POST", &format!("/{media}/grab"), Some(&grab))
+        .await;
+    assert_eq!(
+        (r.status, body(&r)),
+        (
+            502,
+            json!({ "error": { "key": "download.http.errors.download_client", "detail": "download client has no host configured" } })
+        )
+    );
+    h.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_torrent_list_with_one_unreadable_entry_makes_the_client_unreachable() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    let bad = Stub::start(
+        |_, target, _| match target.split('?').next().unwrap_or("") {
+            "/api/v2/auth/login" => (
+                200,
+                vec![("set-cookie", "SID=s; path=/".into())],
+                b"Ok.".to_vec(),
+            ),
+            "/api/v2/torrents/info" => (
+                200,
+                vec![],
+                json!([{ "hash": HASH, "name": "ok", "state": "downloading" }, { "hash": 7 }])
+                    .to_string()
+                    .into_bytes(),
+            ),
+            _ => (404, vec![], vec![]),
+        },
+    );
+    add_qbit(&h, &bad).await;
+    let mut db = plugin_db(&h).await;
+    exec(&mut db, r#"INSERT INTO "download_history" ("sourceTitle", "quality", "status", "torrentHash", "downloadClientId") SELECT 'x', 'HD', 'grabbed', 'abc', "id" FROM "download_clients""#).await;
+    let q = body(&h.proxy("GET", "/queue", None).await);
+    assert_eq!(q["clientsUnreachable"], json!(true), "{q}");
+    h.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_import_rearms_only_a_failed_import_and_only_once() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    let mut db = plugin_db(&h).await;
+    let mut rx = h.st.hub.subscribe();
+    let failed = async |db: &mut PgConnection| -> i64 {
+        scalar_i64(
+            db,
+            r#"INSERT INTO "download_history" ("sourceTitle", "quality", "status", "statusMessage") VALUES ('x', 'HD', 'import_failed', 'EACCES') RETURNING "id"::bigint"#,
+        )
+        .await
+    };
+    let id = failed(&mut db).await;
+    let r = h
+        .proxy("POST", &format!("/queue/{id}/retry-import"), None)
+        .await;
+    assert_eq!((r.status, body(&r)), (200, json!({})));
+    assert_eq!(status_of(&mut db, id).await, ("grabbed".into(), None));
+    until("the queue change", MAX, async || {
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|b| format!("{b:?}").contains("QueueUpdated"))
+    })
+    .await;
+    let r = h
+        .proxy("POST", &format!("/queue/{id}/retry-import"), None)
+        .await;
+    assert_eq!(
+        (r.status, body(&r)),
+        (
+            409,
+            json!({ "error": { "key": "download.queue.errors.not_retryable", "detail": "grabbed" } })
+        )
+    );
+
+    // Two retries racing for one row: exactly one wins.
+    let id = failed(&mut db).await;
+    let path = format!("/queue/{id}/retry-import");
+    let (a, b) = tokio::join!(
+        h.http(request("POST", &path, &[], b"")),
+        h.http(request("POST", &path, &[], b""))
+    );
+    let mut statuses = [a.unwrap().status, b.unwrap().status];
+    statuses.sort();
+    assert_eq!(statuses, [200, 409]);
+    h.finish().await;
+}
+
+/// qBittorrent holding one finished torrent whose single file sits under `save`.
+fn finished_qbit(save: &std::path::Path) -> Stub {
+    let save = save.to_string_lossy().into_owned();
+    Stub::start(move |_, target, _| {
+        let ok = |b: String| (200, vec![], b.into_bytes());
+        match target.split('?').next().unwrap_or("") {
+            "/api/v2/auth/login" => (
+                200,
+                vec![("set-cookie", "SID=s; path=/".into())],
+                b"Ok.".to_vec(),
+            ),
+            "/api/v2/torrents/info" => ok(json!([{
+                "hash": HASH, "name": "Some.Movie.2020.1080p", "size": 1000, "downloaded": 1000,
+                "progress": 1, "dlspeed": 0, "ratio": 0, "eta": 0, "state": "stalledUP",
+                "save_path": save, "added_on": 1
+            }])
+            .to_string()),
+            "/api/v2/torrents/files" => {
+                ok(json!([{ "name": "Some.Movie.2020.1080p.mkv", "progress": 1 }]).to_string())
+            }
+            _ => (404, vec![], vec![]),
+        }
+    })
+}
+
+/// A harness whose ingest root is a scratch folder, with a finished torrent in it and a history
+/// row for it; `library` anchors the movie (none: core refuses the ingest).
+async fn import_fixture(
+    name: &str,
+    library: bool,
+) -> Option<(Harness, std::path::PathBuf, i64, Stub)> {
+    let base = std::path::PathBuf::from("/tmp/fliks-parity/download-port")
+        .join(format!("{name}-{}", std::process::id()));
+    let (dl, lib) = (base.join("dl"), base.join("lib"));
+    std::fs::create_dir_all(&dl).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(dl.join("Some.Movie.2020.1080p.mkv"), b"not really a video").unwrap();
+    let mut s = setup();
+    s.template["ingestRoots"] = json!([dl.to_string_lossy()]);
+    let h = Harness::start(s).await?;
+    let qbit = finished_qbit(&dl);
+    let client = add_qbit(&h, &qbit).await;
+    let media = add_movie_in(&h, "Some Movie", library.then_some(lib.as_path())).await;
+    let mut db = plugin_db(&h).await;
+    let id = scalar_i64(
+        &mut db,
+        &format!(
+            r#"INSERT INTO "download_history" ("sourceTitle", "quality", "status", "torrentHash", "downloadClientId", "mediaId", "grabSource")
+               VALUES ('Some.Movie.2020.1080p', 'HD', 'grabbed', '{HASH}', {client}, {media}, 'manual') RETURNING "id"::bigint"#
+        ),
+    )
+    .await;
+    Some((h, base, id, qbit))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_import_core_refuses_is_failed_and_announced() {
+    let Some((h, base, id, _qbit)) = import_fixture("refused", false).await else {
+        return;
+    };
+    let mut rx = h.st.hub.subscribe();
+    h.job("ImportCompleted", None).await.unwrap();
+    let mut db = plugin_db(&h).await;
+    let (status, message) = status_of(&mut db, id).await;
+    assert_eq!(status, "import_failed");
+    assert!(
+        message
+            .as_deref()
+            .is_some_and(|m| m.contains("not anchored to a library folder")),
+        "{message:?}"
+    );
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|b| format!("{b:?}").contains("ImportFailed")),
+        "no acquisition.failed reached the hub"
+    );
+    h.finish().await;
+    let _ = std::fs::remove_dir_all(base);
 }
