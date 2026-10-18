@@ -633,17 +633,15 @@ pub mod blocklist {
         Ok((items, total.map_or(0, |c| c.count)))
     }
 
-    /// The lowercased titles among `titles` that are blocklisted.
+    /// The titles among `titles` that are blocklisted, case folded by Postgres on both sides.
     pub fn blocked(titles: &[String]) -> R<std::collections::HashSet<String>> {
         #[derive(Deserialize)]
         struct T {
             t: String,
         }
         let rows: Vec<T> = query(
-            r#"SELECT LOWER("sourceTitle") AS "t" FROM "blocklist" WHERE LOWER("sourceTitle") = ANY($1::text[])"#,
-            &[Param::TextList(
-                titles.iter().map(|t| t.to_lowercase()).collect(),
-            )],
+            r#"SELECT "t" FROM unnest($1::text[]) AS "t" WHERE EXISTS (SELECT 1 FROM "blocklist" WHERE LOWER("sourceTitle") = LOWER("t"))"#,
+            &[Param::TextList(titles.to_vec())],
         )?;
         Ok(rows.into_iter().map(|r| r.t).collect())
     }

@@ -105,7 +105,7 @@ fn fetch_list(url: &str, what: &str, headers: &[(&str, &str)], session: bool) ->
         }
         res
     } else {
-        net::get(url, headers, TIMEOUT)
+        net::get_following(url, headers, TIMEOUT)
             .map_err(|e| refused(format!("{what} unreachable"), NETWORK_ERROR, Some(e)))?
     };
     if res.status >= 300 {

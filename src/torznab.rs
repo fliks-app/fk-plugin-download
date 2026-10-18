@@ -74,7 +74,7 @@ pub fn build_query(o: &Query) -> String {
         parts.push(format!("tvdbid={id}"));
     }
     if let Some(id) = o.imdb_id.filter(|id| !id.is_empty() && allows("imdbid")) {
-        let stripped = if id.len() >= 2 && id[..2].eq_ignore_ascii_case("tt") {
+        let stripped = if id.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("tt")) {
             &id[2..]
         } else {
             id
@@ -330,7 +330,7 @@ impl FetchError {
 
 /// GET with `validateStatus: 200..400`.
 fn fetch_ok(url: &str, timeout: Duration) -> Result<String, FetchError> {
-    let r = net::get(url, &[], timeout).map_err(FetchError::Transport)?;
+    let r = net::get_following(url, &[], timeout).map_err(FetchError::Transport)?;
     if !(200..400).contains(&r.status) {
         return Err(FetchError::Status {
             status: r.status,
@@ -529,7 +529,7 @@ pub fn test_connection(base_url: &str, api_key: &str) -> serde_json::Value {
         return json!({ "ok": false, "messageKey": "download.indexers.test.base_url_missing" });
     }
     let url = format!("{base}?t=caps&apikey={}", encode_uri_component(api_key));
-    match net::get(&url, &[], Duration::from_secs(30)) {
+    match net::get_following(&url, &[], Duration::from_secs(30)) {
         Err(e) => {
             json!({ "ok": false, "messageKey": "download.indexers.test.network_error", "detail": e })
         }

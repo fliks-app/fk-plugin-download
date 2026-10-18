@@ -591,8 +591,12 @@ fn attach_labels(items: &mut [Map<String, Value>]) -> R<()> {
             ("seasonId", "season"),
             ("mediaId", "media"),
         ] {
-            if let Some(i) = o.get(field).and_then(Value::as_u64) {
-                return Some((kind, i as u32));
+            if let Some(i) = o
+                .get(field)
+                .and_then(Value::as_u64)
+                .and_then(|i| u32::try_from(i).ok())
+            {
+                return Some((kind, i));
             }
         }
         None

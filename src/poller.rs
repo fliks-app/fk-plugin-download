@@ -238,7 +238,6 @@ fn dedup(it: impl Iterator<Item = u32>) -> Vec<u32> {
     it.filter(|x| seen.insert(*x)).collect()
 }
 
-/// What every media has in flight, from one read of the clients.
 /// Each media's downloads, the media in first-seen order, and the in-flight rows.
 struct Sets {
     by_media: HashMap<i64, Vec<DownloadProgress>>,

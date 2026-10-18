@@ -3,7 +3,7 @@
 
 use fliks_plugin_sdk::bindings::wasi::http::types::Method;
 use fliks_plugin_sdk::http::{Error as HttpError, Request};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const USER_AGENT: &str = "Fliks/1.0";
 
@@ -85,6 +85,35 @@ pub fn send(
 
 pub fn get(url: &str, headers: &[(&str, &str)], timeout: Duration) -> Result<Resp, String> {
     send(Method::Get, url, headers, Body::None, timeout)
+}
+
+/// GET following redirects as `fetch` does (20 hops, one timeout over the chain).
+pub fn get_following(
+    url: &str,
+    headers: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Resp, String> {
+    let until = Instant::now() + timeout;
+    let mut target = url.to_owned();
+    for _ in 0..=20 {
+        let left = until.saturating_duration_since(Instant::now());
+        let timed_out = || format!("timed out after {}ms", timeout.as_millis());
+        if left.is_zero() {
+            return Err(timed_out());
+        }
+        let res = get(&target, headers, left).map_err(|e| {
+            if e.starts_with("timed out") {
+                timed_out()
+            } else {
+                e
+            }
+        })?;
+        match res.is_redirect().then(|| res.header("location")).flatten() {
+            Some(loc) => target = resolve(&target, &loc).ok_or_else(|| "Invalid URL".to_owned())?,
+            None => return Ok(res),
+        }
+    }
+    Err("fetch failed: redirect count exceeded".into())
 }
 
 fn describe(e: &HttpError, timeout: Duration) -> String {

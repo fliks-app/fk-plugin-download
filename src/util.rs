@@ -163,7 +163,9 @@ pub fn decode_uri_component(s: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
-            let hex = s.get(i + 1..i + 3)?;
+            let hex = s
+                .get(i + 1..i + 3)
+                .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))?;
             out.push(u8::from_str_radix(hex, 16).ok()?);
             i += 3;
         } else {
@@ -387,6 +389,7 @@ mod tests {
         assert_eq!(decode_uri_component("a%20b%C3%A9"), Some("a bé".into()));
         assert_eq!(decode_uri_component("%E0%A4%A"), None);
         assert_eq!(decode_uri_component("%ZZ"), None);
+        assert_eq!(decode_uri_component("%+1"), None);
     }
 
     #[test]

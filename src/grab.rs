@@ -148,7 +148,7 @@ pub fn score_request(releases: &[Release], indexers: &[IndexerRow]) -> R<Vec<Can
                     .and_then(|s| s.get("unknownLanguageIsoCode"))
                     .and_then(Value::as_str)
                     .map(str::to_owned),
-                blocked: blocked.contains(&r.title.to_lowercase()),
+                blocked: blocked.contains(&r.title),
             }
         })
         .collect())
@@ -290,6 +290,24 @@ pub fn search_scored(
     };
     let query = search_query(target, custom);
 
+    if is_special(target)
+        && target
+            .episode
+            .as_ref()
+            .and_then(|e| e.title.as_deref())
+            .is_none_or(|t| t.trim().is_empty())
+    {
+        let what = target
+            .episode
+            .as_ref()
+            .map_or("S00 pack".to_owned(), |e| format!("S00E{}", pad2(e.number)));
+        info!(
+            "Search skipped for \"{}\" {what}: no episode title to search a special by",
+            target.title
+        );
+        return Ok(vec![]);
+    }
+
     let mut ready = throttle::filter_ready(&all)?;
     if ready.is_empty() {
         warn!(
@@ -311,23 +329,6 @@ pub fn search_scored(
         s.emit("search.state", None);
     }
     if ready.is_empty() {
-        return Ok(vec![]);
-    }
-    if is_special(target)
-        && target
-            .episode
-            .as_ref()
-            .and_then(|e| e.title.as_deref())
-            .is_none_or(|t| t.trim().is_empty())
-    {
-        let what = target
-            .episode
-            .as_ref()
-            .map_or("S00 pack".to_owned(), |e| format!("S00E{}", pad2(e.number)));
-        info!(
-            "Search skipped for \"{}\" {what}: no episode title to search a special by",
-            target.title
-        );
         return Ok(vec![]);
     }
 
@@ -830,7 +831,7 @@ pub fn search_missing(
     resume: Option<Key>,
     margin: Duration,
 ) -> R<Option<Key>> {
-    if config::auto_acquisition_paused("SearchMissing") {
+    if config::auto_acquisition_paused("SearchMissing").map_err(Error::Other)? {
         return Ok(None);
     }
     let Some(client) = pick_client()? else {
@@ -853,7 +854,8 @@ pub fn search_missing(
             if !after(key, resume) {
                 continue;
             }
-            if Duration::from_millis(host::deadline_remaining_ms()) < margin {
+            let need = margin + Duration::from_millis(config::search_budget_ms());
+            if Duration::from_millis(host::deadline_remaining_ms()) < need {
                 info!("SearchMissing: out of time after {count} candidate(s), resuming later");
                 return Ok(last);
             }
@@ -879,7 +881,11 @@ pub fn search_missing(
             }
         }
         match page.cursor {
-            Some(c) if !config::auto_acquisition_paused("SearchMissing") => cursor = Some(c),
+            Some(c)
+                if !config::auto_acquisition_paused("SearchMissing").map_err(Error::Other)? =>
+            {
+                cursor = Some(c)
+            }
             _ => break,
         }
     }
@@ -965,7 +971,7 @@ pub fn season_episode_ids(
 
 /// Each ready indexer's feed, identified by `releases.match`, grabbed through the auto path.
 pub fn rss_sync(margin: Duration) -> R<()> {
-    if config::auto_acquisition_paused("RssSync") {
+    if config::auto_acquisition_paused("RssSync").map_err(Error::Other)? {
         return Ok(());
     }
     let all = indexers::list_enabled()?;
@@ -1001,7 +1007,7 @@ pub fn rss_sync(margin: Duration) -> R<()> {
         if releases.is_empty() {
             continue;
         }
-        if config::auto_acquisition_paused("RssSync") {
+        if config::auto_acquisition_paused("RssSync").map_err(Error::Other)? {
             return Ok(());
         }
         let matched = identify(&releases.iter().map(|r| r.title.clone()).collect::<Vec<_>>())?;

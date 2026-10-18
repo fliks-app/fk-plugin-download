@@ -1,6 +1,5 @@
-//! The per-indexer throttle in `indexer_throttle`: one request in flight per indexer (a fenced
-//! lease), `requestDelay` spacing, the failure ladder and `Retry-After` windows. Every
-//! transition is one statement on the database clock, so instances never compare clocks.
+//! The per-indexer throttle in `indexer_throttle`: a fenced one-request lease, spacing, failure
+//! ladder and `Retry-After` windows, each one statement on the database clock.
 
 use crate::db::{IndexerRow, exec, first, int, query, text};
 use crate::error::R;
@@ -130,7 +129,7 @@ impl Drop for Slot {
     }
 }
 
-/// The slot stayed busy past `until`: the request never started.
+/// The round ran out: the request never started, or was cut short by `until`.
 #[derive(Debug)]
 pub struct Lapsed;
 
@@ -182,6 +181,10 @@ pub fn run<T, E>(
     std::thread::sleep(wait);
     let left = until.saturating_duration_since(Instant::now());
     let out = f(timeout.min(left));
+    // Cut by the round, not by the indexer: released as cancelled, no failure step (DL6).
+    if left < timeout && out.is_err() && Instant::now() >= until {
+        return Err(Lapsed);
+    }
     if let Err(e) = slot.release(Some(out.is_ok())) {
         crate::warn!("[{}] throttle release failed: {e}", ix.name);
     }

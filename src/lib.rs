@@ -47,7 +47,11 @@ fn text(e: impl std::fmt::Display) -> String {
 
 fn resume_of(v: &Value) -> Option<(Option<u32>, Option<u32>)> {
     let r = v.get("resume")?;
-    let id = |k: &str| r.get(k).and_then(Value::as_u64).map(|i| i as u32);
+    let id = |k: &str| {
+        r.get(k)
+            .and_then(Value::as_u64)
+            .and_then(|i| u32::try_from(i).ok())
+    };
     Some((id("seasonId"), id("episodeId")))
 }
 
@@ -65,7 +69,7 @@ fn search_missing_job(args: Option<&str>) -> error::R<()> {
         let ids = ids
             .iter()
             .filter_map(Value::as_u64)
-            .map(|i| i as u32)
+            .filter_map(|i| u32::try_from(i).ok())
             .collect();
         grab::search_missing(Some(ids), None, JOB_MARGIN)?;
         return Ok(());

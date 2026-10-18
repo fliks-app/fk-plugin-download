@@ -14,18 +14,15 @@ fn value(kv: &[(String, String)], key: &str) -> Option<String> {
     kv.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
 }
 
-/// Only the string `true` pauses the automatic sweeps.
-pub fn auto_acquisition_paused(job: &str) -> bool {
-    let paused = value(
-        &get(&["auto_acquisition_paused"]),
-        "auto_acquisition_paused",
-    )
-    .as_deref()
-        == Some("true");
+/// Only the string `true` pauses the automatic sweeps; a failed read fails the sweep.
+pub fn auto_acquisition_paused(job: &str) -> Result<bool, String> {
+    let kv =
+        host::config_get(Some(&["auto_acquisition_paused".to_owned()])).map_err(|e| e.message)?;
+    let paused = value(&kv, "auto_acquisition_paused").as_deref() == Some("true");
     if paused {
         info!("{job}: automatic acquisition is paused, skipped");
     }
-    paused
+    Ok(paused)
 }
 
 /// Only the string `false` turns the immediate search off.

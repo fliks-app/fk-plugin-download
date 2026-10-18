@@ -670,7 +670,11 @@ async fn an_indexer_save_probes_its_caps_once() {
     let Some(h) = Harness::start(setup()).await else {
         return;
     };
-    let tz = Stub::start(|_, _, _| (200, vec![], CAPS.as_bytes().to_vec()));
+    // The indexer moved: the probe follows the redirect, as `fetch` did.
+    let tz = Stub::start(|_, target, _| match target.strip_prefix("/api?") {
+        Some(q) => (301, vec![("location", format!("/v2/api?{q}"))], vec![]),
+        None => (200, vec![], CAPS.as_bytes().to_vec()),
+    });
     route(&h, "torznab.test", "10.77.0.1", 80, &tz);
     let r = h
         .proxy(
@@ -714,6 +718,7 @@ async fn an_indexer_save_probes_its_caps_once() {
     let caps = tz.hits_to("/api?t=caps");
     assert_eq!(caps.len(), 1);
     assert_eq!(caps[0].target, "/api?t=caps&apikey=k");
+    assert_eq!(tz.hits_to("/v2/api?t=caps&apikey=k").len(), 1);
     let listed = body(&h.proxy("GET", "/indexers", None).await);
     assert_ne!(
         listed[0]["settings"]["apiKey"],
