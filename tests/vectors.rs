@@ -5,7 +5,7 @@ use fk_plugin_download::db::{IndexerRow, MIGRATIONS};
 use fk_plugin_download::{grab, poller, qbit, routes, throttle, torznab, util};
 use fliks_plugin_route::{Matcher, ParamValue};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
-    AcquisitionTarget, MediaKind, Rejection, ReleaseCoverage, ScoredRelease, Span, Want,
+    AcquisitionTarget, MediaKind, Rejection, ReleaseCoverage, ScoredRelease, SeasonRef, Span, Want,
     WantDecision,
 };
 use serde_json::{Map, Value, json};
@@ -403,6 +403,19 @@ fn pick_release() {
             .collect();
         assert_eq!(got, expected, "{c}");
     }
+}
+
+#[test]
+fn season_target_picks_packs_only() {
+    let mut t = target(Some(WantDecision::Missing));
+    t.season = Some(SeasonRef {
+        id: 1,
+        number: 1,
+        episode_count: 8,
+    });
+    let mut sorted: Vec<_> = (1..=3).map(|id| ranked(id, 0)).collect();
+    sorted[1].scored.is_full_season = true;
+    assert_eq!(grab::pick(&sorted, &t), vec![1]);
 }
 
 fn release(v: &Value) -> torznab::Release {
