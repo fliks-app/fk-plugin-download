@@ -2,7 +2,7 @@
 //! and the manifest template against the published 0.12.1 manifest.
 
 use fk_plugin_download::db::{IndexerRow, MIGRATIONS};
-use fk_plugin_download::{grab, poller, qbit, routes, throttle, torznab, util};
+use fk_plugin_download::{client, grab, poller, routes, throttle, torznab, util};
 use fliks_plugin_route::{Matcher, ParamValue};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
     AcquisitionTarget, MediaKind, Rejection, ReleaseCoverage, ScoredRelease, SeasonRef, Span, Want,
@@ -137,13 +137,13 @@ fn torrent_hashes() {
     let g = golden();
     for c in cases(&g, "magnetHash") {
         assert_eq!(
-            qbit::magnet_hash(c["input"].as_str().unwrap()).as_deref(),
+            client::magnet_hash(c["input"].as_str().unwrap()).as_deref(),
             c["output"].as_str()
         );
     }
     for c in cases(&g, "infoHash") {
         assert_eq!(
-            qbit::info_hash(&base64(c["input"].as_str().unwrap())).as_deref(),
+            client::info_hash(&base64(c["input"].as_str().unwrap())).as_deref(),
             c["output"].as_str()
         );
     }
@@ -175,7 +175,7 @@ fn stall_strikes() {
             .collect();
         let min = c["input"]["minBytesPerSecond"].as_f64().unwrap();
         assert_eq!(
-            qbit::stalled_strikes(&samples, min),
+            client::stalled_strikes(&samples, min),
             c["output"].as_i64().unwrap(),
             "{c}"
         );
@@ -186,7 +186,7 @@ fn stall_strikes() {
 fn qbit_base_url() {
     for c in cases(&golden(), "qbitBaseUrl") {
         let s = c["input"].as_object().unwrap().clone();
-        assert_eq!(qbit::base_url(&s).as_deref(), c["output"].as_str(), "{c}");
+        assert_eq!(client::base_url(&s).as_deref(), c["output"].as_str(), "{c}");
     }
 }
 
@@ -194,7 +194,7 @@ fn qbit_base_url() {
 fn progress_state() {
     for c in cases(&golden(), "progressState") {
         assert_eq!(
-            qbit::progress_state(c["input"].as_str().unwrap()),
+            client::progress_state(c["input"].as_str().unwrap()),
             c["output"].as_str().unwrap()
         );
     }
@@ -237,7 +237,8 @@ fn secret_settings() {
     }
 }
 
-/// Every key but the ones the port changes equals the published 0.12.1 manifest.
+/// Every key but the ones the port changes equals the published 0.12.1 manifest; strings may
+/// only be added.
 #[test]
 fn template_matches_the_published_manifest() {
     let mut old: Value =
@@ -264,6 +265,7 @@ fn template_matches_the_published_manifest() {
         .map(|s| s.as_str().unwrap())
         .collect();
     assert!(!scopes.contains(&"requests:progress") && scopes.len() == 6);
+    let (old_i18n, new_i18n) = (old["i18n"].clone(), new["i18n"].clone());
     for k in [
         "pluginApi",
         "fliks",
@@ -273,11 +275,17 @@ fn template_matches_the_published_manifest() {
         "network",
         "version",
         "files",
+        "i18n",
     ] {
         old.as_object_mut().unwrap().remove(k);
         new.as_object_mut().unwrap().remove(k);
     }
     assert_eq!(new, old);
+    for (lang, strings) in old_i18n.as_object().unwrap() {
+        for (k, v) in strings.as_object().unwrap() {
+            assert_eq!(&new_i18n[lang][k], v, "{lang} {k}");
+        }
+    }
 }
 
 #[test]

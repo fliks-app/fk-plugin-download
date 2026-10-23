@@ -1,12 +1,12 @@
 //! `ImportCompleted`, `CleanStalled`, `CleanSeeded` and the progress sets they publish.
 
+use crate::client::{self, Torrent};
 use crate::config;
 use crate::db::{
     DownloadClientRow, HistoryRow, blocklist, clients, history, indexers, stalled, state,
 };
 use crate::error::R;
 use crate::grab::{coverage_columns, identify, season_episode_ids};
-use crate::qbit::{self, Torrent};
 use crate::util::{decode_html_entities, js_number, now_ms, parse_date_ms};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
     AcquisitionEvent, DownloadProgress, DownloadState, Failed, Imported, IngestRequest,
@@ -65,8 +65,11 @@ pub struct Held {
 pub fn fetch_all() -> R<(Vec<Held>, bool)> {
     let mut out = vec![];
     let mut all_ok = true;
-    for c in clients::list_enabled()?.into_iter().filter(qbit::supports) {
-        let (ok, ts) = qbit::torrents(&c);
+    for c in clients::list_enabled()?
+        .into_iter()
+        .filter(client::supports)
+    {
+        let (ok, ts) = client::torrents(&c);
         all_ok &= ok;
         out.extend(ts.into_iter().map(|t| Held { client_id: c.id, t }));
     }
@@ -273,7 +276,7 @@ fn build_sets(all: &[Held]) -> R<Sets> {
         let state = if row.status == "importing" {
             "importing"
         } else {
-            qbit::progress_state(&t.state)
+            client::progress_state(&t.state)
         };
         if !by_media.contains_key(&media) {
             order.push(media);
@@ -359,7 +362,7 @@ fn reached(all: &[Held], hash: &str, expect: Outcome) -> bool {
     if expect == "absent" {
         return false;
     }
-    let paused = qbit::progress_state(&h.t.state) == "paused";
+    let paused = client::progress_state(&h.t.state) == "paused";
     if expect == "paused" { paused } else { !paused }
 }
 
@@ -410,7 +413,7 @@ pub fn poll() -> R<()> {
     }
     let enabled: Vec<DownloadClientRow> = clients::list_enabled()?
         .into_iter()
-        .filter(qbit::supports)
+        .filter(client::supports)
         .collect();
     if enabled.is_empty() {
         warn!("Import: no enabled download client found");
@@ -721,7 +724,7 @@ fn classify(r: &IngestResult) -> Ingested {
 }
 
 fn process_one(h: &HistoryRow, t: &Torrent, client: &DownloadClientRow) -> R<()> {
-    let Some(files) = qbit::files(client, &t.hash) else {
+    let Some(files) = client::files(client, &t.hash) else {
         let message = format!("could not list files for \"{}\"", t.name);
         warn!("Import[{}]: {message}; will retry", h.source_title);
         return history::set_status(&[h.id], "grabbed", Some(&message));
@@ -740,7 +743,7 @@ fn process_one(h: &HistoryRow, t: &Torrent, client: &DownloadClientRow) -> R<()>
         warn!("Import[{}]: {msg}", h.source_title);
         history::mark_failed(h.id, &msg)?;
         auto_blocklist(h, "Auto-blocklist: no valid video file in the download");
-        if let Err(e) = qbit::delete(client, &t.hash, true) {
+        if let Err(e) = client::delete(client, &t.hash, true) {
             warn!(
                 "Import[{}]: failed to remove dud torrent: {e}",
                 h.source_title
@@ -818,7 +821,7 @@ pub fn clean_stalled() -> R<()> {
     stalled::prune_older_than_secs(window.max(86_400.0))?;
     let enabled: Vec<DownloadClientRow> = clients::list_enabled()?
         .into_iter()
-        .filter(qbit::supports)
+        .filter(client::supports)
         .collect();
     if enabled.is_empty() {
         stall_skip(Some("no enabled download client supports it"));
@@ -830,14 +833,14 @@ pub fn clean_stalled() -> R<()> {
     let mut research: Vec<i64> = vec![];
     let now = now_ms();
     for client in &enabled {
-        let (ok, torrents) = qbit::torrents(client);
+        let (ok, torrents) = client::torrents(client);
         if !ok {
             continue;
         }
         for t in torrents.iter().filter(|t| {
             t.progress < 1.0
                 && !t.hash.is_empty()
-                && qbit::STALL_ELIGIBLE.contains(&t.state.as_str())
+                && client::STALL_ELIGIBLE.contains(&t.state.as_str())
         }) {
             let Some(row) = match_and_heal(t, &mut rows)? else {
                 if !seen(&UNTRACKED, &t.hash) {
@@ -859,7 +862,7 @@ pub fn clean_stalled() -> R<()> {
                 cfg.samples,
                 cfg.interval_minutes
             );
-            if let Err(e) = qbit::delete(client, &t.hash, true) {
+            if let Err(e) = client::delete(client, &t.hash, true) {
                 error!("StalledCleanup: failed to delete \"{}\": {e}", t.name);
                 continue;
             }
@@ -927,7 +930,7 @@ fn is_stalled(t: &Torrent, cfg: &config::Stall, now: i64) -> R<bool> {
             )
         })
         .collect();
-    Ok(qbit::stalled_strikes(&samples, cfg.min_bytes_per_second) >= cfg.samples)
+    Ok(client::stalled_strikes(&samples, cfg.min_bytes_per_second) >= cfg.samples)
 }
 
 // --- CleanSeeded -------------------------------------------------------------------------------
@@ -967,14 +970,14 @@ fn fmt_js(f: f64) -> String {
 pub fn clean_seeded() -> R<()> {
     let enabled: Vec<DownloadClientRow> = clients::list_enabled()?
         .into_iter()
-        .filter(qbit::supports)
+        .filter(client::supports)
         .collect();
     if enabled.is_empty() {
         return Ok(());
     }
     let mut held: Vec<(&DownloadClientRow, Torrent)> = vec![];
     for c in &enabled {
-        let (ok, ts) = qbit::torrents(c);
+        let (ok, ts) = client::torrents(c);
         if ok {
             held.extend(ts.into_iter().map(|t| (c, t)));
         }
@@ -1012,7 +1015,7 @@ pub fn clean_seeded() -> R<()> {
             continue;
         }
         info!("SeedCleanup: removing \"{}\" ({reason})", t.name);
-        match qbit::delete(client, &t.hash, true) {
+        match client::delete(client, &t.hash, true) {
             Ok(()) => deleted = true,
             Err(e) => error!("SeedCleanup: failed to delete \"{}\": {e}", t.name),
         }

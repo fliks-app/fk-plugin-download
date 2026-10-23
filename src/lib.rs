@@ -4,6 +4,7 @@
 #[macro_use]
 extern crate fliks_plugin_sdk;
 
+pub mod client;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -16,6 +17,7 @@ pub mod routes;
 pub mod sources;
 pub mod throttle;
 pub mod torznab;
+pub mod transmission;
 pub mod util;
 
 use fliks_plugin_sdk::rt::{self, Budget, budgets};

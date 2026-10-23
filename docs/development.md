@@ -38,8 +38,8 @@ FLIKS_HARNESS_PG_URL=postgresql://user:pass@host:5432/postgres cargo test --work
 `tests/vectors.rs` replays golden vectors recorded from the TypeScript plugin at `v0.12.1`
 (`tests/vectors/gen/gen.ts`). `tests/harness.rs` installs the built component into the real
 Fliks host on a scratch database it creates through `FLIKS_HARNESS_PG_URL` (a superuser URL;
-`FLIKS_HARNESS_DB_PREFIX` names the database) and drops afterwards, with stub Torznab and
-qBittorrent servers. Without the URL those tests skip with a warning locally and fail under CI.
+`FLIKS_HARNESS_DB_PREFIX` names the database) and drops afterwards, with stub Torznab,
+qBittorrent and Transmission servers. Without the URL those tests skip with a warning locally and fail under CI.
 
 ## Install it on a dev instance
 
