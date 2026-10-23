@@ -183,17 +183,24 @@ fn rank(
 }
 
 /// Every release without a rejection, best first, capped: a dead link costs a fetch each.
+/// A season target takes packs only; its loose episodes are grabbed as episode targets.
 pub fn pick(sorted: &[Ranked], target: &AcquisitionTarget) -> Vec<usize> {
+    let season_only = is_season(target);
     match &target.want {
         Some(w) if w.decision != WantDecision::Skip => sorted
             .iter()
             .enumerate()
             .filter(|(_, r)| r.scored.rejections.is_empty())
+            .filter(|(_, r)| !season_only || r.scored.is_full_season)
             .map(|(i, _)| i)
             .take(3)
             .collect(),
         _ => vec![],
     }
+}
+
+fn is_season(t: &AcquisitionTarget) -> bool {
+    t.season.is_some() && t.episode.is_none()
 }
 
 fn is_special(t: &AcquisitionTarget) -> bool {
@@ -621,20 +628,7 @@ pub fn grab_release(
     info!("Grab #{media_id} \"{}\" — auto-pick", target.title);
     let scored = search_scored(&target, Kind::Auto, None, None)?;
     let picks = pick(&scored, &target);
-    let best = picks.first().map(|i| &scored[*i]);
-    // Loose episodes winning a season search means they beat every pack.
-    if target.season.is_some()
-        && target.episode.is_none()
-        && !best.is_some_and(|b| b.scored.is_full_season)
-    {
-        let why = if best.is_some() {
-            "loose episodes outrank every pack"
-        } else {
-            "no eligible season release"
-        };
-        return grab_season_episodes(&target, why);
-    }
-    if best.is_none() {
+    if picks.is_empty() && !is_season(&target) {
         return Err(Error::grab("download.grab.errors.no_eligible_release"));
     }
     let mut last = None;
@@ -651,6 +645,14 @@ pub fn grab_release(
             }
             Err(e) => return Err(e),
         }
+    }
+    if is_season(&target) {
+        let why = if last.is_some() {
+            "every season pack was unobtainable"
+        } else {
+            "no eligible season pack"
+        };
+        return grab_season_episodes(&target, why);
     }
     Err(Error::Grab {
         key: "download.grab.errors.releases_unobtainable",
@@ -763,15 +765,7 @@ fn try_auto_grab(target: &AcquisitionTarget, client: &DownloadClientRow) -> R<bo
         return skip("no releases returned by indexers".into());
     }
     let picks = pick(&scored, target);
-    if let Some(best) = picks.first().map(|i| &scored[*i]) {
-        // One loose episode recorded as the season would block the season's own episodes.
-        if target.season.is_some() && target.episode.is_none() && !best.scored.is_full_season {
-            return skip(format!(
-                "no eligible season pack — best was \"{}\", left to the episode candidates",
-                best.raw.title
-            ));
-        }
-    } else {
+    if picks.is_empty() {
         let sample: Vec<String> = scored
             .iter()
             .take(3)
@@ -795,8 +789,13 @@ fn try_auto_grab(target: &AcquisitionTarget, client: &DownloadClientRow) -> R<bo
         } else {
             format!(" — top: {}", sample.join(" | "))
         };
+        let what = if is_season(target) {
+            "season pack"
+        } else {
+            "release"
+        };
         return skip(format!(
-            "no eligible release ({} checked){top}",
+            "no eligible {what} ({} checked){top}",
             scored.len()
         ));
     }
