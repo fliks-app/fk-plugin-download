@@ -27,16 +27,16 @@ whole.
 **A tracker aggregator that speaks Torznab.** You give the plugin a base URL and an API key per
 tracker; anything Torznab-compatible works, and one aggregator can expose many trackers.
 
-**qBittorrent.** It is the only download client this version supports. The plugin needs its
-address and, if you have set them, its username and password.
+**qBittorrent or Transmission** (3.0 or later). The plugin needs its address and, if you have set
+them, its username and password. On Transmission, the category is a torrent label.
 
 ## Setting it up
 
 1. **Settings → Download → Indexers**, *New indexer*. Paste the tracker's Torznab URL and its
    API key, then use *Test connection* before saving — it tells you straight away whether the
    URL and the key are right.
-2. **Settings → Download → Download clients**, *New download client*. Fill in your qBittorrent
-   address and credentials, and test the connection the same way.
+2. **Settings → Download → Download clients**, *New download client*. Pick qBittorrent or Transmission,
+   fill in its address and credentials, and test the connection the same way.
 3. Give a film or a series a **quality profile** and a **language profile**, and mark it
    monitored. That is what tells the plugin what "the right release" means for that title.
 
@@ -70,7 +70,6 @@ plugin off from the plugins page does not.
 
 ## What this version does not do
 
-- **Only qBittorrent.** No other download client is supported yet.
 - **The unknown-language field is free text.** A typo in an ISO code is stored as typed, with
   nothing to catch it.
 

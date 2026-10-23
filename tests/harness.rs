@@ -271,6 +271,53 @@ async fn add_qbit(h: &Harness, qbit: &Stub) -> i64 {
     body(&r)["id"].as_i64().unwrap()
 }
 
+/// Transmission that asks once for a session id, then holds one torrent once it is added.
+fn fake_transmission() -> Stub {
+    let (session, status) = (Mutex::new(false), Mutex::new(None::<i64>));
+    Stub::start(move |_, _, body| {
+        if !std::mem::replace(&mut *session.lock().unwrap(), true) {
+            return (409, vec![("x-transmission-session-id", "s".into())], vec![]);
+        }
+        let req: Value = serde_json::from_str(body).unwrap_or_default();
+        let mut status = status.lock().unwrap();
+        let arguments = match req["method"].as_str().unwrap_or("") {
+            "torrent-add" => {
+                *status = Some(4);
+                json!({ "torrent-added": { "id": 1, "hashString": HASH, "name": "Some.Movie.2020.1080p" } })
+            }
+            "torrent-get" => json!({ "torrents": status.map(|st| json!({
+                "hashString": HASH, "name": "Some.Movie.2020.1080p", "sizeWhenDone": 1000,
+                "downloadedEver": 500, "percentDone": 0.5, "rateDownload": 100, "uploadRatio": -1,
+                "doneDate": 0, "eta": 10, "status": st, "error": 0, "downloadDir": "/downloads",
+                "addedDate": 1, "labels": ["fliks"], "peersSendingToUs": 2,
+            })).into_iter().collect::<Vec<_>>() }),
+            "torrent-stop" => {
+                *status = Some(0);
+                json!({})
+            }
+            "torrent-start" => {
+                *status = Some(4);
+                json!({})
+            }
+            "torrent-remove" => {
+                *status = None;
+                json!({})
+            }
+            _ => json!({}),
+        };
+        let reply = json!({ "result": "success", "arguments": arguments });
+        (200, vec![], reply.to_string().into_bytes())
+    })
+}
+
+fn rpc_calls(stub: &Stub, method: &str) -> Vec<Value> {
+    stub.hits_to("/transmission/rpc")
+        .iter()
+        .filter_map(|h| serde_json::from_str::<Value>(&h.body).ok())
+        .filter(|b| b["method"] == method)
+        .collect()
+}
+
 // --- tests ---------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1117,6 +1164,89 @@ async fn a_manual_grab_reaches_the_client_and_the_queue_drives_it() {
             409,
             json!({ "error": { "key": "download.queue.errors.not_controllable", "detail": "failed" } })
         )
+    );
+    h.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_grab_reaches_transmission_and_the_queue_drives_it() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    let tr = fake_transmission();
+    route(&h, "transmission.test", "10.77.0.3", 9091, &tr);
+    let settings = json!({ "host": "transmission.test", "port": 9091, "username": "u", "password": "pw", "category": "fliks" });
+    let r = h
+        .proxy(
+            "POST",
+            "/download-clients/test-connection",
+            Some(&json!({ "implementation": "transmission", "settings": settings })),
+        )
+        .await;
+    assert_eq!(body(&r)["ok"], json!(true), "{:?}", body(&r));
+    let r = h
+        .proxy(
+            "POST",
+            "/download-clients",
+            Some(&json!({ "name": "tr", "implementation": "transmission", "settings": settings })),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{:?}", body(&r));
+    let media = add_movie(&h, "Some Movie").await;
+    let magnet = format!("magnet:?xt=urn:btih:{HASH}&dn=Some.Movie.2020.1080p");
+    let r = h
+        .proxy(
+            "POST",
+            &format!("/{media}/grab"),
+            Some(&json!({ "downloadUrl": magnet, "force": true })),
+        )
+        .await;
+    assert_eq!(
+        (r.status, body(&r)),
+        (200, json!({ "torrentHash": HASH })),
+        "{:?}",
+        body(&r)
+    );
+    assert_eq!(
+        rpc_calls(&tr, "torrent-add")[0]["arguments"]["filename"],
+        json!(magnet)
+    );
+    assert_eq!(
+        rpc_calls(&tr, "torrent-set")[0]["arguments"],
+        json!({ "ids": [HASH], "labels": ["fliks"] })
+    );
+
+    let q = body(&h.proxy("GET", "/queue", None).await);
+    assert_eq!(q["total"], json!(1), "{q}");
+    let row = q["data"][0]["id"].as_i64().unwrap();
+    assert_eq!(
+        (&q["data"][0]["state"], &q["data"][0]["progress"]),
+        (&json!("active"), &json!(50))
+    );
+    assert_eq!(
+        h.proxy("POST", &format!("/queue/{row}/pause"), None)
+            .await
+            .status,
+        200
+    );
+    let q = body(&h.proxy("GET", "/queue", None).await);
+    assert_eq!(q["data"][0]["state"], json!("paused"));
+    assert_eq!(
+        h.proxy("POST", &format!("/queue/{row}/resume"), None)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(rpc_calls(&tr, "torrent-start").len(), 1);
+    assert_eq!(
+        h.proxy("DELETE", &format!("/queue/{row}?deleteFiles=true"), None)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        rpc_calls(&tr, "torrent-remove")[0]["arguments"],
+        json!({ "ids": [HASH], "delete-local-data": true })
     );
     h.finish().await;
 }

@@ -7,7 +7,7 @@ use crate::torznab::{self, Ids, Kind, Release, Round};
 use crate::util::{
     decode_html_entities, decode_uri_component, js_number, now_iso, num, pad2, today,
 };
-use crate::{net, qbit, throttle};
+use crate::{client, net, throttle};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
     AcquisitionEvent, AcquisitionTarget, Audience, CandidateRelease, CandidatesQuery, Grabbed,
     MediaKind, ParamValue, ReleaseCoverage, ReleaseTitle, ScoredRelease, WantDecision,
@@ -479,7 +479,7 @@ fn grab_and_record(a: GrabArgs) -> R<String> {
         a.source_title,
         fliks_plugin_sdk::log::redact_url(&a.download_url)
     );
-    let hash = qbit::add(a.client, &a.download_url, a.media_type, a.reject_if_present)?;
+    let hash = client::add(a.client, &a.download_url, a.media_type, a.reject_if_present)?;
     let cov = coverage_columns(a.coverage.as_ref());
     if let Some(existing) = history::latest_by_hash(&hash)?
         && existing.media_id == Some(a.media_id.into())
@@ -528,7 +528,7 @@ fn grab_and_record(a: GrabArgs) -> R<String> {
 }
 
 fn pick_client() -> R<Option<DownloadClientRow>> {
-    Ok(clients::list_enabled()?.into_iter().find(qbit::supports))
+    Ok(clients::list_enabled()?.into_iter().find(client::supports))
 }
 
 fn args_for<'a>(

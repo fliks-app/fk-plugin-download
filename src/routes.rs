@@ -4,7 +4,7 @@ use crate::db::{HistoryRow, blocklist, clients, history, indexer_stats};
 use crate::error::{Error, R};
 use crate::grab::{self, Manual, Stream, to_wire};
 use crate::util::{Settings, js_number, num};
-use crate::{indexers, poller, qbit, sources};
+use crate::{client, indexers, poller, sources};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{AcquisitionEvent, Principal, ResolveQuery};
 use fliks_plugin_sdk::host;
 use fliks_plugin_sdk::router::{Handler, Request, Response, Router};
@@ -368,8 +368,8 @@ fn import_source(r: &Request) -> R<Response> {
 
 // --- download clients ----------------------------------------------------------------------
 
-fn client_input(b: &Map<String, Value>) -> qbit::Input {
-    qbit::Input {
+fn client_input(b: &Map<String, Value>) -> client::Input {
+    client::Input {
         name: str_field(b, "name"),
         implementation: str_field(b, "implementation"),
         settings: settings_field(b),
@@ -381,7 +381,7 @@ fn client_input(b: &Map<String, Value>) -> qbit::Input {
 fn list_clients(_: &Request) -> R<Response> {
     ok(clients::list_all()?
         .iter()
-        .map(qbit::redact)
+        .map(client::redact)
         .collect::<Vec<_>>())
 }
 
@@ -390,17 +390,17 @@ fn create_client(r: &Request) -> R<Response> {
     if let Some(f) = required(&b) {
         return bad_body(f);
     }
-    Ok(Response::json(201, &qbit::create(client_input(&b))?))
+    Ok(Response::json(201, &client::create(client_input(&b))?))
 }
 
 fn update_client(r: &Request) -> R<Response> {
     let id = need_id!(r);
-    ok(qbit::update(id, client_input(&body(r)))?)
+    ok(client::update(id, client_input(&body(r)))?)
 }
 
 fn delete_client(r: &Request) -> R<Response> {
     let id = need_id!(r);
-    qbit::remove(id)?;
+    client::remove(id)?;
     ok(json!({}))
 }
 
@@ -408,7 +408,7 @@ fn test_client(r: &Request) -> R<Response> {
     let Some((i, s, id)) = test_input(r) else {
         return bad_body("implementation");
     };
-    ok(qbit::test(&i, &s, id))
+    ok(client::test(&i, &s, id))
 }
 
 // --- blocklist -----------------------------------------------------------------------------
@@ -439,7 +439,7 @@ fn remove_blocklist(r: &Request) -> R<Response> {
 struct ClientIndex {
     consulted: bool,
     ok: bool,
-    by_hash: HashMap<String, qbit::Torrent>,
+    by_hash: HashMap<String, client::Torrent>,
 }
 
 /// One entry per known client, enabled or not, so "never asked" reads apart from "no answer".
@@ -448,8 +448,8 @@ fn index_clients() -> R<(HashMap<i64, ClientIndex>, bool)> {
     let mut unreachable = false;
     for c in clients::list_all()? {
         if !c.enabled
-            || !qbit::IMPLEMENTATIONS.contains(&c.implementation.as_str())
-            || !qbit::supports(&c)
+            || !client::IMPLEMENTATIONS.contains(&c.implementation.as_str())
+            || !client::supports(&c)
         {
             out.insert(
                 c.id,
@@ -461,7 +461,7 @@ fn index_clients() -> R<(HashMap<i64, ClientIndex>, bool)> {
             );
             continue;
         }
-        let (ok, ts) = qbit::torrents(&c);
+        let (ok, ts) = client::torrents(&c);
         unreachable |= !ok;
         out.insert(
             c.id,
@@ -475,7 +475,7 @@ fn index_clients() -> R<(HashMap<i64, ClientIndex>, bool)> {
     Ok((out, unreachable))
 }
 
-fn live<'a>(row: &HistoryRow, idx: &'a HashMap<i64, ClientIndex>) -> Option<&'a qbit::Torrent> {
+fn live<'a>(row: &HistoryRow, idx: &'a HashMap<i64, ClientIndex>) -> Option<&'a client::Torrent> {
     let i = idx.get(&row.download_client_id?)?;
     i.by_hash.get(&row.torrent_hash.as_ref()?.to_lowercase())
 }
@@ -560,7 +560,7 @@ fn queue_item(
         ]);
     } else if let Some(t) = live(row, idx) {
         set(&[
-            ("state", json!(qbit::progress_state(&t.state))),
+            ("state", json!(client::progress_state(&t.state))),
             ("progress", num(t.progress * 100.0)),
             ("bytesPerSecond", num(t.dlspeed)),
             ("size", size_or_null(Some(t.size))),
@@ -673,12 +673,12 @@ fn queue(r: &Request) -> R<Response> {
 }
 
 /// A live row reads as its client reports it; `missing` when every client answered without it.
-fn display_status(row: &HistoryRow, t: Option<&qbit::Torrent>, unreachable: bool) -> String {
+fn display_status(row: &HistoryRow, t: Option<&client::Torrent>, unreachable: bool) -> String {
     if row.status == "importing" {
         return "importing".into();
     }
     if let Some(t) = t {
-        return qbit::progress_state(&t.state).into();
+        return client::progress_state(&t.state).into();
     }
     if !row.is_live() {
         return row.status.clone();
@@ -704,7 +704,7 @@ fn history_page(r: &Request) -> R<Response> {
             let t = if row.is_live() { live(row, &idx) } else { None };
             let state = match row.status.as_str() {
                 s @ ("importing" | "import_failed") => json!(s),
-                _ => t.map_or(Value::Null, |t| json!(qbit::progress_state(&t.state))),
+                _ => t.map_or(Value::Null, |t| json!(client::progress_state(&t.state))),
             };
             let progress = if row.status == "importing" {
                 json!(100)
@@ -787,11 +787,11 @@ fn control(r: &Request, pause: bool) -> R<Response> {
             Some(&row.id.to_string()),
         ));
     };
-    let c = qbit::drivable(client)?;
+    let c = client::drivable(client)?;
     if pause {
-        qbit::pause(&c, &hash)?
+        client::pause(&c, &hash)?
     } else {
-        qbit::resume(&c, &hash)?
+        client::resume(&c, &hash)?
     }
     settle(&row, if pause { "paused" } else { "running" });
     ok(json!({}))
@@ -822,8 +822,8 @@ fn remove_queued(r: &Request) -> R<Response> {
         row.torrent_hash.as_deref().filter(|h| !h.is_empty()),
     ) {
         (true, Some(client), Some(hash)) => {
-            qbit::delete(
-                &qbit::drivable(client)?,
+            client::delete(
+                &client::drivable(client)?,
                 hash,
                 r.query("deleteFiles") == Some("true"),
             )?;
@@ -922,20 +922,32 @@ static SOURCE_IMPLEMENTATIONS: LazyLock<Value> = LazyLock::new(|| {
 
 static CLIENT_IMPLEMENTATIONS: LazyLock<Value> = LazyLock::new(|| {
     let f = "download.config.download_clients.fields";
-    json!([{
-        "implementation": "qbittorrent",
-        "labelKey": "download.config.download_clients.implementations.qbittorrent",
-        "fields": [
-            { "key": "host", "type": "text", "labelKey": format!("{f}.host"), "required": true, "default": "localhost" },
-            { "key": "port", "type": "number", "labelKey": format!("{f}.port"), "default": 8080 },
-            { "key": "useSsl", "type": "toggle", "labelKey": format!("{f}.use_ssl"), "default": false },
-            { "key": "username", "type": "text", "labelKey": format!("{f}.username") },
-            { "key": "password", "type": "password", "labelKey": format!("{f}.password"), "secret": true },
-            { "key": "category", "type": "text", "labelKey": format!("{f}.category"), "default": "fliks" },
-            { "key": "movieCategory", "type": "text", "labelKey": format!("{f}.movie_category") },
-            { "key": "seriesCategory", "type": "text", "labelKey": format!("{f}.series_category") },
-        ],
-    }])
+    let def = |imp: &str, port: u16, url_base: Option<&str>| {
+        let mut fields = vec![
+            json!({ "key": "host", "type": "text", "labelKey": format!("{f}.host"), "required": true, "default": "localhost" }),
+            json!({ "key": "port", "type": "number", "labelKey": format!("{f}.port"), "default": port }),
+            json!({ "key": "useSsl", "type": "toggle", "labelKey": format!("{f}.use_ssl"), "default": false }),
+        ];
+        if let Some(u) = url_base {
+            fields.push(json!({ "key": "urlBase", "type": "text", "labelKey": format!("{f}.url_base"), "default": u }));
+        }
+        fields.extend([
+            json!({ "key": "username", "type": "text", "labelKey": format!("{f}.username") }),
+            json!({ "key": "password", "type": "password", "labelKey": format!("{f}.password"), "secret": true }),
+            json!({ "key": "category", "type": "text", "labelKey": format!("{f}.category"), "default": "fliks" }),
+            json!({ "key": "movieCategory", "type": "text", "labelKey": format!("{f}.movie_category") }),
+            json!({ "key": "seriesCategory", "type": "text", "labelKey": format!("{f}.series_category") }),
+        ]);
+        json!({
+            "implementation": imp,
+            "labelKey": format!("download.config.download_clients.implementations.{imp}"),
+            "fields": fields,
+        })
+    };
+    json!([
+        def("qbittorrent", 8080, None),
+        def("transmission", 9091, Some("/transmission/")),
+    ])
 });
 
 fn indexer_implementations(_: &Request) -> R<Response> {

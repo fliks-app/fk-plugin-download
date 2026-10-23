@@ -364,10 +364,37 @@ pub fn text(body: &[u8]) -> String {
     String::from_utf8_lossy(body).into_owned()
 }
 
+/// Standard, padded base64.
+pub fn base64(b: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for chunk in b.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, x)| n | (*x as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn base64_pads() {
+        assert_eq!(base64(b"u:pw"), "dTpwdw==");
+        assert_eq!(base64(b"abc"), "YWJj");
+        assert_eq!(base64(b"ab"), "YWI=");
+    }
 
     #[test]
     fn coercions() {
