@@ -258,6 +258,19 @@ fn template_matches_the_published_manifest() {
             &json!({ "internal": true })
         )
     );
+    let secrets = new["database"]
+        .as_object_mut()
+        .unwrap()
+        .remove("secrets")
+        .unwrap();
+    assert_eq!(
+        secrets,
+        json!([
+            { "table": "indexers", "column": "settings", "jsonPath": "apiKey" },
+            { "table": "indexer_sources", "column": "settings", "jsonPath": "apiKey" },
+            { "table": "download_clients", "column": "settings", "jsonPath": "password" }
+        ])
+    );
     let scopes: Vec<&str> = new["scopes"]
         .as_array()
         .unwrap()

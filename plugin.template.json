@@ -17,6 +17,11 @@
       "media",
       "seasons",
       "users"
+    ],
+    "secrets": [
+      { "table": "indexers", "column": "settings", "jsonPath": "apiKey" },
+      { "table": "indexer_sources", "column": "settings", "jsonPath": "apiKey" },
+      { "table": "download_clients", "column": "settings", "jsonPath": "password" }
     ]
   },
   "routes": [
