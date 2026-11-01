@@ -7,7 +7,7 @@ use fliks_plugin_sdk::harness::fliks_server::events::Bus;
 use fliks_plugin_sdk::harness::fliks_server::plugins::HttpResponse;
 use fliks_plugin_sdk::harness::{Harness, Setup, request, until};
 use serde_json::{Value, json};
-use sqlx::{Connection, PgConnection};
+use sqlx::{AssertSqlSafe, Connection, PgConnection};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, Mutex};
@@ -44,11 +44,17 @@ async fn plugin_db(h: &Harness) -> PgConnection {
 }
 
 async fn exec(c: &mut PgConnection, q: &str) {
-    sqlx::raw_sql(q).execute(c).await.unwrap();
+    sqlx::raw_sql(AssertSqlSafe(q.to_owned()))
+        .execute(c)
+        .await
+        .unwrap();
 }
 
 async fn scalar_i64(c: &mut PgConnection, q: &str) -> i64 {
-    sqlx::query_scalar(q).fetch_one(c).await.unwrap()
+    sqlx::query_scalar(AssertSqlSafe(q.to_owned()))
+        .fetch_one(c)
+        .await
+        .unwrap()
 }
 
 async fn ledger(c: &mut PgConnection) -> Vec<String> {
@@ -88,6 +94,11 @@ async fn add_movie(h: &Harness, title: &str) -> i64 {
 
 /// The same, anchored to a library folder when `library` is given: what an import needs.
 async fn add_movie_in(h: &Harness, title: &str, library: Option<&std::path::Path>) -> i64 {
+    add_work(h, title, "movie", library).await
+}
+
+/// A monitored work of `kind` with its video want, edition and, for a movie, its own item.
+async fn add_work(h: &Harness, title: &str, kind: &str, library: Option<&std::path::Path>) -> i64 {
     let lib: i32 =
         sqlx::query_scalar("INSERT INTO libraries (name, path) VALUES ('Films', $1) RETURNING id")
             .bind(library.map(|p| p.to_string_lossy().into_owned()))
@@ -100,17 +111,42 @@ async fn add_movie_in(h: &Harness, title: &str, library: Option<&std::path::Path
     .fetch_one(&h.pool)
     .await
     .unwrap();
-    sqlx::query_scalar::<_, i32>(
-        r#"INSERT INTO media (title, type, year, monitored, "libraryId", "qualityProfileId", "folderName")
-           VALUES ($1, 'movie', 2020, true, $2, $3, $1 || ' (2020)') RETURNING id"#,
+    let media: i32 = sqlx::query_scalar(
+        r#"INSERT INTO media (title, type, year, monitored, "libraryId", "folderName")
+           VALUES ($1, $2, 2020, true, $3, $1 || ' (2020)') RETURNING id"#,
     )
     .bind(title)
+    .bind(kind)
     .bind(lib)
-    .bind(qp)
     .fetch_one(&h.pool)
     .await
-    .unwrap()
-    .into()
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO wants ("mediaId", family, "qualityProfileId") VALUES ($1, 'video', $2)"#,
+    )
+    .bind(media)
+    .bind(qp)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    let edition: i32 = sqlx::query_scalar(
+        r#"INSERT INTO editions ("mediaId", family) VALUES ($1, 'video') RETURNING id"#,
+    )
+    .bind(media)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    if kind == "movie" {
+        sqlx::query(
+            r#"INSERT INTO items ("mediaId", "editionId", monitored) VALUES ($1, $2, true)"#,
+        )
+        .bind(media)
+        .bind(edition)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    }
+    media.into()
 }
 
 // --- stub HTTP servers ---------------------------------------------------------------------
@@ -326,7 +362,7 @@ async fn start_migrates_and_routes_answer() {
         return;
     };
     let mut db = plugin_db(&h).await;
-    assert_eq!(ledger(&mut db).await.len(), 11);
+    assert_eq!(ledger(&mut db).await.len(), 12);
     assert!(h.health().await.unwrap().ok);
     for p in ["/indexers", "/indexer-sources", "/download-clients"] {
         let r = h.proxy("GET", &format!("{p}/implementations"), None).await;
@@ -483,6 +519,61 @@ async fn an_adopted_ledger_runs_only_the_new_migrations() {
     h.finish().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn item_history_backfills_movie_rows_only() {
+    let Some(h) = Harness::start(setup()).await else {
+        return;
+    };
+    let movie = add_work(&h, "Backfilled", "movie", None).await;
+    let series = add_work(&h, "Grouped", "series", None).await;
+    let item: i64 = sqlx::query_scalar(r#"SELECT id FROM items WHERE "mediaId" = $1"#)
+        .bind(movie as i32)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    let group: i32 = sqlx::query_scalar(
+        r#"INSERT INTO item_groups ("number", "mediaId") VALUES (1, $1) RETURNING id"#,
+    )
+    .bind(series as i32)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    let mut db = plugin_db(&h).await;
+    // The schema of 1.2.x: the column still named `episodeId`, 0012 not yet applied.
+    exec(
+        &mut db,
+        r#"ALTER TABLE "download_history" RENAME COLUMN "itemId" TO "episodeId";
+           DELETE FROM "_migrations" WHERE "name" = '0012_item_history'"#,
+    )
+    .await;
+    exec(
+        &mut db,
+        &format!(
+            r#"INSERT INTO "download_history" ("sourceTitle", "quality", "mediaId") VALUES ('film', 'HD', {movie});
+               INSERT INTO "download_history" ("sourceTitle", "quality", "mediaId", "seasonId") VALUES ('pack', 'HD', {series}, {group})"#
+        ),
+    )
+    .await;
+    h.restart().await;
+    until("0012 applied", MAX, async || {
+        ledger(&mut plugin_db(&h).await).await.len() == 12
+    })
+    .await;
+    let film = scalar_i64(
+        &mut db,
+        r#"SELECT "itemId" FROM "download_history" WHERE "sourceTitle" = 'film'"#,
+    )
+    .await;
+    assert_eq!(film, item);
+    let pack = scalar_i64(
+        &mut db,
+        r#"SELECT count(*) FROM "download_history" WHERE "sourceTitle" = 'pack' AND "itemId" IS NULL"#,
+    )
+    .await;
+    assert_eq!(pack, 1);
+    h.finish().await;
+}
+
 async fn claim(
     c: &mut PgConnection,
     id: i64,
@@ -607,10 +698,10 @@ async fn throttle_statements_hold_under_contention() {
     .await
     .unwrap();
     assert_eq!((reason.as_str(), detail.as_str()), ("rate-limit", "600"));
-    let open: Vec<i32> = sqlx::query_scalar(&format!(
+    let open: Vec<i32> = sqlx::query_scalar(AssertSqlSafe(format!(
         r#"SELECT "indexerId" FROM ({}) c"#,
         sql::COOLDOWNS
-    ))
+    )))
     .fetch_all(&mut a)
     .await
     .unwrap();
@@ -651,10 +742,10 @@ async fn import_leases_rearm_only_expired_rows() {
         "NULL",
         "now() + interval '10 minutes'",
     ] {
-        let id: i32 = sqlx::query_scalar(&format!(
+        let id: i32 = sqlx::query_scalar(AssertSqlSafe(format!(
             r#"INSERT INTO "download_history" ("sourceTitle", "quality", "status", "importLeaseUntil")
                VALUES ('x', 'HD', 'importing', {lease}) RETURNING "id""#
-        ))
+        )))
         .fetch_one(&mut db)
         .await
         .unwrap();
@@ -982,7 +1073,7 @@ async fn a_round_out_of_time_drops_its_requests_without_pushing_the_spacing() {
     let next_of = |id: i64| {
         format!(r#"SELECT "nextAllowedAt"::text FROM "indexer_throttle" WHERE "indexerId" = {id}"#)
     };
-    let before: String = sqlx::query_scalar(&next_of(a))
+    let before: String = sqlx::query_scalar(AssertSqlSafe(next_of(a)))
         .fetch_one(&mut db)
         .await
         .unwrap();
@@ -1016,7 +1107,7 @@ async fn a_round_out_of_time_drops_its_requests_without_pushing_the_spacing() {
 
     // Never sent: no hit, the slot free and the spacing where it was.
     assert_eq!(waiting.hits().len(), 0);
-    let after: String = sqlx::query_scalar(&next_of(a))
+    let after: String = sqlx::query_scalar(AssertSqlSafe(next_of(a)))
         .fetch_one(&mut db)
         .await
         .unwrap();
@@ -1024,11 +1115,11 @@ async fn a_round_out_of_time_drops_its_requests_without_pushing_the_spacing() {
     // Sent, then cut by the round: released as cancelled, no failure step.
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
     let (busy, failures, cooling, next_s): (Option<String>, i32, Option<String>, f64) =
-        sqlx::query_as(&format!(
+        sqlx::query_as(AssertSqlSafe(format!(
             r#"SELECT "busyToken", "failureCount", "cooldownUntil"::text,
                  extract(epoch FROM "nextAllowedAt" - now())::float8
                FROM "indexer_throttle" WHERE "indexerId" = {b}"#
-        ))
+        )))
         .fetch_one(&mut db)
         .await
         .unwrap();

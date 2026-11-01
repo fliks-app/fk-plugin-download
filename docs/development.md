@@ -6,7 +6,7 @@ plugin system itself works is in Fliks's `server/docs/spec/plugins.md`.
 
 ## Build
 
-The plugin is a Rust WebAssembly component (`pluginApi` 2, target `wasm32-wasip2`) over
+The plugin is a Rust WebAssembly component (`pluginApi` 3, target `wasm32-wasip2`) over
 `fliks-plugin-sdk`.
 
 ```sh
@@ -18,6 +18,16 @@ cargo xtask package --out dist                 # verifies the component, writes 
 `plugin.template.json` is the manifest without `version` and `files`; packaging adds both. A
 route, a permission, a job or a settings field is declared there and nowhere else
 (`tests/vectors.rs` pins the routes and jobs against the code).
+
+## Kinds, units and history
+
+Video kinds (`movie`, `series`) are acquired; a target of any other kind is refused by the routes
+and skipped with a log by the sweeps (`grab::Video`). A target's `scope` is empty for a movie, one
+season for a season pack and one episode for an episode.
+
+`download_history` keys a grab by `mediaId`, `itemId` (a row of core `items`) and `seasonId` (the
+group of a season pack or of an episode). The routes keep answering `episodeId`, which is the
+`itemId` when the grab has a group and null otherwise, so a movie's own item is never an episode.
 
 ## Outbound requests and budgets
 

@@ -1,12 +1,12 @@
 //! Golden vectors recorded from the TypeScript plugin at v0.12.1 (`tests/vectors/gen/gen.ts`),
 //! and the manifest template against the published 0.12.1 manifest.
 
-use fk_plugin_download::db::{IndexerRow, MIGRATIONS};
+use fk_plugin_download::db::{HistoryRow, IndexerRow, MIGRATIONS};
 use fk_plugin_download::{client, grab, poller, routes, throttle, torznab, util};
 use fliks_plugin_route::{Matcher, ParamValue};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
-    AcquisitionTarget, MediaKind, Rejection, ReleaseCoverage, ScoredRelease, SeasonRef, Span, Want,
-    WantDecision,
+    ExternalId, Family, Rejection, ReleaseCoverage, ScoredRelease, Span, Target, Unit, UnitRef,
+    Want, WantDecision,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -39,7 +39,8 @@ fn migrations_are_byte_identical() {
         [
             "0009_indexer_throttle",
             "0010_poller_state",
-            "0011_download_history_import_lease"
+            "0011_download_history_import_lease",
+            "0012_item_history"
         ]
     );
 }
@@ -205,14 +206,14 @@ fn coverage_columns() {
     for c in cases(&golden(), "coverageColumns") {
         let span = |v: &Value| {
             v.as_object().map(|o| Span {
-                first: o["from"].as_u64().unwrap() as u32,
-                last: o["to"].as_u64().unwrap() as u32,
+                first: o["from"].as_f64().unwrap(),
+                last: o["to"].as_f64().unwrap(),
             })
         };
         let cov = c["input"].as_object().map(|o| ReleaseCoverage {
-            seasons: span(&o["seasons"]),
-            episodes: span(&o["episodes"]),
-            complete_series: o["completeSeries"].as_bool().unwrap(),
+            groups: span(&o["seasons"]),
+            units: span(&o["episodes"]),
+            complete: o["completeSeries"].as_bool().unwrap(),
         });
         let got = serde_json::to_value(grab::coverage_columns(cov.as_ref())).unwrap();
         assert_eq!(got, c["output"], "{c}");
@@ -238,7 +239,7 @@ fn secret_settings() {
 }
 
 /// Every key but the ones the port changes equals the published 0.12.1 manifest, except the
-/// renamed `coreRefs`; strings may only be added.
+/// renamed `coreRefs` and the per-kind `releasePicker`; strings may only be added.
 #[test]
 fn template_matches_the_published_manifest() {
     let mut old: Value =
@@ -252,8 +253,8 @@ fn template_matches_the_published_manifest() {
             &new["network"]
         ),
         (
-            &json!(2),
-            &json!(">=5.0.0 <6.0.0"),
+            &json!(3),
+            &json!(">=6.0.0 <7.0.0"),
             &json!("wasm"),
             &json!({ "internal": true })
         )
@@ -278,13 +279,36 @@ fn template_matches_the_published_manifest() {
         .unwrap();
     assert_eq!(core_refs, json!(["item_groups", "items", "media", "users"]));
     old["database"].as_object_mut().unwrap().remove("coreRefs");
-    let scopes: Vec<&str> = new["scopes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s.as_str().unwrap())
-        .collect();
-    assert!(!scopes.contains(&"requests:progress") && scopes.len() == 6);
+    // A new scope would hold the boot auto-update for an admin.
+    assert_eq!(
+        new["scopes"],
+        json!([
+            "media:read",
+            "acquisition:candidates",
+            "releases:score",
+            "ingest:write",
+            "events:emit",
+            "config:rw"
+        ])
+    );
+    let picker = new["ui"].as_object_mut().unwrap().remove("releasePicker");
+    assert_eq!(
+        picker,
+        Some(json!({
+            "movie": { "work": { "search": "/:id/releases", "grab": "/:id/grab" } },
+            "series": {
+                "group": {
+                    "search": "/:id/seasons/:seasonId/releases",
+                    "grab": "/:id/seasons/:seasonId/grab"
+                },
+                "item": {
+                    "search": "/:id/episodes/:episodeId/releases",
+                    "grab": "/:id/episodes/:episodeId/grab"
+                }
+            }
+        }))
+    );
+    old["ui"].as_object_mut().unwrap().remove("releasePicker");
     let (old_i18n, new_i18n) = (old["i18n"].clone(), new["i18n"].clone());
     for k in [
         "pluginApi",
@@ -349,21 +373,25 @@ fn every_job_has_a_handler() {
     assert!(fk_plugin_download::job_handler("Nope").is_none());
 }
 
-fn target(want: Option<WantDecision>) -> AcquisitionTarget {
-    AcquisitionTarget {
+fn target(want: Option<WantDecision>) -> Target {
+    Target {
         media_id: 1,
-        kind: MediaKind::Movie,
+        kind: "movie".into(),
+        family: Family::Video,
+        language: None,
         title: String::new(),
         original_title: None,
         alternative_titles: vec![],
+        creators: vec![],
         year: None,
         runtime_minutes: None,
-        imdb_id: None,
-        tmdb_id: None,
-        tvdb_id: None,
+        external_ids: vec![],
+        edition_ids: vec![],
         library_id: 1,
         want: want.map(|decision| Want {
             decision,
+            family: Family::Video,
+            language: None,
             allowed_quality_ids: vec![],
             allowed_language_ids: vec![],
             min_resolution: 0,
@@ -371,8 +399,24 @@ fn target(want: Option<WantDecision>) -> AcquisitionTarget {
         }),
         expected_titles: vec![],
         search_title: String::new(),
-        season: None,
-        episode: None,
+        scope: vec![],
+    }
+}
+
+fn unit(group: Option<u32>, number: Option<f64>) -> Unit {
+    Unit {
+        ref_: UnitRef {
+            group,
+            number,
+            end_number: None,
+            label: None,
+            absolute: None,
+        },
+        group_id: group,
+        item_id: number.map(|n| n as u32),
+        title: None,
+        air_date: None,
+        unit_count: None,
     }
 }
 
@@ -389,7 +433,7 @@ fn ranked(id: u64, rejections: u64) -> grab::Ranked {
         language_id: None,
         language_name: None,
         language_allowed: true,
-        is_full_season: false,
+        whole_group: false,
         coverage: None,
         size_deviation: None,
         video_codec: None,
@@ -434,15 +478,77 @@ fn pick_release() {
 }
 
 #[test]
+fn only_video_kinds_are_acquired() {
+    use grab::Video;
+    assert_eq!(Video::of("movie"), Some(Video::Movie));
+    assert_eq!(Video::of("series"), Some(Video::Series));
+    for kind in ["book", "comic", "album", "podcast", ""] {
+        assert_eq!(Video::of(kind), None, "{kind}");
+    }
+}
+
+#[test]
+fn a_target_is_the_work_a_season_or_an_episode() {
+    use grab::Piece;
+    let mut t = target(None);
+    assert_eq!(grab::piece(&t), Piece::Work);
+    assert_eq!(grab::key_of(&t), (1, None, None));
+    t.scope = vec![unit(Some(2), None)];
+    assert_eq!(grab::piece(&t), Piece::Season(2));
+    assert_eq!(grab::key_of(&t), (1, Some(2), None));
+    t.scope = vec![unit(Some(2), Some(5.0))];
+    assert_eq!(grab::piece(&t), Piece::Episode(2, 5));
+    assert_eq!(grab::numbers(&t), (Some(2), Some(5)));
+    assert_eq!(grab::key_of(&t), (1, Some(2), Some(5)));
+}
+
+#[test]
+fn torznab_ids_come_from_the_external_ids() {
+    let id = |provider: &str, value: &str| ExternalId {
+        provider: provider.into(),
+        value: value.into(),
+    };
+    let list = [
+        id("isbn", "9780000000002"),
+        id("imdb", "tt0000001"),
+        id("tmdb", "603"),
+        id("tvdb", "bad"),
+    ];
+    let ids = torznab::Ids::of(&list);
+    assert_eq!(
+        (ids.imdb, ids.tmdb, ids.tvdb),
+        (Some("tt0000001"), Some(603), None)
+    );
+    let none = torznab::Ids::of(&[]);
+    assert_eq!((none.imdb, none.tmdb, none.tvdb), (None, None, None));
+}
+
+fn history_row(item: Option<i64>, season: Option<i64>) -> HistoryRow {
+    serde_json::from_value(json!({
+        "id": 1, "sourceTitle": "t", "quality": "q", "language": null, "torrentHash": null,
+        "size": null, "infoUrl": null, "status": "grabbed", "statusMessage": null,
+        "grabSource": "auto", "mediaId": 1, "itemId": item, "seasonId": season,
+        "indexerId": null, "downloadClientId": null, "createdAt": "", "updatedAt": "",
+        "coverSeasonFrom": null, "coverSeasonTo": null, "coverEpisodeFrom": null,
+        "coverEpisodeTo": null, "coverCompleteSeries": null
+    }))
+    .unwrap()
+}
+
+#[test]
+fn the_wire_episode_id_is_the_item_only_when_grouped() {
+    assert_eq!(history_row(Some(7), Some(3)).episode_id(), Some(7));
+    assert_eq!(history_row(Some(7), None).episode_id(), None);
+    assert_eq!(history_row(None, Some(3)).episode_id(), None);
+}
+
+#[test]
 fn season_target_picks_packs_only() {
     let mut t = target(Some(WantDecision::Missing));
-    t.season = Some(SeasonRef {
-        id: 1,
-        number: 1,
-        episode_count: 8,
-    });
+    t.kind = "series".into();
+    t.scope = vec![unit(Some(1), None)];
     let mut sorted: Vec<_> = (1..=3).map(|id| ranked(id, 0)).collect();
-    sorted[1].scored.is_full_season = true;
+    sorted[1].scored.whole_group = true;
     assert_eq!(grab::pick(&sorted, &t), vec![1]);
 }
 

@@ -7,6 +7,7 @@ use crate::throttle::{self, Lapsed};
 use crate::util::{
     decode_html_entities, encode_uri_component, parse_float, parse_int, setting_or_empty,
 };
+use fliks_plugin_sdk::bindings::fliks::plugin::types::ExternalId;
 use fliks_plugin_sdk::rt::Budget;
 use regex::Regex;
 use serde::Serialize;
@@ -590,6 +591,19 @@ pub struct Ids<'a> {
     pub imdb: Option<&'a str>,
     pub tmdb: Option<u32>,
     pub tvdb: Option<u32>,
+}
+
+impl<'a> Ids<'a> {
+    /// The `imdb`, `tmdb` and `tvdb` entries of a target's external ids; other providers are ignored.
+    pub fn of(list: &'a [ExternalId]) -> Self {
+        let find = |provider: &str| list.iter().find(|e| e.provider == provider);
+        let number = |provider: &str| find(provider).and_then(|e| e.value.trim().parse().ok());
+        Ids {
+            imdb: find("imdb").map(|e| e.value.as_str()),
+            tmdb: number("tmdb"),
+            tvdb: number("tvdb"),
+        }
+    }
 }
 
 fn season_tag(title: &str, season: u32) -> String {

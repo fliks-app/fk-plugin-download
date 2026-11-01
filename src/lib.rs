@@ -1,4 +1,4 @@
-//! `fliks.download` as a `fliks:plugin@2.0.0` component: indexer search, download clients and
+//! `fliks.download` as a `fliks:plugin@3.0.0` component: indexer search, download clients and
 //! the acquisition grab pipeline.
 
 #[macro_use]

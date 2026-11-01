@@ -9,8 +9,8 @@ use crate::util::{
 };
 use crate::{client, net, throttle};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
-    AcquisitionEvent, AcquisitionTarget, Audience, CandidateRelease, CandidatesQuery, Grabbed,
-    MediaKind, ParamValue, ReleaseCoverage, ReleaseTitle, ScoredRelease, WantDecision,
+    AcquisitionEvent, Audience, CandidateRelease, CandidatesQuery, Family, Grabbed, ParamValue,
+    ReleaseCoverage, ReleaseTitle, ScoredRelease, Target, UnitRef, WantDecision,
 };
 use fliks_plugin_sdk::host;
 use fliks_plugin_sdk::rt::{self, Budget, FuturesUnordered, StreamExt};
@@ -18,11 +18,71 @@ use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-pub fn kind_str(k: MediaKind) -> &'static str {
-    match k {
-        MediaKind::Movie => "movie",
-        MediaKind::Series => "series",
+/// The kinds of work this plugin acquires; the others have no torrent search here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Video {
+    Movie,
+    Series,
+}
+
+impl Video {
+    /// `None` for `book`, `comic`, `album` and any kind added later.
+    pub fn of(kind: &str) -> Option<Self> {
+        match kind {
+            "movie" => Some(Self::Movie),
+            "series" => Some(Self::Series),
+            _ => None,
+        }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Movie => "movie",
+            Self::Series => "series",
+        }
+    }
+}
+
+/// What a video target asks for: the whole work, a season or one episode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Piece {
+    Work,
+    Season(u32),
+    Episode(u32, u32),
+}
+
+/// The target's single unit: none is the whole work.
+fn unit_of(t: &Target) -> Option<&fliks_plugin_sdk::bindings::fliks::plugin::types::Unit> {
+    t.scope.first()
+}
+
+/// Video numbers are whole, so the host's `f64` is exact.
+pub fn numbers(t: &Target) -> (Option<u32>, Option<u32>) {
+    let r = unit_of(t).map(|u| &u.ref_);
+    (
+        r.and_then(|r| r.group),
+        r.and_then(|r| r.number).map(|n| n as u32),
+    )
+}
+
+pub fn piece(t: &Target) -> Piece {
+    match numbers(t) {
+        (Some(s), Some(e)) => Piece::Episode(s, e),
+        (Some(s), None) => Piece::Season(s),
+        (None, _) => Piece::Work,
+    }
+}
+
+fn unit_ref_of(t: &Target) -> Option<UnitRef> {
+    unit_of(t).map(|u| u.ref_.clone())
+}
+
+fn group_id(t: &Target) -> Option<u32> {
+    unit_of(t).and_then(|u| u.group_id)
+}
+
+fn item_id(t: &Target) -> Option<u32> {
+    unit_of(t).and_then(|u| u.item_id)
 }
 
 pub struct Ranked {
@@ -32,21 +92,23 @@ pub struct Ranked {
 
 pub fn coverage_json(c: &ReleaseCoverage) -> Value {
     let span = |s: &Option<fliks_plugin_sdk::bindings::fliks::plugin::types::Span>| {
-        s.as_ref()
-            .map_or(Value::Null, |s| json!({ "from": s.first, "to": s.last }))
+        s.as_ref().map_or(
+            Value::Null,
+            |s| json!({ "from": num(s.first), "to": num(s.last) }),
+        )
     };
-    json!({ "seasons": span(&c.seasons), "episodes": span(&c.episodes), "completeSeries": c.complete_series })
+    json!({ "seasons": span(&c.groups), "episodes": span(&c.units), "completeSeries": c.complete })
 }
 
 /// Unparseable coverage (no season, not a complete series) is stored as unknown.
 pub fn coverage_columns(c: Option<&ReleaseCoverage>) -> Coverage {
     match c {
-        Some(c) if c.complete_series || c.seasons.is_some() => Coverage {
-            cover_season_from: c.seasons.as_ref().map(|s| s.first.into()),
-            cover_season_to: c.seasons.as_ref().map(|s| s.last.into()),
-            cover_episode_from: c.episodes.as_ref().map(|s| s.first.into()),
-            cover_episode_to: c.episodes.as_ref().map(|s| s.last.into()),
-            cover_complete_series: Some(c.complete_series),
+        Some(c) if c.complete || c.groups.is_some() => Coverage {
+            cover_season_from: c.groups.as_ref().map(|s| s.first as i64),
+            cover_season_to: c.groups.as_ref().map(|s| s.last as i64),
+            cover_episode_from: c.units.as_ref().map(|s| s.first as i64),
+            cover_episode_to: c.units.as_ref().map(|s| s.last as i64),
+            cover_complete_series: Some(c.complete),
         },
         _ => Coverage::default(),
     }
@@ -80,7 +142,7 @@ pub fn to_wire(r: &Ranked) -> Value {
     o.insert("languageId".into(), json!(s.language_id));
     o.insert("languageName".into(), json!(s.language_name));
     o.insert("languageAllowed".into(), json!(s.language_allowed));
-    o.insert("isFullSeason".into(), json!(s.is_full_season));
+    o.insert("isFullSeason".into(), json!(s.whole_group));
     if let Some(c) = &s.coverage {
         o.insert("coverage".into(), coverage_json(c));
     }
@@ -157,11 +219,7 @@ pub fn score_request(
         .collect()
 }
 
-fn rank(
-    target: &AcquisitionTarget,
-    indexers: &[IndexerRow],
-    releases: &[Release],
-) -> R<Vec<Ranked>> {
+fn rank(target: &Target, indexers: &[IndexerRow], releases: &[Release]) -> R<Vec<Ranked>> {
     if releases.is_empty() {
         return Ok(vec![]);
     }
@@ -169,8 +227,8 @@ fn rank(
         blocklist::blocked(&releases.iter().map(|r| r.title.clone()).collect::<Vec<_>>())?;
     let scored = host::releases_score(
         target.media_id,
-        target.season.as_ref().map(|s| s.number),
-        target.episode.as_ref().map(|e| e.number),
+        Some(target.family),
+        unit_ref_of(target).as_ref(),
         &score_request(releases, indexers, &blocked),
     )?;
     Ok(scored
@@ -184,14 +242,14 @@ fn rank(
 
 /// Every release without a rejection, best first, capped: a dead link costs a fetch each.
 /// A season target takes packs only; its loose episodes are grabbed as episode targets.
-pub fn pick(sorted: &[Ranked], target: &AcquisitionTarget) -> Vec<usize> {
+pub fn pick(sorted: &[Ranked], target: &Target) -> Vec<usize> {
     let season_only = is_season(target);
     match &target.want {
         Some(w) if w.decision != WantDecision::Skip => sorted
             .iter()
             .enumerate()
             .filter(|(_, r)| r.scored.rejections.is_empty())
-            .filter(|(_, r)| !season_only || r.scored.is_full_season)
+            .filter(|(_, r)| !season_only || r.scored.whole_group)
             .map(|(i, _)| i)
             .take(3)
             .collect(),
@@ -199,32 +257,35 @@ pub fn pick(sorted: &[Ranked], target: &AcquisitionTarget) -> Vec<usize> {
     }
 }
 
-fn is_season(t: &AcquisitionTarget) -> bool {
-    t.season.is_some() && t.episode.is_none()
+fn is_season(t: &Target) -> bool {
+    matches!(piece(t), Piece::Season(_))
 }
 
-fn is_special(t: &AcquisitionTarget) -> bool {
-    t.season.as_ref().is_some_and(|s| s.number == 0)
+fn is_special(t: &Target) -> bool {
+    numbers(t).0 == Some(0)
+}
+
+/// The episode title of a special, the only thing to search it by.
+fn special_title(t: &Target) -> Option<&str> {
+    unit_of(t)?
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 /// Movies get their year; a special is searched by its own title.
-pub fn search_query(t: &AcquisitionTarget, custom: Option<&str>) -> String {
+pub fn search_query(t: &Target, custom: Option<&str>) -> String {
     if let Some(c) = custom.map(str::trim).filter(|c| !c.is_empty()) {
         return c.to_owned();
     }
-    if t.season.is_none()
-        && t.episode.is_none()
+    if piece(t) == Piece::Work
         && let Some(y) = t.year.filter(|y| *y != 0)
     {
         return format!("{} {y}", t.search_title);
     }
     if is_special(t)
-        && let Some(title) = t
-            .episode
-            .as_ref()
-            .and_then(|e| e.title.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        && let Some(title) = special_title(t)
     {
         return format!("{} {title}", t.search_title);
     }
@@ -282,7 +343,7 @@ pub fn round() -> Round {
 /// Fans out to every ready indexer at once, streams each answer, then scores the union in one
 /// `releases.score` call.
 pub fn search_scored(
-    target: &AcquisitionTarget,
+    target: &Target,
     kind: Kind,
     custom: Option<&str>,
     stream: Option<&Stream>,
@@ -292,24 +353,14 @@ pub fn search_scored(
         return Ok(vec![]);
     }
     let round = round();
-    let ids = Ids {
-        imdb: target.imdb_id.as_deref(),
-        tmdb: target.tmdb_id,
-        tvdb: target.tvdb_id,
-    };
+    let ids = Ids::of(&target.external_ids);
     let query = search_query(target, custom);
 
-    if is_special(target)
-        && target
-            .episode
-            .as_ref()
-            .and_then(|e| e.title.as_deref())
-            .is_none_or(|t| t.trim().is_empty())
-    {
-        let what = target
-            .episode
-            .as_ref()
-            .map_or("S00 pack".to_owned(), |e| format!("S00E{}", pad2(e.number)));
+    if is_special(target) && special_title(target).is_none() {
+        let what = match piece(target) {
+            Piece::Episode(_, e) => format!("S00E{}", pad2(e)),
+            _ => "S00 pack".to_owned(),
+        };
         info!(
             "Search skipped for \"{}\" {what}: no episode title to search a special by",
             target.title
@@ -343,17 +394,19 @@ pub fn search_scored(
 
     let mut raw: Vec<Release> = vec![];
     let (query, ids) = (&query, &ids);
+    let piece = piece(target);
     rt::block_on(async {
         let mut pending: FuturesUnordered<_> = ready
             .iter_mut()
             .map(|ix| async move {
-                let out = if let Some(ep) = &target.episode {
-                    let season = target.season.as_ref().map_or(0, |s| s.number);
-                    torznab::search_series(ix, kind, query, season, ep.number, ids, round).await
-                } else if let Some(s) = &target.season {
-                    torznab::search_season_pack(ix, kind, query, s.number, ids, round).await
-                } else {
-                    torznab::search_movie(ix, kind, query, ids, round).await
+                let out = match piece {
+                    Piece::Episode(s, e) => {
+                        torznab::search_series(ix, kind, query, s, e, ids, round).await
+                    }
+                    Piece::Season(s) => {
+                        torznab::search_season_pack(ix, kind, query, s, ids, round).await
+                    }
+                    Piece::Work => torznab::search_movie(ix, kind, query, ids, round).await,
                 };
                 (ix, out)
             })
@@ -394,24 +447,30 @@ pub fn search_scored(
     rank(target, &all, &raw)
 }
 
-fn load_target(
-    media_id: u32,
-    season_id: Option<u32>,
-    episode_id: Option<u32>,
-) -> R<AcquisitionTarget> {
-    host::media_acquisition_context(media_id, season_id, episode_id)?.ok_or_else(|| {
-        Error::grab_with("download.grab.errors.media_not_found", media_id.to_string())
-    })
+/// A target of a kind this plugin does not acquire is refused, not searched.
+fn load_target(media_id: u32, group_id: Option<u32>, item_id: Option<u32>) -> R<(Target, Video)> {
+    let target =
+        host::media_acquisition_context(media_id, None, group_id, item_id)?.ok_or_else(|| {
+            Error::grab_with("download.grab.errors.media_not_found", media_id.to_string())
+        })?;
+    let Some(video) = Video::of(&target.kind) else {
+        info!(
+            "Media #{media_id} \"{}\" is a {}: this plugin acquires movies and series only",
+            target.title, target.kind
+        );
+        return Err(Error::grab("download.grab.errors.unsupported_kind"));
+    };
+    Ok((target, video))
 }
 
 pub fn search_releases(
     media_id: u32,
-    season_id: Option<u32>,
-    episode_id: Option<u32>,
+    group_id: Option<u32>,
+    item_id: Option<u32>,
     custom: Option<&str>,
     stream: Option<&Stream>,
 ) -> R<Vec<Ranked>> {
-    let target = load_target(media_id, season_id, episode_id)?;
+    let (target, _) = load_target(media_id, group_id, item_id)?;
     let Some(want) = &target.want else {
         return Err(Error::grab("download.grab.errors.unprofiled"));
     };
@@ -453,7 +512,7 @@ fn title_from_url(url: &str) -> String {
 struct GrabArgs<'a> {
     media_id: u32,
     client: &'a DownloadClientRow,
-    media_type: &'static str,
+    video: Video,
     label: &'a str,
     source_title: String,
     download_url: String,
@@ -462,10 +521,9 @@ struct GrabArgs<'a> {
     info_url: Option<String>,
     indexer_id: Option<i64>,
     grab_source: &'static str,
-    season_number: Option<u32>,
-    episode_number: Option<u32>,
-    season_id: Option<u32>,
-    episode_id: Option<u32>,
+    unit: Option<UnitRef>,
+    group_id: Option<u32>,
+    item_id: Option<u32>,
     coverage: Option<ReleaseCoverage>,
     reject_if_present: bool,
 }
@@ -475,11 +533,16 @@ struct GrabArgs<'a> {
 fn grab_and_record(a: GrabArgs) -> R<String> {
     info!(
         "AutoGrab[{}]: sending \"{}\" to the download client — {}",
-        a.media_type,
+        a.video.as_str(),
         a.source_title,
         fliks_plugin_sdk::log::redact_url(&a.download_url)
     );
-    let hash = client::add(a.client, &a.download_url, a.media_type, a.reject_if_present)?;
+    let hash = client::add(
+        a.client,
+        &a.download_url,
+        a.video.as_str(),
+        a.reject_if_present,
+    )?;
     let cov = coverage_columns(a.coverage.as_ref());
     if let Some(existing) = history::latest_by_hash(&hash)?
         && existing.media_id == Some(a.media_id.into())
@@ -487,7 +550,9 @@ fn grab_and_record(a: GrabArgs) -> R<String> {
     {
         info!(
             "AutoGrab[{}]: \"{}\" is already in flight as history #{}",
-            a.media_type, a.source_title, existing.id
+            a.video.as_str(),
+            a.source_title,
+            existing.id
         );
         history::fill_coverage(existing.id, &cov)?;
         return Ok(hash);
@@ -500,16 +565,16 @@ fn grab_and_record(a: GrabArgs) -> R<String> {
         info_url: a.info_url.filter(|u| !u.is_empty()),
         grab_source: a.grab_source,
         media_id: a.media_id.into(),
-        episode_id: a.episode_id.map(Into::into),
-        season_id: a.season_id.map(Into::into),
+        item_id: a.item_id.map(Into::into),
+        season_id: a.group_id.map(Into::into),
         indexer_id: a.indexer_id,
         download_client_id: Some(a.client.id),
         coverage: cov,
     })?;
     let ev = AcquisitionEvent::Grabbed(Grabbed {
         media_id: a.media_id,
-        season_number: a.season_number,
-        episode_number: a.episode_number,
+        family: Family::Video,
+        unit: a.unit,
     });
     if let Err(e) = host::events_publish(&[ev]) {
         warn!("AutoGrab: events.publish failed: {}", e.message);
@@ -522,7 +587,9 @@ fn grab_and_record(a: GrabArgs) -> R<String> {
     }
     info!(
         "AutoGrab[{}]: grabbed \"{}\" for \"{}\"",
-        a.media_type, a.source_title, a.label
+        a.video.as_str(),
+        a.source_title,
+        a.label
     );
     Ok(hash)
 }
@@ -532,7 +599,8 @@ fn pick_client() -> R<Option<DownloadClientRow>> {
 }
 
 fn args_for<'a>(
-    t: &'a AcquisitionTarget,
+    t: &'a Target,
+    video: Video,
     client: &'a DownloadClientRow,
     r: &Ranked,
     grab_source: &'static str,
@@ -540,7 +608,7 @@ fn args_for<'a>(
     GrabArgs {
         media_id: t.media_id,
         client,
-        media_type: kind_str(t.kind),
+        video,
         label: &t.title,
         source_title: r.raw.title.clone(),
         download_url: r.raw.download_url.clone(),
@@ -549,10 +617,9 @@ fn args_for<'a>(
         info_url: r.raw.info_url.clone(),
         indexer_id: Some(r.raw.indexer_id).filter(|id| *id != 0),
         grab_source,
-        season_number: t.season.as_ref().map(|s| s.number),
-        episode_number: t.episode.as_ref().map(|e| e.number),
-        season_id: t.season.as_ref().map(|s| s.id),
-        episode_id: t.episode.as_ref().map(|e| e.id),
+        unit: unit_ref_of(t),
+        group_id: group_id(t),
+        item_id: item_id(t),
         coverage: r.scored.coverage,
         reject_if_present: false,
     }
@@ -561,11 +628,11 @@ fn args_for<'a>(
 /// A manual URL is scored alone; a missing one auto-picks from a fresh search.
 pub fn grab_release(
     media_id: u32,
-    season_id: Option<u32>,
-    episode_id: Option<u32>,
+    group_id: Option<u32>,
+    item_id: Option<u32>,
     manual: Option<Manual>,
 ) -> R<Value> {
-    let target = load_target(media_id, season_id, episode_id)?;
+    let (target, video) = load_target(media_id, group_id, item_id)?;
     let client =
         pick_client()?.ok_or_else(|| Error::grab("download.grab.errors.no_download_client"))?;
     if target.want.is_none() {
@@ -617,7 +684,7 @@ pub fn grab_release(
                 " (forced)"
             }
         );
-        let mut a = args_for(&target, &client, &scored, "manual");
+        let mut a = args_for(&target, video, &client, &scored, "manual");
         a.info_url = m.info_url;
         a.indexer_id = m.indexer_id;
         a.source_title = source_title;
@@ -634,7 +701,7 @@ pub fn grab_release(
     let mut last = None;
     for i in picks {
         let c = &scored[i];
-        match grab_and_record(args_for(&target, &client, c, "manual")) {
+        match grab_and_record(args_for(&target, video, &client, c, "manual")) {
             Ok(hash) => return Ok(json!({ "torrentHash": hash })),
             Err(Error::Unobtainable(m)) => {
                 warn!(
@@ -661,21 +728,21 @@ pub fn grab_release(
 }
 
 /// The still-wanted episodes of the target's season, in airing order.
-fn season_episodes(target: &AcquisitionTarget) -> R<Vec<AcquisitionTarget>> {
+fn season_episodes(target: &Target) -> R<Vec<Target>> {
     let mut out = vec![];
     let mut cursor = None;
     loop {
         let page = host::acquisition_candidates(&CandidatesQuery {
             kind: None,
+            family: None,
             media_ids: Some(vec![target.media_id]),
             available_on: today(),
             limit: 200,
             cursor: cursor.take(),
         })?;
         for it in page.items {
-            let same = it.season.as_ref().map(|s| s.id) == target.season.as_ref().map(|s| s.id);
-            if it.episode.is_some()
-                && same
+            if matches!(piece(&it), Piece::Episode(..))
+                && group_id(&it) == group_id(target)
                 && it
                     .want
                     .as_ref()
@@ -689,12 +756,12 @@ fn season_episodes(target: &AcquisitionTarget) -> R<Vec<AcquisitionTarget>> {
             None => break,
         }
     }
-    out.sort_by_key(|t| t.episode.as_ref().map_or(0, |e| e.number));
+    out.sort_by_key(|t| numbers(t).1);
     Ok(out)
 }
 
-fn grab_season_episodes(target: &AcquisitionTarget, why: &str) -> R<Value> {
-    let season = format!("S{}", pad2(target.season.as_ref().map_or(0, |s| s.number)));
+fn grab_season_episodes(target: &Target, why: &str) -> R<Value> {
+    let season = format!("S{}", pad2(numbers(target).0.unwrap_or(0)));
     let episodes = season_episodes(target)?;
     info!(
         "Grab #{} \"{}\" {season} — {why}, grabbing {} episode(s) individually",
@@ -704,16 +771,16 @@ fn grab_season_episodes(target: &AcquisitionTarget, why: &str) -> R<Value> {
     );
     let mut hashes = vec![];
     for ep in &episodes {
-        let (Some(s), Some(e)) = (&target.season, &ep.episode) else {
+        let (Some(g), Some(i), Some(e)) = (group_id(ep), item_id(ep), numbers(ep).1) else {
             continue;
         };
-        match grab_release(target.media_id, Some(s.id), Some(e.id), None) {
+        match grab_release(target.media_id, Some(g), Some(i), None) {
             Ok(v) => hashes.push(v["torrentHash"].clone()),
             Err(err) => warn!(
                 "Grab #{} \"{}\" {season}E{} skipped — {err}",
                 target.media_id,
                 target.title,
-                pad2(e.number)
+                pad2(e)
             ),
         }
     }
@@ -725,27 +792,30 @@ fn grab_season_episodes(target: &AcquisitionTarget, why: &str) -> R<Value> {
 
 /// Season and episode targets are judged on what pending grabs cover; anything else on any
 /// pending grab of the media.
-fn pending(target: &AcquisitionTarget) -> R<Option<String>> {
-    match &target.season {
-        Some(s) => history::find_pending_covering(&history::Covering {
+fn pending(target: &Target) -> R<Option<String>> {
+    let (season, episode) = numbers(target);
+    match (season, group_id(target)) {
+        (Some(s), Some(season_id)) => history::find_pending_covering(&history::Covering {
             media_id: target.media_id.into(),
-            season_id: s.id.into(),
-            season_number: s.number.into(),
-            episode_number: target.episode.as_ref().map(|e| e.number.into()),
-            episode_tag_pattern: target
-                .episode
-                .as_ref()
-                .map(|e| format!("%S{}E{}%", pad2(s.number), pad2(e.number))),
+            season_id: season_id.into(),
+            season_number: s.into(),
+            episode_number: episode.map(Into::into),
+            episode_tag_pattern: episode.map(|e| format!("%S{}E{}%", pad2(s), pad2(e))),
         }),
-        None => {
-            Ok(history::find_pending_for_media(target.media_id.into())?.map(|h| h.source_title))
-        }
+        _ => Ok(history::find_pending_for_media(target.media_id.into())?.map(|h| h.source_title)),
     }
 }
 
 /// Search, pick and grab one automatic target; false when nothing was grabbed.
-fn try_auto_grab(target: &AcquisitionTarget, client: &DownloadClientRow) -> R<bool> {
-    let kind = kind_str(target.kind);
+fn try_auto_grab(target: &Target, client: &DownloadClientRow) -> R<bool> {
+    let Some(video) = Video::of(&target.kind) else {
+        info!(
+            "AutoGrab[{}]: \"{}\" skipped — this plugin acquires movies and series only",
+            target.kind, target.title
+        );
+        return Ok(false);
+    };
+    let kind = video.as_str();
     let skip = |reason: String| {
         info!("AutoGrab[{kind}]: \"{}\" skipped — {reason}", target.title);
         Ok(false)
@@ -800,7 +870,7 @@ fn try_auto_grab(target: &AcquisitionTarget, client: &DownloadClientRow) -> R<bo
         ));
     }
     for i in picks {
-        let mut a = args_for(target, client, &scored[i], "auto");
+        let mut a = args_for(target, video, client, &scored[i], "auto");
         a.reject_if_present = true;
         match grab_and_record(a) {
             Ok(_) => return Ok(true),
@@ -816,12 +886,8 @@ fn try_auto_grab(target: &AcquisitionTarget, client: &DownloadClientRow) -> R<bo
 /// Candidates arrive sorted by this tuple; a season pack sorts before its episodes.
 pub type Key = (u32, Option<u32>, Option<u32>);
 
-pub fn key_of(t: &AcquisitionTarget) -> Key {
-    (
-        t.media_id,
-        t.season.as_ref().map(|s| s.id),
-        t.episode.as_ref().map(|e| e.id),
-    )
+pub fn key_of(t: &Target) -> Key {
+    (t.media_id, group_id(t), item_id(t))
 }
 
 /// Whether a target still has to run in a sweep resumed after `resume`.
@@ -843,6 +909,7 @@ pub fn search_missing(media_ids: Option<Vec<u32>>, resume: Option<Key>) -> R<Opt
     loop {
         let page = host::acquisition_candidates(&CandidatesQuery {
             kind: None,
+            family: None,
             media_ids: media_ids.clone(),
             available_on: today(),
             limit: 200,
@@ -866,17 +933,18 @@ pub fn search_missing(media_ids: Option<Vec<u32>>, resume: Option<Key>) -> R<Opt
             {
                 continue;
             }
-            if let (Some(_), Some(s)) = (&target.episode, &target.season)
-                && packs.contains(&s.id)
+            if matches!(piece(target), Piece::Episode(..))
+                && let Some(g) = group_id(target)
+                && packs.contains(&g)
             {
                 continue;
             }
             let grabbed = try_auto_grab(target, &client)?;
             if grabbed
-                && target.episode.is_none()
-                && let Some(s) = &target.season
+                && is_season(target)
+                && let Some(g) = group_id(target)
             {
-                packs.push(s.id);
+                packs.push(g);
             }
         }
         match page.cursor {
@@ -921,8 +989,8 @@ pub fn identify(titles: &[String]) -> R<HashMap<String, Option<Match>>> {
         };
         let m = r.media_id.map(|media_id| Match {
             media_id,
-            season_number: r.season_number,
-            episode_number: r.episode_number,
+            season_number: r.unit.as_ref().and_then(|u| u.group),
+            episode_number: r.unit.as_ref().and_then(|u| u.number).map(|n| n as u32),
             coverage: r.coverage,
         });
         out.insert(title.clone(), m);
@@ -930,8 +998,8 @@ pub fn identify(titles: &[String]) -> R<HashMap<String, Option<Match>>> {
     Ok(out)
 }
 
-/// Season/episode ids for a match carrying only numbers, when core still lists them as open.
-pub fn season_episode_ids(
+/// Group and item ids for a match carrying only numbers, when core still lists them as open.
+pub fn group_item_ids(
     media_id: u32,
     season: Option<u32>,
     episode: Option<u32>,
@@ -941,29 +1009,28 @@ pub fn season_episode_ids(
     };
     let page = host::acquisition_candidates(&CandidatesQuery {
         kind: None,
+        family: None,
         media_ids: Some(vec![media_id]),
         available_on: today(),
         limit: 500,
         cursor: None,
     })?;
-    let in_season: Vec<&AcquisitionTarget> = page
+    let in_season: Vec<&Target> = page
         .items
         .iter()
-        .filter(|it| it.season.as_ref().is_some_and(|s| s.number == sn))
+        .filter(|it| numbers(it).0 == Some(sn))
         .collect();
     if let Some(en) = episode
-        && let Some(it) = in_season
-            .iter()
-            .find(|it| it.episode.as_ref().is_some_and(|e| e.number == en))
-        && let (Some(s), Some(e)) = (&it.season, &it.episode)
+        && let Some(it) = in_season.iter().find(|it| numbers(it).1 == Some(en))
+        && let (Some(g), Some(i)) = (group_id(it), item_id(it))
     {
-        return Ok((Some(s.id.into()), Some(e.id.into())));
+        return Ok((Some(g.into()), Some(i.into())));
     }
     Ok((
         in_season
             .first()
-            .and_then(|it| it.season.as_ref())
-            .map(|s| s.id.into()),
+            .and_then(|it| group_id(it))
+            .map(Into::into),
         None,
     ))
 }
@@ -1018,22 +1085,16 @@ pub fn rss_sync() -> R<()> {
             }
             let page = host::acquisition_candidates(&CandidatesQuery {
                 kind: None,
+                family: None,
                 media_ids: Some(vec![m.media_id]),
                 available_on: today(),
                 limit: 500,
                 cursor: None,
             })?;
-            let target = page.items.iter().find(|it| {
-                let season_ok = match m.season_number {
-                    None => it.season.is_none(),
-                    Some(n) => it.season.as_ref().is_some_and(|s| s.number == n),
-                };
-                let episode_ok = match m.episode_number {
-                    None => it.episode.is_none(),
-                    Some(n) => it.episode.as_ref().is_some_and(|e| e.number == n),
-                };
-                season_ok && episode_ok
-            });
+            let target = page
+                .items
+                .iter()
+                .find(|it| numbers(it) == (m.season_number, m.episode_number));
             match target {
                 Some(t)
                     if t.want
