@@ -498,18 +498,19 @@ async fn an_adopted_ledger_runs_only_the_new_migrations() {
         &mut db,
         r#"DROP TABLE "indexer_throttle"; DROP TABLE "poller_state";
            ALTER TABLE "download_history" DROP COLUMN "importLeaseUntil";
+           ALTER TABLE "download_history" RENAME COLUMN "itemId" TO "episodeId";
            DELETE FROM "_migrations" WHERE "name" >= '0009'"#,
     )
     .await;
     let ix = add_indexer(&mut db, "old", json!({})).await;
     h.restart().await;
     until("the re-run migrations", MAX, async || {
-        ledger(&mut plugin_db(&h).await).await.len() == 11
+        ledger(&mut plugin_db(&h).await).await.len() == 12
     })
     .await;
     assert!(logged(
         &h,
-        "migrations applied: 0009_indexer_throttle, 0010_poller_state, 0011_download_history_import_lease"
+        "migrations applied: 0009_indexer_throttle, 0010_poller_state, 0011_download_history_import_lease, 0012_item_history"
     ));
     let backfilled = scalar_i64(
         &mut db,
