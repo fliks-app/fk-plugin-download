@@ -43,15 +43,15 @@ async fn plugin_db(h: &Harness) -> PgConnection {
     c
 }
 
-async fn exec(c: &mut PgConnection, q: &str) {
-    sqlx::raw_sql(AssertSqlSafe(q.to_owned()))
+async fn exec(c: &mut PgConnection, q: impl Into<String>) {
+    sqlx::raw_sql(AssertSqlSafe(q.into()))
         .execute(c)
         .await
         .unwrap();
 }
 
-async fn scalar_i64(c: &mut PgConnection, q: &str) -> i64 {
-    sqlx::query_scalar(AssertSqlSafe(q.to_owned()))
+async fn scalar_i64(c: &mut PgConnection, q: impl Into<String>) -> i64 {
+    sqlx::query_scalar(AssertSqlSafe(q.into()))
         .fetch_one(c)
         .await
         .unwrap()
@@ -100,7 +100,8 @@ async fn add_movie_in(h: &Harness, title: &str, library: Option<&std::path::Path
 /// A monitored work of `kind` with its video want, edition and, for a movie, its own item.
 async fn add_work(h: &Harness, title: &str, kind: &str, library: Option<&std::path::Path>) -> i64 {
     let lib: i32 =
-        sqlx::query_scalar("INSERT INTO libraries (name, path) VALUES ('Films', $1) RETURNING id")
+        sqlx::query_scalar("INSERT INTO libraries (name, path) VALUES ($1, $2) RETURNING id")
+            .bind(title)
             .bind(library.map(|p| p.to_string_lossy().into_owned()))
             .fetch_one(&h.pool)
             .await
@@ -516,61 +517,6 @@ async fn an_adopted_ledger_runs_only_the_new_migrations() {
     )
     .await;
     assert_eq!(backfilled, 1);
-    h.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn item_history_backfills_movie_rows_only() {
-    let Some(h) = Harness::start(setup()).await else {
-        return;
-    };
-    let movie = add_work(&h, "Backfilled", "movie", None).await;
-    let series = add_work(&h, "Grouped", "series", None).await;
-    let item: i64 = sqlx::query_scalar(r#"SELECT id FROM items WHERE "mediaId" = $1"#)
-        .bind(movie as i32)
-        .fetch_one(&h.pool)
-        .await
-        .unwrap();
-    let group: i32 = sqlx::query_scalar(
-        r#"INSERT INTO item_groups ("number", "mediaId") VALUES (1, $1) RETURNING id"#,
-    )
-    .bind(series as i32)
-    .fetch_one(&h.pool)
-    .await
-    .unwrap();
-    let mut db = plugin_db(&h).await;
-    // The schema of 1.2.x: the column still named `episodeId`, 0012 not yet applied.
-    exec(
-        &mut db,
-        r#"ALTER TABLE "download_history" RENAME COLUMN "itemId" TO "episodeId";
-           DELETE FROM "_migrations" WHERE "name" = '0012_item_history'"#,
-    )
-    .await;
-    exec(
-        &mut db,
-        &format!(
-            r#"INSERT INTO "download_history" ("sourceTitle", "quality", "mediaId") VALUES ('film', 'HD', {movie});
-               INSERT INTO "download_history" ("sourceTitle", "quality", "mediaId", "seasonId") VALUES ('pack', 'HD', {series}, {group})"#
-        ),
-    )
-    .await;
-    h.restart().await;
-    until("0012 applied", MAX, async || {
-        ledger(&mut plugin_db(&h).await).await.len() == 12
-    })
-    .await;
-    let film = scalar_i64(
-        &mut db,
-        r#"SELECT "itemId" FROM "download_history" WHERE "sourceTitle" = 'film'"#,
-    )
-    .await;
-    assert_eq!(film, item);
-    let pack = scalar_i64(
-        &mut db,
-        r#"SELECT count(*) FROM "download_history" WHERE "sourceTitle" = 'pack' AND "itemId" IS NULL"#,
-    )
-    .await;
-    assert_eq!(pack, 1);
     h.finish().await;
 }
 

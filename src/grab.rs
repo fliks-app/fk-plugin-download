@@ -734,7 +734,7 @@ fn season_episodes(target: &Target) -> R<Vec<Target>> {
     loop {
         let page = host::acquisition_candidates(&CandidatesQuery {
             kind: None,
-            family: None,
+            family: Some(Family::Video),
             media_ids: Some(vec![target.media_id]),
             available_on: today(),
             limit: 200,
@@ -909,7 +909,7 @@ pub fn search_missing(media_ids: Option<Vec<u32>>, resume: Option<Key>) -> R<Opt
     loop {
         let page = host::acquisition_candidates(&CandidatesQuery {
             kind: None,
-            family: None,
+            family: Some(Family::Video),
             media_ids: media_ids.clone(),
             available_on: today(),
             limit: 200,
@@ -1009,7 +1009,7 @@ pub fn group_item_ids(
     };
     let page = host::acquisition_candidates(&CandidatesQuery {
         kind: None,
-        family: None,
+        family: Some(Family::Video),
         media_ids: Some(vec![media_id]),
         available_on: today(),
         limit: 500,
@@ -1085,7 +1085,7 @@ pub fn rss_sync() -> R<()> {
             }
             let page = host::acquisition_candidates(&CandidatesQuery {
                 kind: None,
-                family: None,
+                family: Some(Family::Video),
                 media_ids: Some(vec![m.media_id]),
                 available_on: today(),
                 limit: 500,

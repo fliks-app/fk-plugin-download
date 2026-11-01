@@ -412,8 +412,8 @@ fn unit(group: Option<u32>, number: Option<f64>) -> Unit {
             label: None,
             absolute: None,
         },
-        group_id: group,
-        item_id: number.map(|n| n as u32),
+        group_id: group.map(|_| 20),
+        item_id: number.map(|_| 50),
         title: None,
         air_date: None,
         unit_count: None,
@@ -495,11 +495,11 @@ fn a_target_is_the_work_a_season_or_an_episode() {
     assert_eq!(grab::key_of(&t), (1, None, None));
     t.scope = vec![unit(Some(2), None)];
     assert_eq!(grab::piece(&t), Piece::Season(2));
-    assert_eq!(grab::key_of(&t), (1, Some(2), None));
+    assert_eq!(grab::key_of(&t), (1, Some(20), None));
     t.scope = vec![unit(Some(2), Some(5.0))];
     assert_eq!(grab::piece(&t), Piece::Episode(2, 5));
     assert_eq!(grab::numbers(&t), (Some(2), Some(5)));
-    assert_eq!(grab::key_of(&t), (1, Some(2), Some(5)));
+    assert_eq!(grab::key_of(&t), (1, Some(20), Some(50)));
 }
 
 #[test]
