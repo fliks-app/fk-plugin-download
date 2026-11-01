@@ -237,8 +237,8 @@ fn secret_settings() {
     }
 }
 
-/// Every key but the ones the port changes equals the published 0.12.1 manifest; strings may
-/// only be added.
+/// Every key but the ones the port changes equals the published 0.12.1 manifest, except the
+/// renamed `coreRefs`; strings may only be added.
 #[test]
 fn template_matches_the_published_manifest() {
     let mut old: Value =
@@ -271,6 +271,13 @@ fn template_matches_the_published_manifest() {
             { "table": "download_clients", "column": "settings", "jsonPath": "password" }
         ])
     );
+    let core_refs = new["database"]
+        .as_object_mut()
+        .unwrap()
+        .remove("coreRefs")
+        .unwrap();
+    assert_eq!(core_refs, json!(["item_groups", "items", "media", "users"]));
+    old["database"].as_object_mut().unwrap().remove("coreRefs");
     let scopes: Vec<&str> = new["scopes"]
         .as_array()
         .unwrap()

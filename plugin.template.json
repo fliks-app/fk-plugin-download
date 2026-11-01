@@ -13,9 +13,9 @@
   "database": {
     "schema": true,
     "coreRefs": [
-      "episodes",
+      "item_groups",
+      "items",
       "media",
-      "seasons",
       "users"
     ],
     "secrets": [
