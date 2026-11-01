@@ -520,7 +520,7 @@ fn base_item(row: &HistoryRow, names: &HashMap<i64, String>) -> Map<String, Valu
     );
     o.insert("mediaId".into(), json!(row.media_id));
     o.insert("seasonId".into(), json!(row.season_id));
-    o.insert("episodeId".into(), json!(row.episode_id));
+    o.insert("episodeId".into(), json!(row.episode_id()));
     o.insert("mediaType".into(), Value::Null);
     o.insert("statusMessage".into(), Value::Null);
     o
@@ -587,8 +587,8 @@ fn queue_item(
 fn attach_labels(items: &mut [Map<String, Value>]) -> R<()> {
     let key = |o: &Map<String, Value>| -> Option<(&'static str, u32)> {
         for (field, kind) in [
-            ("episodeId", "episode"),
-            ("seasonId", "season"),
+            ("episodeId", "item"),
+            ("seasonId", "group"),
             ("mediaId", "media"),
         ] {
             if let Some(i) = o
@@ -604,20 +604,20 @@ fn attach_labels(items: &mut [Map<String, Value>]) -> R<()> {
     let keys: Vec<Option<(&str, u32)>> = items.iter().map(key).collect();
     let mut q = ResolveQuery {
         media_ids: vec![],
-        season_ids: vec![],
-        episode_ids: vec![],
+        group_ids: vec![],
+        item_ids: vec![],
     };
     for (kind, i) in keys.iter().flatten() {
         let list = match *kind {
-            "episode" => &mut q.episode_ids,
-            "season" => &mut q.season_ids,
+            "item" => &mut q.item_ids,
+            "group" => &mut q.group_ids,
             _ => &mut q.media_ids,
         };
         if !list.contains(i) {
             list.push(*i);
         }
     }
-    if q.media_ids.is_empty() && q.season_ids.is_empty() && q.episode_ids.is_empty() {
+    if q.media_ids.is_empty() && q.group_ids.is_empty() && q.item_ids.is_empty() {
         return Ok(());
     }
     let resolved: HashMap<String, _> = host::media_resolve(&q)?.into_iter().collect();
@@ -625,7 +625,11 @@ fn attach_labels(items: &mut [Map<String, Value>]) -> R<()> {
         let Some(hit) = k.and_then(|(kind, i)| resolved.get(&format!("{kind}:{i}"))) else {
             continue;
         };
-        let suffix = match (hit.season_number, hit.episode_number) {
+        let (season, episode) = hit
+            .unit
+            .as_ref()
+            .map_or((None, None), |u| (u.group, u.number.map(|n| n as u32)));
+        let suffix = match (season, episode) {
             (None, _) => String::new(),
             (Some(s), None) => format!("S{s:02}"),
             (Some(s), Some(e)) => format!("S{s:02}E{e:02}"),
@@ -636,7 +640,7 @@ fn attach_labels(items: &mut [Map<String, Value>]) -> R<()> {
             format!("{} - {suffix}", hit.title)
         };
         item.insert("title".into(), json!(title));
-        item.insert("mediaType".into(), json!(grab::kind_str(hit.kind)));
+        item.insert("mediaType".into(), json!(hit.kind));
     }
     Ok(())
 }
@@ -739,7 +743,7 @@ fn history_page(r: &Request) -> R<Response> {
             o.insert("progress".into(), progress);
             o.insert("mediaId".into(), json!(row.media_id));
             o.insert("seasonId".into(), json!(row.season_id));
-            o.insert("episodeId".into(), json!(row.episode_id));
+            o.insert("episodeId".into(), json!(row.episode_id()));
             o.insert("mediaType".into(), Value::Null);
             o
         })

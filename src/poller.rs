@@ -6,11 +6,11 @@ use crate::db::{
     DownloadClientRow, HistoryRow, blocklist, clients, history, indexers, stalled, state,
 };
 use crate::error::R;
-use crate::grab::{coverage_columns, identify, season_episode_ids};
+use crate::grab::{coverage_columns, group_item_ids, identify};
 use crate::util::{decode_html_entities, js_number, now_ms, parse_date_ms};
 use fliks_plugin_sdk::bindings::fliks::plugin::types::{
-    AcquisitionEvent, DownloadProgress, DownloadState, Failed, Imported, IngestRequest,
-    IngestResult, ResolveQuery, StalledRemoved, TransferMode,
+    AcquisitionEvent, DownloadProgress, DownloadState, Failed, Family, Imported, IngestRequest,
+    IngestResult, ResolveQuery, StalledRemoved, TransferMode, UnitRef,
 };
 use fliks_plugin_sdk::host;
 use regex::Regex;
@@ -187,32 +187,22 @@ fn download_state(s: &str) -> DownloadState {
     }
 }
 
-/// Season/episode numbers behind each row's ids, batched within `media.resolve`'s bound.
-fn scope_numbers(rows: &[&HistoryRow]) -> HashMap<i64, (Option<u32>, Option<u32>)> {
+/// The unit behind each row's ids, batched within `media.resolve`'s bound.
+fn row_units(rows: &[&HistoryRow]) -> HashMap<i64, UnitRef> {
     let mut out = HashMap::new();
-    let seasons: Vec<u32> = dedup(
+    let groups: Vec<u32> = dedup(
         rows.iter()
-            .filter(|r| r.episode_id.is_none())
+            .filter(|r| r.item_id.is_none())
             .filter_map(|r| r.season_id)
             .map(|i| i as u32),
     );
-    let episodes: Vec<u32> = dedup(rows.iter().filter_map(|r| r.episode_id).map(|i| i as u32));
+    let items: Vec<u32> = dedup(rows.iter().filter_map(|r| r.item_id).map(|i| i as u32));
     let mut i = 0;
-    while i < seasons.len().max(episodes.len()) {
+    while i < groups.len().max(items.len()) {
         let q = ResolveQuery {
             media_ids: vec![],
-            season_ids: seasons
-                .iter()
-                .skip(i)
-                .take(RESOLVE_BATCH)
-                .copied()
-                .collect(),
-            episode_ids: episodes
-                .iter()
-                .skip(i)
-                .take(RESOLVE_BATCH)
-                .copied()
-                .collect(),
+            group_ids: groups.iter().skip(i).take(RESOLVE_BATCH).copied().collect(),
+            item_ids: items.iter().skip(i).take(RESOLVE_BATCH).copied().collect(),
         };
         i += RESOLVE_BATCH;
         let resolved: HashMap<String, _> = match host::media_resolve(&q) {
@@ -223,13 +213,13 @@ fn scope_numbers(rows: &[&HistoryRow]) -> HashMap<i64, (Option<u32>, Option<u32>
             }
         };
         for r in rows {
-            let key = match (r.episode_id, r.season_id) {
-                (Some(e), _) => format!("episode:{e}"),
-                (None, Some(s)) => format!("season:{s}"),
+            let key = match (r.item_id, r.season_id) {
+                (Some(i), _) => format!("item:{i}"),
+                (None, Some(g)) => format!("group:{g}"),
                 _ => continue,
             };
-            if let Some(hit) = resolved.get(&key) {
-                out.insert(r.id, (hit.season_number, hit.episode_number));
+            if let Some(unit) = resolved.get(&key).and_then(|hit| hit.unit.clone()) {
+                out.insert(r.id, unit);
             }
         }
     }
@@ -267,12 +257,12 @@ fn build_sets(all: &[Held]) -> R<Sets> {
             matched.push((&h.t, row));
         }
     }
-    let scopes = scope_numbers(&matched.iter().map(|(_, r)| r).collect::<Vec<_>>());
+    let units = row_units(&matched.iter().map(|(_, r)| r).collect::<Vec<_>>());
     let mut by_media: HashMap<i64, Vec<DownloadProgress>> = HashMap::new();
     let mut order = vec![];
     for (t, row) in &matched {
         let media = row.media_id.unwrap_or_default();
-        let (sn, en) = scopes.get(&row.id).copied().unwrap_or_default();
+        let unit = units.get(&row.id).cloned();
         let state = if row.status == "importing" {
             "importing"
         } else {
@@ -283,8 +273,7 @@ fn build_sets(all: &[Held]) -> R<Sets> {
         }
         by_media.entry(media).or_default().push(DownloadProgress {
             ref_: t.hash.clone(),
-            season_number: sn,
-            episode_number: en,
+            unit,
             progress: t.progress,
             bytes_per_second: Some(t.dlspeed),
             eta_seconds: (t.eta > 0.0 && t.eta < 8_640_000.0).then_some(t.eta),
@@ -559,16 +548,15 @@ fn auto_match(all: &[Held]) -> R<()> {
             still.insert(hash);
             continue;
         };
-        let (season_id, episode_id) =
-            season_episode_ids(m.media_id, m.season_number, m.episode_number)?;
+        let (group_id, item_id) = group_item_ids(m.media_id, m.season_number, m.episode_number)?;
         let cov = coverage_columns(m.coverage.as_ref());
         match by_hash.get(&hash) {
             Some(row) => {
                 history::heal_match(
                     row.id,
                     m.media_id.into(),
-                    episode_id,
-                    season_id,
+                    item_id,
+                    group_id,
                     &row.quality,
                     &cov,
                 )?;
@@ -583,8 +571,8 @@ fn auto_match(all: &[Held]) -> R<()> {
                     info_url: None,
                     grab_source: "manual",
                     media_id: m.media_id.into(),
-                    episode_id,
-                    season_id,
+                    item_id,
+                    season_id: group_id,
                     indexer_id: None,
                     download_client_id: Some(held.client_id),
                     coverage: cov,
@@ -762,6 +750,8 @@ fn process_one(h: &HistoryRow, t: &Torrent, client: &DownloadClientRow) -> R<()>
     let result = host::library_ingest(&IngestRequest {
         idempotency_key: format!("download-history:{}", h.id),
         media_id: media as u32,
+        family: Family::Video,
+        language: None,
         paths: videos,
         transfer: TransferMode::Copy,
         fallback_quality: None,
@@ -770,8 +760,8 @@ fn process_one(h: &HistoryRow, t: &Torrent, client: &DownloadClientRow) -> R<()>
     let imported = |r: &IngestResult| {
         let ev = AcquisitionEvent::Imported(Imported {
             media_id: media as u32,
-            season_number: r.season_number,
-            episode_number: r.episode_number,
+            family: Family::Video,
+            unit: r.unit.clone(),
             quality: h.quality.clone(),
             source_title: h.source_title.clone(),
         });
@@ -1038,12 +1028,13 @@ mod tests {
             media_file_id: 1,
             relative_path: "a.mkv".into(),
             quality: "HD".into(),
+            edition_id: 1,
+            item_ids: vec![],
         };
         let result = |imported: Vec<ImportedFile>, present: Vec<&str>| IngestResult {
             imported,
             already_present: present.into_iter().map(str::to_owned).collect(),
-            season_number: None,
-            episode_number: None,
+            unit: None,
         };
         assert_eq!(
             classify(&result(vec![file.clone()], vec![])),

@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
 
-pub const MIGRATIONS: [(&str, &str); 11] = [
+pub const MIGRATIONS: [(&str, &str); 12] = [
     (
         "0001_initial_schema",
         include_str!("../migrations/0001_initial_schema.sql"),
@@ -52,6 +52,10 @@ pub const MIGRATIONS: [(&str, &str); 11] = [
     (
         "0011_download_history_import_lease",
         include_str!("../migrations/0011_download_history_import_lease.sql"),
+    ),
+    (
+        "0012_item_history",
+        include_str!("../migrations/0012_item_history.sql"),
     ),
 ];
 
@@ -195,7 +199,7 @@ pub struct HistoryRow {
     pub status_message: Option<String>,
     pub grab_source: String,
     pub media_id: Option<i64>,
-    pub episode_id: Option<i64>,
+    pub item_id: Option<i64>,
     pub season_id: Option<i64>,
     pub indexer_id: Option<i64>,
     pub download_client_id: Option<i64>,
@@ -208,6 +212,11 @@ pub struct HistoryRow {
 impl HistoryRow {
     pub fn is_live(&self) -> bool {
         self.status == "grabbed" || self.status == "importing"
+    }
+
+    /// The wire `episodeId`: the item when it sits in a group, none for a movie's own item.
+    pub fn episode_id(&self) -> Option<i64> {
+        self.season_id.and(self.item_id)
     }
 }
 
@@ -701,7 +710,7 @@ pub mod history {
     use super::*;
 
     const COLUMNS: &str = r#""id", "sourceTitle", "quality", "language", "torrentHash", "size", "infoUrl", "status", "statusMessage",
-  "grabSource", "mediaId", "episodeId", "seasonId", "indexerId", "downloadClientId", "createdAt", "updatedAt",
+  "grabSource", "mediaId", "itemId", "seasonId", "indexerId", "downloadClientId", "createdAt", "updatedAt",
   "coverSeasonFrom", "coverSeasonTo", "coverEpisodeFrom", "coverEpisodeTo", "coverCompleteSeries""#;
 
     pub struct Grab {
@@ -712,7 +721,7 @@ pub mod history {
         pub info_url: Option<String>,
         pub grab_source: &'static str,
         pub media_id: i64,
-        pub episode_id: Option<i64>,
+        pub item_id: Option<i64>,
         pub season_id: Option<i64>,
         pub indexer_id: Option<i64>,
         pub download_client_id: Option<i64>,
@@ -765,7 +774,7 @@ pub mod history {
                               AND $3::int BETWEEN "coverEpisodeFrom" AND "coverEpisodeTo")))
               ))
               OR ("coverCompleteSeries" IS NULL AND (
-                 ("seasonId" = $4 AND "episodeId" IS NULL)
+                 ("seasonId" = $4 AND "itemId" IS NULL)
                  OR ($3::int IS NOT NULL AND "sourceTitle" ILIKE $5)
               ))
             )
@@ -910,7 +919,7 @@ pub mod history {
         let sql = format!(
             r#"INSERT INTO "download_history"
          ("sourceTitle", "quality", "language", "torrentHash", "size", "infoUrl", "grabSource",
-          "mediaId", "episodeId", "seasonId", "indexerId", "downloadClientId",
+          "mediaId", "itemId", "seasonId", "indexerId", "downloadClientId",
           "coverSeasonFrom", "coverSeasonTo", "coverEpisodeFrom", "coverEpisodeTo", "coverCompleteSeries")
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        RETURNING {COLUMNS}"#
@@ -924,7 +933,7 @@ pub mod history {
             opt_text(g.info_url.as_deref()),
             text(g.grab_source),
             int(g.media_id),
-            opt_int(g.episode_id),
+            opt_int(g.item_id),
             opt_int(g.season_id),
             opt_int(g.indexer_id),
             opt_int(g.download_client_id),
@@ -998,7 +1007,7 @@ pub mod history {
     pub fn heal_match(
         id: i64,
         media_id: i64,
-        episode_id: Option<i64>,
+        item_id: Option<i64>,
         season_id: Option<i64>,
         quality: &str,
         c: &Coverage,
@@ -1006,14 +1015,14 @@ pub mod history {
         let mut p = vec![
             int(id),
             int(media_id),
-            opt_int(episode_id),
+            opt_int(item_id),
             opt_int(season_id),
             text(quality),
         ];
         p.extend(cov(c));
         exec(
             r#"UPDATE "download_history"
-         SET "mediaId" = $2, "episodeId" = $3, "seasonId" = $4, "quality" = $5, "updatedAt" = now(),
+         SET "mediaId" = $2, "itemId" = $3, "seasonId" = $4, "quality" = $5, "updatedAt" = now(),
              "coverSeasonFrom" = CASE WHEN "coverCompleteSeries" IS NULL THEN $6::int ELSE "coverSeasonFrom" END,
              "coverSeasonTo" = CASE WHEN "coverCompleteSeries" IS NULL THEN $7::int ELSE "coverSeasonTo" END,
              "coverEpisodeFrom" = CASE WHEN "coverCompleteSeries" IS NULL THEN $8::int ELSE "coverEpisodeFrom" END,

@@ -1,8 +1,8 @@
 {
   "id": "fliks.download",
-  "pluginApi": 2,
+  "pluginApi": 3,
   "name": "Download",
-  "fliks": ">=5.0.0 <6.0.0",
+  "fliks": ">=6.0.0 <7.0.0",
   "author": "Fliks",
   "description": "Indexer search, download-client management and the acquisition grab pipeline for Fliks.",
   "license": "AGPL-3.0-or-later",
@@ -13,9 +13,9 @@
   "database": {
     "schema": true,
     "coreRefs": [
-      "episodes",
+      "item_groups",
+      "items",
       "media",
-      "seasons",
       "users"
     ],
     "secrets": [
@@ -1077,16 +1077,20 @@
     ],
     "releasePicker": {
       "movie": {
-        "search": "/:id/releases",
-        "grab": "/:id/grab"
+        "work": {
+          "search": "/:id/releases",
+          "grab": "/:id/grab"
+        }
       },
-      "season": {
-        "search": "/:id/seasons/:seasonId/releases",
-        "grab": "/:id/seasons/:seasonId/grab"
-      },
-      "episode": {
-        "search": "/:id/episodes/:episodeId/releases",
-        "grab": "/:id/episodes/:episodeId/grab"
+      "series": {
+        "group": {
+          "search": "/:id/seasons/:seasonId/releases",
+          "grab": "/:id/seasons/:seasonId/grab"
+        },
+        "item": {
+          "search": "/:id/episodes/:episodeId/releases",
+          "grab": "/:id/episodes/:episodeId/grab"
+        }
       }
     }
   },
@@ -1186,6 +1190,7 @@
       "download.download_clients.test.unsupported_implementation": "This download client type is not supported",
       "download.download_clients.block.reason": "Blocked from the activity queue",
       "download.grab.errors.media_not_found": "No media found for this request",
+      "download.grab.errors.unsupported_kind": "This plugin only downloads movies and series",
       "download.grab.errors.no_download_client": "No enabled download client is configured",
       "download.grab.errors.unprofiled": "This title has no quality profile — nothing to grab",
       "download.grab.errors.blocklisted": "This release is blocklisted",
@@ -1373,6 +1378,7 @@
       "download.download_clients.test.unsupported_implementation": "Ce type de client de téléchargement n’est pas pris en charge",
       "download.download_clients.block.reason": "Bloqué depuis la file d’activité",
       "download.grab.errors.media_not_found": "Aucun média trouvé pour cette demande",
+      "download.grab.errors.unsupported_kind": "Ce plugin ne télécharge que des films et des séries",
       "download.grab.errors.no_download_client": "Aucun client de téléchargement actif n’est configuré",
       "download.grab.errors.unprofiled": "Ce titre n’a pas de profil de qualité — rien à télécharger",
       "download.grab.errors.blocklisted": "Cette release est sur liste de blocage",
