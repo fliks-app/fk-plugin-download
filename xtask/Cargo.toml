@@ -5,4 +5,4 @@ edition = "2024"
 publish = false
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "9ff84cb44515c75585606e01199dd83b0cf818f9", features = ["build"] }
+fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "17016199c8e312d1c25fb8f4cc5975a47d188e9e", features = ["build"] }
