@@ -1166,7 +1166,7 @@ dependencies = [
 [[package]]
 name = "fliks-plugin-route"
 version = "0.1.0"
-source = "git+https://github.com/fliks-app/fliks?rev=17016199c8e312d1c25fb8f4cc5975a47d188e9e#17016199c8e312d1c25fb8f4cc5975a47d188e9e"
+source = "git+https://github.com/fliks-app/fliks?rev=866c6107ec411450a5dfaf0319f5c7b34ccf3fb5#866c6107ec411450a5dfaf0319f5c7b34ccf3fb5"
 dependencies = [
  "fancy-regex",
 ]
@@ -1174,7 +1174,7 @@ dependencies = [
 [[package]]
 name = "fliks-plugin-sdk"
 version = "0.1.0"
-source = "git+https://github.com/fliks-app/fliks?rev=17016199c8e312d1c25fb8f4cc5975a47d188e9e#17016199c8e312d1c25fb8f4cc5975a47d188e9e"
+source = "git+https://github.com/fliks-app/fliks?rev=866c6107ec411450a5dfaf0319f5c7b34ccf3fb5#866c6107ec411450a5dfaf0319f5c7b34ccf3fb5"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1198,7 +1198,7 @@ dependencies = [
 [[package]]
 name = "fliks-server"
 version = "5.2.1"
-source = "git+https://github.com/fliks-app/fliks?rev=17016199c8e312d1c25fb8f4cc5975a47d188e9e#17016199c8e312d1c25fb8f4cc5975a47d188e9e"
+source = "git+https://github.com/fliks-app/fliks?rev=866c6107ec411450a5dfaf0319f5c7b34ccf3fb5#866c6107ec411450a5dfaf0319f5c7b34ccf3fb5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1259,7 +1259,7 @@ dependencies = [
 [[package]]
 name = "fliks_domain"
 version = "5.2.1"
-source = "git+https://github.com/fliks-app/fliks?rev=17016199c8e312d1c25fb8f4cc5975a47d188e9e#17016199c8e312d1c25fb8f4cc5975a47d188e9e"
+source = "git+https://github.com/fliks-app/fliks?rev=866c6107ec411450a5dfaf0319f5c7b34ccf3fb5#866c6107ec411450a5dfaf0319f5c7b34ccf3fb5"
 dependencies = [
  "chrono",
  "encoding_rs",

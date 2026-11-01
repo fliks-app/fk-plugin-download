@@ -14,7 +14,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "17016199c8e312d1c25fb8f4cc5975a47d188e9e" }
+fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "866c6107ec411450a5dfaf0319f5c7b34ccf3fb5" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = { version = "1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
@@ -23,11 +23,11 @@ sha1 = { version = "0.10", default-features = false }
 time = { version = "0.3", default-features = false, features = ["parsing", "std"] }
 
 [dev-dependencies]
-fliks-plugin-route = { git = "https://github.com/fliks-app/fliks", rev = "17016199c8e312d1c25fb8f4cc5975a47d188e9e" }
+fliks-plugin-route = { git = "https://github.com/fliks-app/fliks", rev = "866c6107ec411450a5dfaf0319f5c7b34ccf3fb5" }
 
 # Component tests of the built plugin under the real host (SDK-11).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "17016199c8e312d1c25fb8f4cc5975a47d188e9e", features = ["harness"] }
+fliks-plugin-sdk = { git = "https://github.com/fliks-app/fliks", rev = "866c6107ec411450a5dfaf0319f5c7b34ccf3fb5", features = ["harness"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 
